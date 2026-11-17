@@ -340,6 +340,15 @@ final class RecordingFormatTests: XCTestCase {
         }
     }
 
+    /// ZipError was Hashable (implicitly, with no associated values) before `notEnoughSpace` came: clients may keep it in
+    /// sets or as dictionary keys.
+    func testZipErrorIsStillHashable() {
+        let errors: Set<ZipWriter.ZipError> = [.tooLarge, .notAFolder, .notEnoughSpace(needed: 2, available: 1), .tooLarge]
+        XCTAssertEqual(errors.count, 3)
+        XCTAssertTrue(errors.contains(.notEnoughSpace(needed: 2, available: 1)))
+        XCTAssertEqual([ZipWriter.ZipError.notAFolder: 1][.notAFolder], 1)
+    }
+
     /// A recording stops at its size limit with a clear error, writing nothing of the frame that would pass it.
     func testTheWriterStopsAtItsSizeLimit() throws {
         let folder = tmp.appendingPathComponent("lim.bouncerec")

@@ -20,7 +20,8 @@ public enum CRC32 {
 /// Every failure throws (a full disk or any other IO error included; nothing here traps), and a failed archive is
 /// removed rather than left half-written.
 public enum ZipWriter {
-    public enum ZipError: Error, Equatable, LocalizedError {
+    /// Hashable, as it was before `notEnoughSpace` came (an associated value ends the implicit conformance).
+    public enum ZipError: Error, Hashable, LocalizedError {
         case tooLarge, notAFolder
         /// the archive needs `needed` bytes and only `available` are free
         case notEnoughSpace(needed: Int64, available: Int64)
