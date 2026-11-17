@@ -157,6 +157,46 @@ public struct Plane: Equatable {
         return d
     }
 
+    /// A PGM of an image made by averaging `k` x `k` blocks of 8-bit pixels (a shrunk crop of the camera image, as the
+    /// app gives the ball finder) that keeps it exactly: each sample is the block's sum, with maxval 255 k^2 (16-bit
+    /// samples for k > 1), so `Plane(pgm:)` reads back the very same Float values (sum x 1/k^2). Any PGM reader shows it
+    /// as an ordinary greyscale image. Values that are not such averages are rounded to the nearest 1/k^2.
+    public func pgmData(blockSum k: Int) -> Data {
+        precondition(k >= 1 && k <= 16)
+        if k == 1 { return pgmData() }
+        let kk = Float(k * k), maxval = 255 * k * k
+        var d = Data("P5\n\(width) \(height)\n\(maxval)\n".utf8)
+        d.reserveCapacity(d.count + 2 * data.count)
+        for v in data {
+            let s = UInt16(clamp((v * kk).rounded(), 0, Float(maxval)))
+            d.append(UInt8(s >> 8)); d.append(UInt8(s & 255))
+        }
+        return d
+    }
+
+    /// Whether every value is an average of k x k 8-bit pixels (so `pgmData(blockSum: k)` keeps it exactly).
+    public func isBlockAverage(of k: Int) -> Bool {
+        let kk = Float(k * k), inv = 1 / kk
+        return data.allSatisfy { v in let s = (v * kk).rounded(); return s >= 0 && s <= 255 * kk && s * inv == v }
+    }
+
+    /// Samples this image (whose pixels `intrinsics` describe) at the pixel centres of another image of the same camera
+    /// (`target`: e.g. a crop of the full camera image), bilinearly: the same view at another scale and offset. Used to
+    /// approximate a full-resolution crop from the smaller processing frame.
+    public func resampled(from intrinsics: CameraIntrinsics, to target: CameraIntrinsics) -> Plane {
+        var d = [Float](repeating: 0, count: target.width * target.height)
+        let sx = intrinsics.fx / target.fx, sy = intrinsics.fy / target.fy
+        for y in 0..<target.height {
+            let py = (Double(y) + 0.5 - target.cy) * sy + intrinsics.cy
+            for x in 0..<target.width {
+                d[y * target.width + x] = sample((Double(x) + 0.5 - target.cx) * sx + intrinsics.cx, py)
+            }
+        }
+        return Plane(width: target.width, height: target.height, data: d)
+    }
+
+    /// Reads a binary PGM (P5). 8-bit samples become 0-255 as they are; 16-bit ones (maxval above 255) are scaled to
+    /// 0-255 (sample x 255 / maxval), which for `pgmData(blockSum:)` gives back the block averages exactly.
     public init?(pgm: Data) {
         // header: "P5" whitespace width whitespace height whitespace maxval single-whitespace, then bytes
         var fields: [Int] = [], i = 0
@@ -171,11 +211,23 @@ public struct Plane: Equatable {
             guard any else { return nil }
             fields.append(v)
         }
-        guard fields.count == 3, fields[2] == 255 else { return nil }
+        guard fields.count == 3, fields[2] > 0, fields[2] <= 65535 else { return nil }
         i += 1 // the single whitespace after maxval
-        let w = fields[0], h = fields[1]
-        guard w > 0, h > 0, b.count - i >= w * h else { return nil }
-        self.init(bytes: Array(b[i..<(i + w * h)]), width: w, height: h)
+        let w = fields[0], h = fields[1], maxval = fields[2]
+        guard w > 0, h > 0 else { return nil }
+        if maxval == 255 {
+            guard b.count - i >= w * h else { return nil }
+            self.init(bytes: Array(b[i..<(i + w * h)]), width: w, height: h)
+            return
+        }
+        let scale = 255 / Float(maxval), two = maxval > 255
+        guard b.count - i >= w * h * (two ? 2 : 1) else { return nil }
+        var d = [Float](repeating: 0, count: w * h)
+        for j in 0..<(w * h) {
+            let s = two ? Int(b[i + 2 * j]) << 8 | Int(b[i + 2 * j + 1]) : Int(b[i + j])
+            d[j] = Float(s) * scale
+        }
+        self.init(width: w, height: h, data: d)
     }
 }
 

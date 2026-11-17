@@ -25,7 +25,10 @@ public struct SlabSpec: Equatable, Codable {
     public var swapped: SlabSpec { SlabSpec(sideU: sideV, sideV: sideU, thickness: thickness, dishDepth: dishDepth) }
 }
 
-/// The corners of the top face in the slab's own (u, v) frame, in outline order. Image outlines use the same order.
+/// The corners of the top face in the slab's own (u, v) frame, in the pose's corner order. Since axisU x axisV ==
+/// normal, a pose's corners run anticlockwise seen from the top face's side: on screen, an outline in pose order has a
+/// negative shoelace area (y down). A detector's outline may start anywhere and run either way round; a fitted pose
+/// says how its corners map onto the outline's in `PoseFit.cornerOrder` (reversed for an outline running clockwise).
 public let slabCornerSigns: [(Double, Double)] = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
 
 /// Where a slab is: the middle of the plane through its four top corners, that plane's unit normal (pointing out of the
@@ -94,13 +97,25 @@ public enum Dish {
 }
 
 /// The slab as a box with thickness, seen from a camera (all in camera coordinates): which cut faces show and how wide.
+///
+/// `side:` methods index the pose's own sides (side i runs from `pose.topCorners[i]` to `[i+1]`). A detector's outline
+/// may run the other way round from the pose (see `PoseFit.cornerOrder`): build the view with `init(fit:spec:intrinsics:)`
+/// and use the `outlineSide:` methods, which take the outline's own side numbers, so a per-side model cannot put the
+/// near side's cut face on the far side.
 public struct SlabBoxView {
     public let pose: SlabPose          // in camera (CV) coordinates
     public let spec: SlabSpec
     public let intrinsics: CameraIntrinsics
+    /// which outline corner each pose corner is (as `PoseFit.cornerOrder`); [0, 1, 2, 3] when built from a pose alone
+    public let cornerOrder: [Int]
 
     public init(pose: SlabPose, spec: SlabSpec, intrinsics: CameraIntrinsics) {
-        self.pose = pose; self.spec = spec; self.intrinsics = intrinsics
+        self.pose = pose; self.spec = spec; self.intrinsics = intrinsics; cornerOrder = [0, 1, 2, 3]
+    }
+
+    /// The box of a fitted pose, with its outline's corner order, for lookups by the outline's own sides.
+    public init(fit: PoseFit, spec: SlabSpec, intrinsics: CameraIntrinsics) {
+        self.pose = fit.pose; self.spec = spec; self.intrinsics = intrinsics; cornerOrder = fit.cornerOrder
     }
 
     public var topCorners: [Vec3] { pose.topCorners }
@@ -120,18 +135,31 @@ public struct SlabBoxView {
         return outward(side: i).dot(-mid) > 0
     }
 
-    /// How wide side i's cut face looks in the image (pixels) at its two ends; 0 where it is hidden.
+    /// How wide side i's cut face looks in the image (pixels) at its two ends (corner i, corner i+1), measured across
+    /// the side: the distance of each bottom corner from the image line of the top edge. This is how far a detector must
+    /// step in from the bottom of the cut face to reach the top edge. 0 where the face is hidden.
     public func cutBandWidth(side i: Int) -> (start: Double, end: Double) {
         guard cutFaceVisible(side: i) else { return (0, 0) }
-        let t = topCorners, b = bottomCorners
+        let t = topCorners, j = (i + 1) % 4
+        guard let ta = intrinsics.project(t[i]), let tb = intrinsics.project(t[j]) else { return (0, 0) }
+        let e = tb - ta, len = e.length
+        guard len > 1e-9 else { return (0, 0) }
+        let dir = e / len
         func w(_ k: Int) -> Double {
-            guard let p = intrinsics.project(t[k]), let q = intrinsics.project(b[k]) else { return 0 }
-            return p.distance(to: q)
+            guard let v = verticalEdge(corner: k) else { return 0 }
+            return abs(dir.cross(v))
         }
-        return (w(i), w((i + 1) % 4))
+        return (w(i), w(j))
     }
 
-    /// The top face's outline in the image.
+    /// The image vector from top corner k to the bottom of the cut face below it (pixels): the projected vertical edge.
+    /// Its length is the edge's projected length, which is longer than the band's width across a side seen obliquely.
+    public func verticalEdge(corner k: Int) -> Vec2? {
+        guard let p = intrinsics.project(topCorners[k]), let q = intrinsics.project(bottomCorners[k]) else { return nil }
+        return q - p
+    }
+
+    /// The top face's outline in the image (pose order).
     public var topOutline: [Vec2]? {
         let p = topCorners.compactMap { intrinsics.project($0) }
         return p.count == 4 ? p : nil
@@ -147,5 +175,55 @@ public struct SlabBoxView {
             out.append((p, q))
         }
         return out
+    }
+
+    /// The outline a detector reports when it takes the given (pose) sides at the bottom of their cut face instead of
+    /// at the top edge, e.g. the near edge flipping to the bottom of the light cut face: those sides' lines move to the
+    /// projected bottom edges, and the corners are where neighbouring lines meet. Sides whose face is hidden stay on the
+    /// top edge. Pose order; nil if a corner does not project.
+    public func outlineWithCutBottom(onSides sides: Set<Int>) -> [Vec2]? {
+        guard let T = topOutline else { return nil }
+        let bp = bottomCorners.compactMap { intrinsics.project($0) }
+        guard bp.count == 4 else { return nil }
+        let lines: [(Vec2, Vec2)] = (0..<4).map { i in
+            let j = (i + 1) % 4
+            return sides.contains(i) && cutFaceVisible(side: i) ? (bp[i], bp[j]) : (T[i], T[j])
+        }
+        return (0..<4).map { i in SlabBoxView.intersect(lines[(i + 3) % 4], lines[i]) ?? T[i] }
+    }
+
+    static func intersect(_ l1: (Vec2, Vec2), _ l2: (Vec2, Vec2)) -> Vec2? {
+        let d1 = l1.1 - l1.0, d2 = l2.1 - l2.0, den = d1.cross(d2)
+        guard abs(den) > 1e-12 else { return nil }
+        let s = (l2.0 - l1.0).cross(d2) / den
+        return l1.0 + d1 * s
+    }
+
+    // MARK: by the outline's own corners and sides
+
+    /// The pose side along outline side j (from outline corner j to j+1), and whether it runs the other way.
+    public func poseSide(forOutlineSide j: Int) -> (side: Int, reversed: Bool) {
+        PoseFit.poseSide(forOutlineSide: j, cornerOrder: cornerOrder)
+    }
+
+    /// The top corners in outline order: element j projects onto outline corner j.
+    public var outlineTopCorners: [Vec3] { PoseFit.toOutlineOrder(topCorners, cornerOrder: cornerOrder) }
+    /// The bottom corners in outline order.
+    public var outlineBottomCorners: [Vec3] { PoseFit.toOutlineOrder(bottomCorners, cornerOrder: cornerOrder) }
+
+    /// Whether outline side j's cut face shows.
+    public func cutFaceVisible(outlineSide j: Int) -> Bool { cutFaceVisible(side: poseSide(forOutlineSide: j).side) }
+
+    /// The band's width across outline side j at outline corner j (`start`) and j+1 (`end`), pixels; 0 where hidden.
+    public func cutBandWidth(outlineSide j: Int) -> (start: Double, end: Double) {
+        let (s, rev) = poseSide(forOutlineSide: j)
+        let w = cutBandWidth(side: s)
+        return rev ? (w.end, w.start) : w
+    }
+
+    /// `outlineWithCutBottom(onSides:)` with outline side numbers in and the outline's corner order out.
+    public func outlineWithCutBottom(onOutlineSides sides: Set<Int>) -> [Vec2]? {
+        let ps = Set(sides.map { poseSide(forOutlineSide: $0).side })
+        return outlineWithCutBottom(onSides: ps).map { PoseFit.toOutlineOrder($0, cornerOrder: cornerOrder) }
     }
 }
