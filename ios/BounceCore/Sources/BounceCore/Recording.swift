@@ -135,7 +135,7 @@ public struct RecordedFrame: Codable, Equatable {
     /// was cut from the full camera image (optional: the intrinsics alone say where it looks)
     public var ballFile: String?
     public var ballIntrinsics: CameraIntrinsics?
-    public var ballCrop: BallCrop?
+    public var ballCrop: BallImageCrop?
     /// the tracker's result on the phone for this frame (what a replay is compared with)
     public var output: RecordedOutput?
 
@@ -147,7 +147,7 @@ public struct RecordedFrame: Codable, Equatable {
     /// The record of a frame the tracker processed: its camera (as ARKit's transform), gravity, tracking state, tap,
     /// floor height, the controls before it and the tracker's output. The app adds motion and exposure; the writer sets
     /// the index and files. `ballCrop`: where the ball finder's image was cut from, if the frame had one.
-    public init(processed tf: TrackerFrame, output: TrackerOutput, ballCrop: BallCrop? = nil) {
+    public init(processed tf: TrackerFrame, output: TrackerOutput, ballCrop: BallImageCrop? = nil) {
         let w = tf.view.worldFromCamera
         let arkit = RigidTransform(rotation: w.rotation * ARKitConvention.cvToARKitCamera, translation: w.translation)
         self.init(index: 0, timestamp: tf.timestamp, file: "", worldFromCamera: arkit.columnMajor4x4, intrinsics: tf.view.intrinsics,

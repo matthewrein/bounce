@@ -148,7 +148,7 @@ struct AppLoopSim {
 
     /// FrameConversion.lumaCrop on the virtual full image: k x k block averages (integer sums times 1/k^2), worked out
     /// pixel by pixel only around the ball (the rest is plain).
-    func lumaCrop(_ c: BallCrop, ballPx: (Vec2, Double)?) -> Plane {
+    func lumaCrop(_ c: BallImageCrop, ballPx: (Vec2, Double)?) -> Plane {
         let w = c.imageWidth, h = c.imageHeight, k = c.factor
         let inv = 1 / Float(k * k)
         var d = [Float](repeating: Float(61 * k * k) * inv, count: w * h)
@@ -237,14 +237,14 @@ struct AppLoopSim {
             let bp: (Vec2, Double)? = ballW.flatMap { b in fv.project(world: b).map { ($0, full.fx * BallSpec().radius / fv.toCamera(b).z) } }
             var luma: [UInt8]? = nil
             if needImage && imagesFromFull {
-                let p = lumaCrop(BallCrop(x0: 0, y0: 0, width: full.width, height: full.height, factor: factor), ballPx: bp)
+                let p = lumaCrop(BallImageCrop(x0: 0, y0: 0, width: full.width, height: full.height, factor: factor), ballPx: bp)
                 luma = p.data.map { UInt8($0.rounded(.down)) }
             }
             let ycc: YCCImage? = needImage ? CornerCodeImage.make(width: pK.width, height: pK.height, outline: inView ? noisy : nil, salt: i, luma: luma) : nil
             var depth: (DepthMap, CameraIntrinsics)? = nil
             if tracker.state == .locked || recordDue { depth = self.depth(pv) }
-            var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil, crop: BallCrop? = nil
-            if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab, let c = BallCrop.plan(slab: s, full: fv, maxSide: ballMaxSide) {
+            var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil, crop: BallImageCrop? = nil
+            if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab, let c = BallImageCrop.plan(slab: s, full: fv, maxSide: ballMaxSide) {
                 ballImage = lumaCrop(c, ballPx: bp); ballK = c.intrinsics(full: full); crop = c
                 run.ballFrames += 1
             }

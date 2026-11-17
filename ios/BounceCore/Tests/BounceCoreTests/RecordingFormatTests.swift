@@ -107,7 +107,7 @@ final class RecordingFormatTests: XCTestCase {
                           DetectedOutline(quad: [Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)])]
         out.ballSearched = true; out.ball = [0.1, 0.4, -0.9, 30.5, 12.25, 6]; out.depthFused = true; out.lockUnconfirmed = true
         f.output = out
-        let crop = BallCrop(x0: 10, y0: 4, width: 40, height: 30, factor: 2)
+        let crop = BallImageCrop(x0: 10, y0: 4, width: 40, height: 30, factor: 2)
         f.ballCrop = crop; f.ballIntrinsics = crop.intrinsics(full: K.scaled(by: 4))
         let ball = Plane(width: 20, height: 15, data: (0..<300).map { Float($0 % 7) * 0.25 + 60 })
         try w.append(f, image: nil, depth: DepthMap(width: 2, height: 1, depth: [1, 2], confidence: [2, 2]), ball: ball)
@@ -208,7 +208,7 @@ final class RecordingFormatTests: XCTestCase {
         var d = [Float](repeating: 0, count: small.width * small.height)
         for y in 0..<small.height { for x in 0..<small.width { d[y * small.width + x] = Float((Double(x) + 0.5) * 3 / 4 + (Double(y) + 0.5) * 3 / 8) } }
         let p = Plane(width: small.width, height: small.height, data: d)
-        let crop = BallCrop(x0: 300, y0: 120, width: 200, height: 160, factor: 2)
+        let crop = BallImageCrop(x0: 300, y0: 120, width: 200, height: 160, factor: 2)
         let K = crop.intrinsics(full: full)
         let r = p.resampled(from: small, to: K)
         XCTAssertEqual(r.width, 100); XCTAssertEqual(r.height, 80)
@@ -225,7 +225,7 @@ final class RecordingFormatTests: XCTestCase {
         let slab = World.slabAt(Vec3(0, 0.066, -1.2), tilt: 6, heading: 30)
         var w = World(slab: slab); w.intrinsics = full
         let v = w.view(from: Vec3(0, 0.95, 0), at: slab.center)
-        let c = try XCTUnwrap(BallCrop.plan(slab: slab, full: v))
+        let c = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: v))
         XCTAssertLessThanOrEqual(max(c.width, c.height) / c.factor, 900)
         XCTAssertGreaterThan(c.factor, 1)
         XCTAssertGreaterThanOrEqual(c.x0, 0); XCTAssertLessThanOrEqual(c.x0 + c.width, full.width)

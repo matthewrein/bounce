@@ -224,7 +224,7 @@ final class TrackerAppPathTests: XCTestCase {
         var readouts = try XCTUnwrap(o.readouts)
         readouts.airTime = .infinity; readouts.apexHeight = .nan
         let lens = CameraIntrinsics(fx: 1450, fy: 1450, cx: 960, cy: 720, width: 1920, height: 1440)
-        let crop = BallCrop(x0: 400, y0: 100, width: 800, height: 900, factor: 2)
+        let crop = BallImageCrop(x0: 400, y0: 100, width: 800, height: 900, factor: 2)
         var rep = DiagnosticsReport(build: "n3", device: "iPhone15,2", system: "iOS 17", time: "now", settings: RecordingSettings(dishBounce: true),
                                     state: o.state.rawValue, tracking: "normal", fps: 60, msProcess: 3, lens: lens, depthSupported: true,
                                     depth: o.depth, captureLocked: true, slab: o.slab, outline: o.outline, sideModes: tr.lastSideModes, ball: o.ball,

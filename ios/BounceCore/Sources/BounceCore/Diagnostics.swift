@@ -112,7 +112,7 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var history: [DetectionRecord]?
     /// where the ball finder's image was cut from (full camera image pixels and shrink factor); `ball`'s circle is in its
     /// pixels. `ballFull`: that circle (x, y, radius) in the full camera image's pixels.
-    public var ballCrop: BallCrop?
+    public var ballCrop: BallImageCrop?
     public var ballFull: [Double]?
     /// the tracker's settings, exactly (launch rule, intervals, gates ...)
     public var tracker: TrackerSettings?
@@ -171,7 +171,7 @@ public struct DiagnosticsReport: Codable, Equatable {
     /// the camera relative to the lock, the processing frame's size (from `view`, the processing frame's camera, and
     /// `lens`, the full image's), the ball crop's frame and the floor.
     public mutating func addTracker(_ tracker: SlabTracker, view: CameraView?, lens: CameraIntrinsics? = nil, output: TrackerOutput? = nil,
-                                    ballCrop: BallCrop? = nil, floorY: Double? = nil) {
+                                    ballCrop: BallImageCrop? = nil, floorY: Double? = nil) {
         imageSlab = tracker.imageSlab.map(Pose.init)
         depthFused = output?.depthFused
         history = tracker.detectionLog.suffix(15).map(DiagnosticsReport.rounded)

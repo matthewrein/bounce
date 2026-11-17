@@ -2,7 +2,7 @@ import Foundation
 
 /// Where the ball finder's image comes from: the full camera image's pixels from (x0, y0), `width` x `height` of them,
 /// shrunk by averaging `factor` x `factor` blocks. The app makes it around the slab and the space above it (`plan`).
-public struct BallCrop: Codable, Equatable {
+public struct BallImageCrop: Codable, Equatable {
     /// the crop's rectangle in the full camera image (pixels of ARKit's captured image, sensor orientation)
     public var x0: Int
     public var y0: Int
@@ -32,7 +32,7 @@ public struct BallCrop: Codable, Equatable {
     /// side, clamped to the image, and shrunk so its longer side is at most `maxSide` pixels. nil if the slab does not
     /// project or the crop would be under 33 pixels either way.
     /// - Parameters: slab: the lock (world); full: the camera for the full camera image (world-from-camera, CV axes).
-    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900) -> BallCrop? {
+    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900) -> BallImageCrop? {
         let q = slab.topCorners.compactMap { full.project(world: $0) }
         guard q.count == 4 else { return nil }
         let up = slab.topCorners.compactMap { full.project(world: $0 + Vec3(0, reach, 0)) }
@@ -43,7 +43,7 @@ public struct BallCrop: Codable, Equatable {
         let cw = min(full.intrinsics.width, x1) - cx0, ch = min(full.intrinsics.height, y1) - cy0
         guard cw > 32, ch > 32 else { return nil }
         let k = max(1, Int(ceil(Double(max(cw, ch)) / Double(max(1, maxSide)))))
-        return BallCrop(x0: cx0, y0: cy0, width: cw, height: ch, factor: k)
+        return BallImageCrop(x0: cx0, y0: cy0, width: cw, height: ch, factor: k)
     }
 }
 
@@ -227,7 +227,7 @@ public struct RecordingCadence {
     /// The record of a processed frame. `image`: the processing image, if the app converted it; `ballCrop`: where the
     /// ball finder's image (in `tf.ballImage`) was cut from, if there was one.
     public mutating func record(_ tf: TrackerFrame, output: TrackerOutput, tracker: SlabTracker, image: YCCImage?,
-                                ballCrop: BallCrop? = nil) -> FrameRecord {
+                                ballCrop: BallImageCrop? = nil) -> FrameRecord {
         var rf = RecordedFrame(processed: tf, output: output, ballCrop: ballCrop)
         let t = tf.timestamp
         let ballRan = output.ballSearched && tf.ballImage != nil
