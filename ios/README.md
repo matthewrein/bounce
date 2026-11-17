@@ -96,7 +96,10 @@ Then press **Run** in Xcode. If you chose the team in Xcode instead of `Local.xc
   perpendicular to that plane. The cyan arc is the bounce, with the apex and where it lands.
 - Hold the ball (35 mm) above the slab: its height sets the drop height, shown as "(ball)". Without a ball, the drop height
   from Settings is used.
-- If the outline is on the wrong thing, **tap the slab** on the screen, or press **Reset**.
+- Look at the slab at an angle, not from straight above: from overhead its tilt hardly shows in the picture, so the app
+  waits (or asks you to view it at more of an angle) rather than lock on a tilt that could be several degrees off.
+- If the outline is on the wrong thing, **tap the slab** on the screen, or press **Reset**. The tap keeps guiding the
+  search until the slab locks.
 - If you slide the slab to change its angle, the app notices after about a second and locks onto the new position.
 - **Settings**: the slab's side length (and the other side, if it is not quite square), thickness, dish depth, ball diameter,
   drop height and rebound.
