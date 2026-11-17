@@ -51,16 +51,24 @@ only need your Mac to put it on the phone. If it is red, wait for a fix before p
    Capabilities**, and pick your name under **Team**. If Xcode says the bundle identifier is not available, change it to
    something only you would use, such as `io.github.yourname.SlabBounce`.
 
-   To keep these two settings when you generate the project again, put them in a file `ios/Config/Local.xcconfig`
-   instead:
+   To keep these settings when you generate the project again (otherwise you pick the team again after every update),
+   save them in a small file. After picking your team as above, run this in Terminal, still in the `ios` folder:
 
    ```
-   DEVELOPMENT_TEAM = ABCDE12345
-   PRODUCT_BUNDLE_IDENTIFIER = io.github.yourname.SlabBounce
+   TEAM=$(grep -m1 -oE 'DEVELOPMENT_TEAM = [A-Z0-9]{10}' SlabBounce.xcodeproj/project.pbxproj | awk '{print $3}')
+   printf 'DEVELOPMENT_TEAM = %s\n' "$TEAM" > Config/Local.xcconfig
+   cat Config/Local.xcconfig
    ```
 
-   Your team ID is under **Xcode > Settings > Accounts**, as the team's ID. This file stays on your Mac and is never
-   committed.
+   It should print one line like `DEVELOPMENT_TEAM = ABCDE12345`. If you had to change the bundle identifier, add it too:
+
+   ```
+   echo 'PRODUCT_BUNDLE_IDENTIFIER = io.github.yourname.SlabBounce' >> Config/Local.xcconfig
+   ```
+
+   To check that the file is picked up, run `xcodegen generate`, then
+   `xcodebuild -project SlabBounce.xcodeproj -scheme SlabBounce -showBuildSettings | grep DEVELOPMENT_TEAM`.
+   It should show your team. The file stays on your Mac and is never committed.
 
 6. Plug in the iPhone and unlock it. Tap **Trust** if it asks. On iOS 16 and later, turn on **Settings > Privacy & Security >
    Developer Mode** and restart when asked.
@@ -107,9 +115,11 @@ It shows the build, the lens, what the app found, and its counters.
 3. Send the zip the same private way you sent the slab photos. A recording shows your room, so **don't** attach it to a
    GitHub issue or anything public.
 
-Each recording holds about 5 frames a second, at 480x360 and in black and white with colour detail. It also holds the
-camera's position and lens, the phone's motion, and LiDAR depth where the phone has it. That is about 2-4 MB per 10
-seconds.
+A recording holds about 5 frames a second at 480x360, in black and white with colour detail. It also holds the camera's
+position and lens, the phone's motion, and LiDAR depth where the phone has it. That comes to about **13 MB per 10
+seconds**, or about **25 MB per 10 seconds on a phone with LiDAR**, and the zip is not compressed. So use **AirDrop**,
+**Save to Files** or iCloud Drive; Mail switches to Mail Drop above about 20 MB. Once the zip is made, the app deletes the
+unzipped copy. A recording stops by itself at 1.5 GB, or if the phone runs out of space, and the app tells you why.
 
 ## For developers
 

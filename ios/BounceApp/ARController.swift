@@ -79,6 +79,7 @@ final class ARController: NSObject, ARSessionDelegate {
 
     func start(settings s: AppSettings) {
         queue.async {
+            self.unlockCapture()
             self.settings = s
             self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
             self.floorYs = [:]
@@ -104,6 +105,7 @@ final class ARController: NSObject, ARSessionDelegate {
     func stop() {
         session.pause()
         motion.stopDeviceMotionUpdates()
+        queue.async { self.unlockCapture() }
         stopDemo()
     }
 
@@ -111,6 +113,7 @@ final class ARController: NSObject, ARSessionDelegate {
     func startDemo(script: DemoScript, settings s: AppSettings) {
         session.pause()
         queue.async {
+            self.unlockCapture()
             self.settings = s
             self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
             self.demoScript = script
@@ -222,7 +225,7 @@ final class ARController: NSObject, ARSessionDelegate {
             let sizeChanged = s.tracker.spec != settings.tracker.spec
             settings = s
             tracker.settings = s.tracker
-            if sizeChanged { tracker.reset(); recentEvents.append("settings: slab changed, searching again") }
+            if sizeChanged { tracker.reset(); unlockCapture(); recentEvents.append("settings: slab changed, searching again") }
         }
         if reset { tracker.reset(); unlockCapture(); recentEvents.append("reset") }
 
@@ -293,8 +296,8 @@ final class ARController: NSObject, ARSessionDelegate {
             recentEvents.append(contentsOf: out.events.map { String(format: "%.2f ", f.timestamp) + $0 })
             if recentEvents.count > 30 { recentEvents.removeFirst(recentEvents.count - 30) }
         }
-        if out.events.contains("locked") || out.events.contains("relocked") { lockCapture() }
-        if out.events.contains("lost") { unlockCapture() }
+        if out.events.contains("tap") || out.events.contains("lost") { unlockCapture() }   // a new search: auto again
+        if out.events.contains("locked") { lockCapture() }   // (a relock is the same scene: keep the current lock)
 
         // recording
         if recordDue, let rec = recorder, let img = ycc {
@@ -443,7 +446,9 @@ final class ARController: NSObject, ARSessionDelegate {
         if let d = out.depth {
             h.depth = String(format: "LiDAR: %.1f° tilt, %.1f° from image", d.tiltDegrees, d.angleToImageDegrees)
         }
-        if let rec = recorder { h.recording = "Recording \(rec.frameCount) frames" }
+        if let rec = recorder {
+            h.recording = rec.failure.map { "Recording stopped: \($0)" } ?? "Recording \(rec.frameCount) frames"
+        }
         h.demo = isDemo
         return h
     }
@@ -473,10 +478,10 @@ final class ARController: NSObject, ARSessionDelegate {
         queue.async { if self.recorder == nil { self.recordRequest = s } }
     }
 
-    func stopRecording(_ done: @escaping (URL?) -> Void) {
+    func stopRecording(_ done: @escaping (Result<URL, Error>) -> Void) {
         queue.async {
             self.recordRequest = nil
-            guard let rec = self.recorder else { done(nil); return }
+            guard let rec = self.recorder else { done(.failure(SessionRecorder.RecorderError.notRecording)); return }
             self.recorder = nil
             rec.finish(done)
         }

@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in the app and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n2"
+let appBuild = "n3"
 
 /// The owner's settings, in the owner's units, stored in UserDefaults.
 struct AppSettings: Equatable {
@@ -86,6 +86,7 @@ final class AppModel: ObservableObject {
     @Published var arUnsupported = false
     @Published var background: CGImage? = nil
     @Published var diagnosticsText: String? = nil
+    @Published var recordingError: String? = nil
 
     let controller = ARController()
 
@@ -116,6 +117,7 @@ final class AppModel: ObservableObject {
         guard !running else { return }
         if let demo = AppModel.demoScript() {
             running = true; runningDemo = true
+            UIApplication.shared.isIdleTimerDisabled = true   // aiming is hands-off: don't let the screen lock
             controller.startDemo(script: demo, settings: settings)
             return
         }
@@ -126,12 +128,13 @@ final class AppModel: ObservableObject {
             return
         }
         running = true
+        UIApplication.shared.isIdleTimerDisabled = true   // aiming and recording are hands-off: don't let the screen lock
         controller.start(settings: settings)
     }
 
     /// Settings' demo switch changed: restart on the camera or the demo.
     func restart() {
-        if running { controller.stop(); running = false }
+        if running { controller.stop(); running = false; UIApplication.shared.isIdleTimerDisabled = false }
         arUnsupported = false
         background = nil
         start()
@@ -141,6 +144,7 @@ final class AppModel: ObservableObject {
         guard running else { return }
         running = false
         if isRecording { toggleRecording() }
+        UIApplication.shared.isIdleTimerDisabled = false
         controller.stop()
     }
 
@@ -156,8 +160,14 @@ final class AppModel: ObservableObject {
 
     func toggleRecording() {
         if isRecording {
-            controller.stopRecording { [weak self] url in
-                Task { @MainActor in self?.isRecording = false; self?.shareURL = url }
+            controller.stopRecording { [weak self] result in
+                Task { @MainActor in
+                    self?.isRecording = false
+                    switch result {
+                    case .success(let url): self?.shareURL = url
+                    case .failure(let e): self?.recordingError = "Could not save the recording: \(e.localizedDescription)"
+                    }
+                }
             }
         } else {
             controller.startRecording(settings: settings)

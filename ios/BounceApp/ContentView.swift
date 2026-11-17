@@ -50,6 +50,9 @@ struct ContentView: View {
         .sheet(item: Binding(get: { model.diagnosticsText.map(DiagnosticsItem.init) }, set: { model.diagnosticsText = $0?.text })) { item in
             DiagnosticsView(text: item.text)
         }
+        .alert(model.recordingError ?? "", isPresented: Binding(get: { model.recordingError != nil }, set: { if !$0 { model.recordingError = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
         .alert("ARKit is not available on this device", isPresented: Binding(get: { model.arUnsupported }, set: { model.arUnsupported = $0 })) {
             Button("Show the demo") { UserDefaults.standard.set(true, forKey: "demo"); model.restart() }
             Button("OK", role: .cancel) {}
