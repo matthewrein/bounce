@@ -84,6 +84,8 @@ details .row{margin-top:8px}
     <summary>Tune</summary>
     <div class="row"><label for="reb">Rebound (how much of the drop height it bounces back)</label><output id="oReb" for="reb"></output>
       <input id="reb" type="range" min="20" max="100" step="5" value="70"></div>
+    <div class="row"><label for="ball">Ball diameter</label><output id="oBall" for="ball"></output>
+      <input id="ball" type="range" min="15" max="80" step="1" value="35"></div>
     <div class="row" id="pitchRow"><label for="pitch">Phone aimed down from level</label><output id="oPitch" for="pitch"></output>
       <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
     <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
@@ -103,9 +105,8 @@ details .row{margin-top:8px}
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
 const G=32.174; // ft/s^2
-const P={drop:3,reb:70,size:12,tol:26,pitch:50,fov:65};
-const speed=()=>Math.sqrt(2*G*P.drop*P.reb/100); // ft/s leaving the cement
-const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,tapped:false};
+const P={drop:3,reb:70,ball:35,size:12,tol:26,pitch:50,fov:65};
+const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
 /* ---------- vector helpers ---------- */
@@ -410,6 +411,79 @@ function track(){
   S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
 }
 
+/* ---------- ball: a round outline of the expected size anywhere in view ---------- */
+function circleFit(pts){
+  // least-squares circle through points: x^2+y^2 = 2ax + 2by + c
+  let Sx=0,Sy=0,Sxx=0,Syy=0,Sxy=0,Sz=0,Sxz=0,Syz=0;const n=pts.length;
+  for(const p of pts){const z=p.x*p.x+p.y*p.y;Sx+=p.x;Sy+=p.y;Sxx+=p.x*p.x;Syy+=p.y*p.y;Sxy+=p.x*p.y;Sz+=z;Sxz+=p.x*z;Syz+=p.y*z;}
+  const r=solve([[2*Sxx,2*Sxy,Sx],[2*Sxy,2*Syy,Sy],[2*Sx,2*Sy,n]],[Sxz,Syz,Sz]);if(!r)return null;
+  const rr=r[2]+r[0]*r[0]+r[1]*r[1];return rr>0?{x:r[0],y:r[1],r:Math.sqrt(rr)}:null;
+}
+function findBall(rExp){
+  const {hY,hw,hh}=S.proc,rmin=Math.max(4,rExp*.6),rmax=Math.min(70,rExp*1.6);
+  const aw=hw>>1,ah=hh>>1,acc=new Uint16Array(aw*ah);
+  // every strong edge pixel votes for centres along its gradient direction, at each plausible radius
+  for(let y=1;y<hh-1;y++)for(let x=1;x<hw-1;x++){
+    const i=y*hw+x,gx=hY[i+1]-hY[i-1],gy=hY[i+hw]-hY[i-hw],m=Math.hypot(gx,gy);if(m<16)continue;
+    const ux=gx/m,uy=gy/m;
+    for(let r=rmin;r<=rmax;r+=1.5)for(let sg=-1;sg<=1;sg+=2){
+      const cx=(x+sg*ux*r)>>1,cy=(y+sg*uy*r)>>1;if(cx>=0&&cy>=0&&cx<aw&&cy<ah)acc[cy*aw+cx]++;}
+  }
+  const smp=(x,y)=>{x=clamp(x,0,hw-1.001);y=clamp(y,0,hh-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*hw+xi;
+    return (hY[j]*(1-fx)+hY[j+1]*fx)*(1-fy)+(hY[j+hw]*(1-fx)+hY[j+hw+1]*fx)*fy;};
+  // measure the rim: along 48 spokes note every edge crossing, find the radius most spokes agree on
+  // (a mirror ball is full of reflected edges inside it), then keep each spoke's crossing nearest that radius
+  const rim=(c,lo,hi,tol)=>{
+    const sp=[],hist=new Uint8Array(Math.ceil(hi)+3);
+    for(let a=0;a<48;a++){const ca=Math.cos(a*Math.PI/24),sa=Math.sin(a*Math.PI/24),pk=[];let g0=0,g1=0;
+      for(let r=lo;r<=hi+.5;r+=.5){const g=Math.abs(smp(c.x+ca*(r+1),c.y+sa*(r+1))-smp(c.x+ca*(r-1),c.y+sa*(r-1)));
+        if(g1>=9&&g1>=g0&&g1>g)pk.push(r-.5);g0=g1;g1=g;}
+      const seen=new Set();for(const r of pk)for(let d=-1;d<=1;d++){const b=Math.round(r)+d;if(b>=0&&b<hist.length&&!seen.has(b)){seen.add(b);hist[b]++;}}
+      sp.push({ca,sa,pk});}
+    // reflections often form rings inside a mirror ball, so of the well-supported radii take the outermost
+    let hm=0;for(let i=0;i<hist.length;i++)if(hist[i]>hm)hm=hist[i];
+    let rb=0;for(let i=hist.length-1;i>=0;i--)if(hist[i]>=hm*.8){rb=i;break;}
+    const pts=[];
+    for(const q of sp){let br=-1;for(const r of q.pk)if(Math.abs(r-rb)<=Math.max(1.5,rb*tol)&&(br<0||Math.abs(r-rb)<Math.abs(br-rb)))br=r;
+      if(br>0)pts.push({x:c.x+q.ca*br,y:c.y+q.sa*br});}
+    return pts;};
+  const found=[];
+  for(let n=0;n<8;n++){
+    let mi=0,mv=0;for(let i=0;i<acc.length;i++)if(acc[i]>mv){mv=acc[i];mi=i;}
+    if(mv<12)break;
+    const ax=mi%aw,ay=(mi-ax)/aw,z=Math.max(2,Math.round(rmin/2));
+    for(let dy=-z;dy<=z;dy++)for(let dx=-z;dx<=z;dx++){const x=ax+dx,y=ay+dy;if(x>=0&&y>=0&&x<aw&&y<ah)acc[y*aw+x]=0;}
+    let pts=rim({x:ax*2+1,y:ay*2+1},rmin*.7,rmax*1.15,.15);if(pts.length<26)continue;
+    const c=circleFit(pts);if(!c||c.r<rmin||c.r>rmax)continue;
+    pts=rim(c,c.r*.75,c.r*1.25,.06).filter(p=>Math.abs(Math.hypot(p.x-c.x,p.y-c.y)-c.r)<Math.max(1,c.r*.06));
+    if(pts.length<39)continue; // at least 80% of the rim must be visible
+    const c2=circleFit(pts);if(!c2||Math.abs(c2.r-c.r)>c.r*.1)continue;
+    found.push({x:c2.x,y:c2.y,r:c2.r,n:pts.length});
+  }
+  return found.sort((a,b)=>b.n-a.n);
+}
+const downVec=()=>{if(S.live&&S.grav)return S.grav;const a=P.pitch*Math.PI/180;return [0,Math.cos(a),Math.sin(a)];};
+// where a ball seen at image position b (source pixels) is in space, and where it lands if dropped straight down
+function ballDrop(b,pose,g){
+  const R=P.ball/609.6,z=pose.f*R/b.r,B=[(b.x-pose.cx)/pose.f*z,(b.y-pose.cy)/pose.f*z,z];
+  const den=dot(g,pose.n),sd=den<-1e-3?dot(sub(pose.c,B),pose.n)/den:-1;if(sd<=0)return null;
+  const H=add(B,mul(g,sd)),u=dot(sub(H,pose.c),pose.r1),w=dot(sub(H,pose.c),pose.r2);
+  return {B,H,drop:Math.max(.02,sd-R),on:Math.abs(u)<=pose.hs*1.05&&Math.abs(w)<=pose.hs*1.05};
+}
+// look for the ball; only a round thing of the right size that is actually above the cement counts
+function scanBall(){
+  const ps=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,null);
+  if(!ps){S.ball=null;return;}
+  const k2=S.proc.k*2,g=downVec();let nb=null;
+  for(const b of findBall(ps.f*(P.ball/609.6)/ps.c[2]*k2)){
+    const c={x:b.x/k2,y:b.y/k2,r:b.r/k2},d=ballDrop(c,ps,g);if(d&&d.on){nb=c;break;}}
+  if(!nb){if(S.ball&&++S.ballLost>(S.live?5:0))S.ball=null;return;}
+  S.ballLost=0;
+  if(S.live&&S.ball&&Math.hypot(nb.x-S.ball.x,nb.y-S.ball.y)<S.ball.r*2)
+    S.ball={x:S.ball.x+(nb.x-S.ball.x)*.5,y:S.ball.y+(nb.y-S.ball.y)*.5,r:S.ball.r+(nb.r-S.ball.r)*.3};
+  else S.ball=nb;
+}
+
 /* ---------- pose of a square from its 4 image corners ---------- */
 function solve(A,b){
   const n=b.length;
@@ -488,6 +562,7 @@ function solvePose(q,f,cx,cy,hs,g,prev){
 function update(){
   $("oDrop").textContent=P.drop.toFixed(2).replace(/0$/,"")+" ft";
   $("oReb").textContent=P.reb+"%";
+  $("oBall").textContent=P.ball+" mm";
   $("oPitch").textContent=P.pitch+"°";
   $("oSize").textContent=P.size+" in";
   $("oTol").textContent=P.tol;
@@ -513,16 +588,22 @@ function update(){
     if(S.nS){pose.n=S.nS=norm(add(mul(S.nS,.88),mul(pose.n,.12)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
     else{S.nS=pose.n;S.cS=pose.c;}
   }
-  const {c,n,r1,r2,hs}=pose,v0=speed(),vup=-v0*dot(n,g);
+  const {c,n,r1,r2,hs}=pose;
+  // if the ball is in view, drop it straight down from where it is: that gives the landing spot and the drop height
+  let start=c,drop=P.drop,from=null;
+  if(S.ball){from=ballDrop(S.ball,pose,g);if(from&&from.on){start=from.H;drop=from.drop;}}
+  $("oDrop").textContent=from&&from.on?drop.toFixed(2)+" ft, from the ball":P.drop.toFixed(2).replace(/0$/,"")+" ft";
+  const v0=Math.sqrt(2*G*drop*P.reb/100),vup=-v0*dot(n,g);
   let hf=0;
   for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
     const d=add(mul(r1,hs*s[0]),mul(r2,hs*s[1]));hf=Math.min(hf,-dot(d,g));
   }
-  const T=Math.min(4,(vup+Math.sqrt(vup*vup-2*G*hf))/G);
-  const at=t=>add(add(c,mul(n,v0*t)),mul(g,.5*G*t*t));
-  const end=sub(at(T),c),hz=sub(end,mul(g,dot(end,g)));
+  const h0=-dot(sub(start,c),g);
+  const T=Math.min(4,(vup+Math.sqrt(vup*vup+2*G*Math.max(0,h0-hf)))/G);
+  const at=t=>add(add(start,mul(n,v0*t)),mul(g,.5*G*t*t));
+  const end=sub(at(T),start),hz=sub(end,mul(g,dot(end,g)));
   const apex=vup>0?vup*vup/(2*G):0;
-  S.tr={pose,T,at,ta:vup>0?Math.min(T,vup/G):0,apex};
+  S.tr={pose,T,at,from,start,ta:vup>0?Math.min(T,vup/G):0,apex};
   $("rTilt").textContent=Math.round(Math.acos(clamp(-dot(n,g),-1,1))*180/Math.PI)+"°";
   $("rApex").textContent=apex.toFixed(1)+" ft";
   $("rRange").textContent=Math.hypot(...hz).toFixed(1)+" ft";
@@ -546,7 +627,7 @@ function frame(now){
   if(S.live){
     const v=S.video;if(v.readyState<2||!v.videoWidth)return;
     S.sw=v.videoWidth;S.sh=v.videoHeight;
-    prepare();track();update();
+    prepare();track();if(S.fid%2===0)scanBall();update();
   }
   if(!S.src||!S.W)return;
   ctx.clearRect(0,0,S.W,S.H);
@@ -563,7 +644,14 @@ function frame(now){
   const {f,cx,cy,c,n}=tr.pose;
   const pr=p=>p[2]>.05?[(f*p[0]/p[2]+cx)*v.s+v.ox,(f*p[1]/p[2]+cy)*v.s+v.oy]:null;
   // perpendicular
-  const a=pr(c),b=pr(add(c,mul(n,1.2)));
+  if(S.ball){
+    const bx=S.ball.x*v.s+v.ox,by=S.ball.y*v.s+v.oy;
+    ctx.lineWidth=2.5;ctx.strokeStyle="#ffb020";ctx.beginPath();ctx.arc(bx,by,S.ball.r*v.s+3,0,6.283);ctx.stroke();
+    if(tr.from){const h=pr(tr.from.H);
+      if(h){ctx.setLineDash([3,5]);ctx.lineWidth=2;ctx.strokeStyle="#ffb020";ctx.beginPath();ctx.moveTo(bx,by);ctx.lineTo(h[0],h[1]);ctx.stroke();ctx.setLineDash([]);}
+    }
+  }
+  const a=pr(tr.start),b=pr(add(tr.start,mul(n,1.2)));
   if(a&&b){ctx.setLineDash([5,5]);ctx.lineWidth=1.5;ctx.strokeStyle="rgba(236,231,220,.9)";
     ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.setLineDash([]);}
   // arc
@@ -632,7 +720,7 @@ async function startLive(){
 function setSource(canvas,example){
   stopLive();S.msg="";
   S.src=canvas;S.sw=canvas.width;S.sh=canvas.height;S.example=example;S.seed=null;
-  prepare();{const r=detect(null);S.quad=r&&r.q;}update();
+  prepare();{const r=detect(null);S.quad=r&&r.q;}scanBall();update();
 }
 function exampleScene(){
   const w=900,h=1200,c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d");
@@ -668,7 +756,7 @@ function loadFile(file){
 /* ---------- wiring ---------- */
 $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
-for(const key of ["drop","reb","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
+for(const key of ["drop","reb","ball","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
   P[key]=parseFloat(e.target.value);
   if(key==="tol"&&!S.live){const r=detect(S.seed);S.quad=r&&r.q;}
   update();
@@ -677,7 +765,7 @@ cv.addEventListener("click",e=>{
   if(!S.src)return;
   const r=cv.getBoundingClientRect(),v=view(),x=(e.clientX-r.left-v.ox)/v.s,y=(e.clientY-r.top-v.oy)/v.s;
   if(x<0||y<0||x>S.sw||y>S.sh)return;
-  S.seed={x,y};S.seedAge=0;if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;update();}
+  S.seed={x,y};S.seedAge=0;if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;scanBall();update();}
 });
 new ResizeObserver(resize).observe(cv);
 resize();
