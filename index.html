@@ -114,7 +114,7 @@ const P={drop:3,reb:70,ball:35,size:7,thick:.9,cutEdge:false,tol:26,pitch:50,fov
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
 try{P.cutEdge=localStorage.getItem("slabCutEdge")==="1";const t=parseFloat(localStorage.getItem("slabThick"));if(t>=.25&&t<=2)P.thick=t;}catch(_){}
-const BUILD="b17";
+const BUILD="b18";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -148,8 +148,10 @@ function prepare(){
   if(c.width!==pw||c.height!==ph){c.width=pw;c.height=ph;mid.width=pw*2;mid.height=ph*2;}
   const x=c.getContext("2d",{willReadFrequently:true});
   x.imageSmoothingQuality="high";
-  // two-step downscale to reduce aliasing
-  const mx=mid.getContext("2d",{willReadFrequently:true});mx.imageSmoothingQuality="high";mx.drawImage(S.src,0,0,pw*2,ph*2);
+  // two-step downscale to reduce aliasing. While tracking, the whole-frame images are only needed on the frames that
+  // also run the colour search, so they are drawn then (in ensureProc), not on every frame.
+  const mx=mid.getContext("2d",{willReadFrequently:true});mx.imageSmoothingQuality="high";
+  const drawWhole=()=>{mx.drawImage(S.src,0,0,pw*2,ph*2);x.drawImage(mid,0,0,pw,ph);};
   // Fine-detail image for edges and the ball. Searching: the whole frame. Locked: a zoomed window around the slab
   // and the space above it, so a slab several feet away still gets plenty of pixels.
   let hi;
@@ -166,18 +168,20 @@ function prepare(){
     for(let i=0,n=Yh.length;i<n;i++)Yh[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
     hi={Y:Yh,w,h,ox,oy,s:w/rw};
   }else{
+    mx.drawImage(S.src,0,0,pw*2,ph*2);
     const hd=mx.getImageData(0,0,pw*2,ph*2).data,Yh=new Float32Array(pw*ph*4);
     for(let i=0,n=Yh.length;i<n;i++)Yh[i]=.299*hd[i*4]+.587*hd[i*4+1]+.114*hd[i*4+2];
     hi={Y:Yh,w:pw*2,h:ph*2,ox:0,oy:0,s:k*2};
   }
-  x.drawImage(mid,0,0,pw,ph);
-  S.proc={pw,ph,k,hi,stale:true};
+  if(hi.ox===0&&hi.oy===0&&hi.w===pw*2){x.drawImage(mid,0,0,pw,ph);S.proc={pw,ph,k,hi,stale:true};}
+  else S.proc={pw,ph,k,hi,stale:true,drawWhole};
 }
 
 // The whole-frame colour and texture maps are costly, so they are only built on frames that need them
 // (searching, cross-checks, recovery); plain edge tracking skips them.
 function ensureProc(){
   if(!S.proc.stale)return;
+  if(S.proc.drawWhole){S.proc.drawWhole();S.proc.drawWhole=null;}
   const {pw,ph}=S.proc,x=S.pc.getContext("2d",{willReadFrequently:true});
   const d=x.getImageData(0,0,pw,ph).data,N=pw*ph;
   let Y=new Float32Array(N),Cb=new Float32Array(N),Cr=new Float32Array(N);
@@ -632,11 +636,13 @@ function circleFit(pts){
   const r=solve([[2*Sxx,2*Sxy,Sx],[2*Sxy,2*Syy,Sy],[2*Sx,2*Sy,n]],[Sxz,Syz,Sz]);if(!r)return null;
   const rr=r[2]+r[0]*r[0]+r[1]*r[1];return rr>0?{x:r[0],y:r[1],r:Math.sqrt(rr)}:null;
 }
-function findBall(rExp){
+function findBall(rExp,roi){
   const H=S.proc.hi,hY=H.Y,hw=H.w,hh=H.h,rmin=Math.max(4,rExp*.6),rmax=Math.min(70,rExp*1.6);
   const aw=hw>>1,ah=hh>>1,acc=new Uint16Array(aw*ah);
   // every strong edge pixel votes for centres along its gradient direction, at each plausible radius
-  for(let y=1;y<hh-1;y++)for(let x=1;x<hw-1;x++){
+  // (within roi, if given: a box around a ball already being followed)
+  const X0=roi?Math.max(1,roi[0]|0):1,Y0=roi?Math.max(1,roi[1]|0):1,X1=roi?Math.min(hw-1,Math.ceil(roi[2])):hw-1,Y1=roi?Math.min(hh-1,Math.ceil(roi[3])):hh-1;
+  for(let y=Y0;y<Y1;y++)for(let x=X0;x<X1;x++){
     const i=y*hw+x,gx=hY[i+1]-hY[i-1],gy=hY[i+hw]-hY[i-hw],m=Math.hypot(gx,gy);if(m<16)continue;
     const ux=gx/m,uy=gy/m;
     for(let r=rmin;r<=rmax;r+=1.5)for(let sg=-1;sg<=1;sg+=2){
@@ -713,8 +719,11 @@ function scanBall(){
   const ps=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,null);
   if(!ps){S.ball=null;return;}
   const H=S.proc.hi,k2=H.s,g=downVec();let nb=null;
+  // Following a ball: look only around it (this is the costliest step of a frame).
+  let roi=null;
+  if(S.ball){const r=S.ball.r*4;roi=[(S.ball.x-r-H.ox)*k2,(S.ball.y-r-H.oy)*k2,(S.ball.x+r-H.ox)*k2,(S.ball.y+r-H.oy)*k2];}
   let part=null;
-  for(const b of findBall(ps.f*(P.ball/609.6)/ps.c[2]*k2)){
+  for(const b of findBall(ps.f*(P.ball/609.6)/ps.c[2]*k2,roi)){
     const c={x:b.x/k2+H.ox,y:b.y/k2+H.oy,r:b.r/k2},d=ballDrop(c,ps,g);if(!d||!d.on)continue;
     if(b.partial){ // only part of the outline seen: show it only once the same ball turns up on two scans in a row
       if(!part)part=c;

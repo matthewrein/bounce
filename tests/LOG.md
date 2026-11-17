@@ -201,3 +201,17 @@ False locks in the pan clips come from stale outlines. Two fixes were tried:
 - While the slab is lost for a moment (up to 12 frames), the held outline used to stay put. With the gyro's sign
   known, it is now turned with the phone. Result (2 phases vs b16): no clip worse; fp_lid_sticker_behind_d5 lock
   81 -> 96%, gyro_bias_d4 tilt 3.04 -> 2.81 deg. Kept.
+
+## b18 - less work per frame (kept)
+
+Profiled on this machine with nothing else running (tracking, 4 ft clip): 15.1 ms per frame, of which the ball search
+5.9 ms, frame preparation 5.8 ms, edge tracking and pose about 3 ms.
+- Frame preparation drew a downscaled copy of the whole picture on every frame, but while tracking it is only read on
+  the frames that also run the colour search (every 15th, and recoveries). It is now drawn only then. Same pixels.
+- While a ball is being followed, the ball search only covers a box four radii around it.
+- Tried and reverted: searching the whole picture for a ball on every fourth frame instead of every second when none
+  is shown. Faster, but a ball seen only by its upper outline needs two scans in a row, and the 5 ft and dim clips
+  lost their few detections (11% / 2% -> 0%). The comparison didn't flag it (those clips' phase-to-phase spread is
+  as large as the change), which the per-clip check below caught.
+Result: tracking 15.1 -> 12.8 ms (4 ft clip without a ball) and 11.8 ms (with a ball), measured alone; no clip worse;
+ball detection per clip identical to b17 (ball_held_d4 46/60%, d5_high 11/2%, dim 0/1% in the two phases).
