@@ -16,7 +16,8 @@ Columns: lock = % of slab-in-view frames with a correct outline; never = clips t
 events; cErr = mean corner error px; tilt = median angle between app and true slab normal (deg, median over
 clips of per-clip medians); worst = worst clip's median; >1.5 = clips whose median is 1.5 deg or more;
 jit / tJit = median over clips of normal / tilt-reading wobble while held still (deg); ball = % of held-ball
-frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking / searching.
+frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking / searching (* = measured alone on an
+idle machine; other rows ran three clips at once and are only comparable with each other).
 
 | build | lock | never | FL | cErr | tilt | worst | >1.5 | jit | tJit | ball | bFP | msT | msS | photos cErr % |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -26,6 +27,8 @@ frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking
 | b14 gyro-steadied smoothing (kept; 49 clips) | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | **0.276** | **0.178** | 2.3 | 0 | 22.7 | 72 | 1.3 / 0.5 / 0.2 |
 | b15 default (cut-edge correction off) = b14 | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | 0.276 | 0.178 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 | b16 ball: upper outline accepted (kept; 61 clips) | 84.3 | 4 | 6 | 4.78 | 5.2 | 13.2 | - | 0.300 | 0.172 | **20.7** | **0** | - | - | 1.3 / 0.5 / 0.2 |
+| b18 (rotation rates shown with the engines' naming) | 84.7 | 4 | 6 | 4.78 | 5.22 | 13.3 | - | 0.359 | 0.218 | 21.9 | 0 | 12.8* | - | 1.3 / 0.5 / 0.2 |
+| **b19 gyro guard (kept; 64 clips, engines' naming)** | **85.1** | 4 | **5.5** | 4.74 | 5.17 | 13.4 | - | **0.215** | **0.152** | **22.7** | **0** | 11.8* | - | 1.3 / 0.5 / 0.2 |
 | b15 with "Correct for the slab's cut edge" on | 82.7 | 4 | 7 | **2.63** | **1.30** | 13.2 | 15/42 | 0.345 | 0.241 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
@@ -215,3 +218,31 @@ Profiled on this machine with nothing else running (tracking, 4 ft clip): 15.1 m
   as large as the change), which the per-clip check below caught.
 Result: tracking 15.1 -> 12.8 ms (4 ft clip without a ball) and 11.8 ms (with a ball), measured alone; no clip worse;
 ball detection per clip identical to b17 (ball_held_d4 46/60%, d5_high 11/2%, dim 0/1% in the two phases).
+
+## Review of b14 (second reviewer agent) and b19 - the gyro guard (kept)
+
+The reviewer checked the WebKit (`DeviceMotionClientIOS.mm`), Chromium (`device_motion_event_pump.cc`) and Gecko
+sources: all three report `rotationRate.alpha/beta/gamma` as the rates about the phone's x/y/z axes (as the current
+W3C draft does). b14 and the test bed both used the older 2016 naming (alpha about z), so they only agreed with each
+other: on a real phone b14's calibration would never have settled and the gyro step would have done nothing (harmless,
+but useless), and under Chrome's naming one clip locked onto wrong axes. Also verified: WebKit reports
+`interval` in seconds (b14 read it as milliseconds, making the turn 17x too small), units are deg/s everywhere, and
+the gyro mapping ignored the screen's rotation. The reviewer added 12 clips at the end of `clips.js` (real namings,
+iOS interval, flipped/single-axis-flipped/biased/rad-s gyro, gyro leading the camera, body sway, walking) and wrote
+the guard adopted here as b19: both namings are accumulated; one is used only when over two-tick windows its predicted
+motion correlates with the measured motion above 0.5, beats the other naming by 0.25, with a gain of 0.6-1.5 (sign
+from the gain); an `interval` below 1 is read as seconds; the gyro axes follow the screen angle like gravity's; the
+outline is turned only while the fit stays above 0.3. Diagnostics: `gyro: {sign, naming, gain, fit}`.
+
+The runner now shows the page the engines' naming by default (`--gyroNames engines`; clips are remapped at run time,
+no re-rendering), since that is what phones send; `--gyroNames 2016` reproduces the earlier runs.
+
+Results, 2 phases, 64 clips:
+- With the engines' naming (realistic) vs b18: median wobble 0.359 -> **0.215 deg** (normal) and 0.218 -> **0.152 deg**
+  (tilt reading), 89 metrics better. One flagged: distract_mat_circles tilt 1.21 -> 1.59 deg. That clip's tilt swings
+  between 1.13 and 1.51 deg for b18 alone across phases and namings (1.16-1.66 for b19), so I judged this to be within
+  its noise and kept b19 - a judgement call, recorded here so it can be challenged.
+- With the old naming vs b18: 38 metrics better; flagged distract_tin_coin tilt 4.0 -> 5.9 deg (that clip is bimodal,
+  3.5-5.2 deg for b18 alone; under the engines' naming b19 is better, 2.0-3.0 deg) and rect_slab_d4 wobble
+  0.217 -> 0.264 deg (0.354 -> 0.136 deg under the engines' naming).
+- Photos unchanged. False ball detections 0. Tracking time 11.8 ms on the 4 ft ball clip alone.

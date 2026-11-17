@@ -11,6 +11,20 @@ node run.js --label base          # score index.html on every clip, save out/res
 node compare.js base next         # clip-by-clip regressions and improvements between two runs
 ```
 
+The tracker is chaotic (a one-tick change in when the camera starts can flip a later decision), so builds are
+judged on two camera phases, averaged, with each clip's phase-to-phase spread added to its allowance:
+
+```
+node run.js --label b19 && node run.js --label b19_p1 --phase 1
+node compare.js b18+b18_p1 b19+b19_p1
+```
+
+Other runner options: `--filter name,tag,prefix*`, `--workers N`, `--app path/to/copy.html` (score another build),
+`--store slabCutEdge=1` (localStorage entries set before the app loads, e.g. to test an optional setting),
+`--gyroNames engines|2016` (rotation-rate naming shown to the page; default `engines`, i.e. what WebKit, Chromium
+and Gecko report: alpha/beta/gamma about the phone's x/y/z; the clips were rendered with the older 2016 naming and
+are remapped at run time), `--mode live`, `--stills`, `--private`.
+
 ## What gets rendered (`scene.js`, `clips.js`)
 
 A three.js scene in headless Chrome (SwiftShader WebGL): a 7 in cement slab, 0.9 in thick, top gently
@@ -32,9 +46,11 @@ Ground truth per frame (`gt.json`): slab corner pixels (the virtual sharp top co
 them defines the true normal), slab normal and gravity in camera coordinates, true tilt, distance, ball
 centre and radius in pixels, whether it is held and over the slab, and its drop height (straight down
 from the ball to the plane through the corners, minus its radius). Motion-sensor samples at 60 Hz
-(W3C DeviceMotionEvent conventions, device axes = camera axes): accelerationIncludingGravity (including
-the hand's own acceleration and a small fixed calibration error), acceleration, rotationRate; one clip
-uses the opposite sign convention and omits `acceleration`.
+(device axes = camera axes): accelerationIncludingGravity (including the hand's own acceleration and a small
+fixed calibration error), acceleration, rotationRate. Clips at the end of `clips.js` model platform quirks found
+by reviewing the WebKit and Chromium sources: opposite sign convention, no `acceleration`, `acceleration` lagging
+or synthesised (no gyro), readings rounded to 0.1, interval in seconds, flipped / single-axis-flipped / biased /
+rad/s gyro, gyro leading the camera, body sway and walking (`sensorQuirks`, `gyroQuirks` in `scene.js`).
 
 Textures are procedural by default (grey speckled cement, a lighter porous cut edge, scratched black
 base, floors). `node render.js --private` swaps in crops of the private reference photos if they exist
@@ -72,4 +88,6 @@ Per clip and overall:
 - **ball%**: share of frames with the ball held over the slab (and the slab locked) where the app's ball
   is on the true ball; **bFP**: false ball detections (events); **drop**: median drop-height error (in).
 - **msS / msT**: app processing time per frame while searching / tracking (measured inside the app, on
-  this machine's CPU - compare runs with each other, not with the phone).
+  this machine's CPU - compare runs with each other, not with the phone, and only between runs made while nothing
+  else was running).
+- **gravErr**: angle between the app's "down" (`sensor.gravityClean`) and the true one.

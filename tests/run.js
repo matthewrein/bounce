@@ -16,7 +16,14 @@ const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf("--
 const LABEL = opt("label", "run"), MODE = opt("mode", "step"), WORKERS = +opt("workers", 3), APP = opt("app", "index.html");
 // --store key=value[,key=value]: localStorage entries set before the app loads (e.g. slabCutEdge=1 to test an option)
 const STORE = Object.fromEntries(String(opt("store", "") || "").split(",").filter(Boolean).map((kv) => kv.split("=")));
-const PHASE = +opt("phase", 0); // start the camera this many 60 Hz ticks later (a small, realistic perturbation)
+const PHASE = +opt("phase", 0);
+// rotation-rate naming presented to the page: "engines" (what WebKit/Chromium/Gecko report: alpha/beta/gamma about the
+// device's x/y/z) or "2016" (the older spec: alpha about z, beta about x, gamma about y; how the clips were rendered)
+const GYRO_NAMES = opt("gyroNames", "engines");
+function presentSensors(gt) {
+  if (GYRO_NAMES !== "engines" || (gt.spec.sensor && gt.spec.sensor.gyroOrder === "xyz")) return gt.sensors;
+  return gt.sensors.map((s) => (s.rot ? { ...s, rot: { alpha: s.rot.beta, beta: s.rot.gamma, gamma: s.rot.alpha } } : s));
+} // start the camera this many 60 Hz ticks later (a small, realistic perturbation)
 const FILTER = opt("filter", null), PRIVATE = !!opt("private", false), STILLS = !!opt("stills", false), QUIET = !!opt("quiet", false);
 const HARNESS = fs.readFileSync(path.join(__dirname, "harness.js"), "utf8");
 const FOV = 72.5; // what the real phone's lens setting self-calibrated to
@@ -37,6 +44,7 @@ async function launch(mjpeg) {
 const PICK = (d) => ({ grav: d.sensor.gravityClean || d.sensor.gravity, locked: d.locked, quad: d.quad, normal: d.normal, tilt: d.tilt, ball: d.ball, ms: d.ms, misfit: d.misfit, aspect: d.aspect, fov: d.set.fov, live: d.live, src: d.src, counts: d.counts, build: d.build });
 
 async function runStep(srv, clip, gt) {
+  gt = { ...gt, sensors: presentSensors(gt) };
   const browser = await launch(path.join(clip.dir, "clip.mjpeg"));
   try {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
@@ -63,6 +71,7 @@ async function runStep(srv, clip, gt) {
 }
 
 async function runLive(srv, clip, gt) {
+  gt = { ...gt, sensors: presentSensors(gt) };
   // real time: the fake camera plays the file at 30 fps; each processed frame is identified by matching a tiny thumbnail
   const browser = await launch(path.join(clip.dir, "clip.mjpeg"));
   try {
