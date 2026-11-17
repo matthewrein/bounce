@@ -1,0 +1,5 @@
+# Private photos, crops, textures and renders made from them. Never commit.
+tests/private/
+# Generated clips and run outputs
+tests/out/
+node_modules/
