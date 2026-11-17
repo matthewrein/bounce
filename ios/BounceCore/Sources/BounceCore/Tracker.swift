@@ -29,8 +29,9 @@ public struct TrackerSettings: Equatable {
     public var ball: BallSpec = BallSpec()
     public var defaultDropHeight: Double = Units.feet(3)
     public var launchRule: Bounce.LaunchRule = .cornerPlane
-    /// seconds between re-detections while locked
+    /// seconds between re-detections while locked, and between searches while not (0: every frame)
     public var recheckInterval: Double = 0.3
+    public var searchInterval: Double = 0
     /// consistent detections needed before locking, and how consistent (centre distance, normal angle)
     public var confirmCount: Int = 3
     public var matchDistance: Double = 0.025
@@ -133,6 +134,16 @@ public final class SlabTracker {
 
     func bump(_ k: String) { counts[k, default: 0] += 1 }
 
+    /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image).
+    public func detectionDue(at t: Double) -> Bool {
+        t - lastCheck >= (state == .locked ? settings.recheckInterval : settings.searchInterval)
+    }
+
+    /// Whether the next frame at time t will run the ball finder (so the caller knows to prepare its image).
+    public func ballDue(at t: Double) -> Bool {
+        ballLocator != nil && state == .locked && t - lastBall >= settings.ballInterval
+    }
+
     /// Forget the slab and search again.
     public func reset() {
         state = .searching; history = []; slab = nil; imageSlab = nil; candidates = []; movers = []; depth = nil
@@ -173,11 +184,7 @@ public final class SlabTracker {
         if f.tap != nil { reset(); events.append("tap") }
 
         // when to run the detector
-        let due: Bool
-        switch state {
-        case .searching, .confirming: due = true
-        case .locked: due = f.timestamp - lastCheck >= settings.recheckInterval
-        }
+        let due = detectionDue(at: f.timestamp)
         if due && f.trackingNormal {
             lastCheck = f.timestamp
             let near = state == .locked ? imageSlab.flatMap { s in project(s, f.view) } : nil

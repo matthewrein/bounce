@@ -1,0 +1,9 @@
+// Build settings for the app target. To sign with your own Apple ID, create Config/Local.xcconfig (not committed) with
+//   DEVELOPMENT_TEAM = ABCDE12345
+// and, if Xcode says the bundle identifier below is not available, also
+//   PRODUCT_BUNDLE_IDENTIFIER = io.github.yourname.SlabBounce
+// Settings in Local.xcconfig win because it is included last, and they survive `xcodegen generate` (choosing the team
+// in Xcode's Signing pane also works, but is lost each time the project is generated again).
+PRODUCT_BUNDLE_IDENTIFIER = io.github.matthewrein.SlabBounce
+
+#include? "Local.xcconfig"

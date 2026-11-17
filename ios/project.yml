@@ -1,0 +1,57 @@
+# XcodeGen spec for the Slab Bounce iOS app. Generate the Xcode project with:  xcodegen generate   (see README.md)
+# The generated SlabBounce.xcodeproj is not committed.
+name: SlabBounce
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+packages:
+  BounceCore:
+    path: BounceCore
+targets:
+  SlabBounce:
+    type: application
+    platform: iOS
+    sources:
+      - path: BounceApp
+    dependencies:
+      - package: BounceCore
+      - sdk: ARKit.framework
+      - sdk: CoreMotion.framework
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: Slab Bounce
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSCameraUsageDescription: Slab Bounce uses the camera to find the slab and the ball and to work out the bounce.
+        NSMotionUsageDescription: Slab Bounce saves the phone's motion with a session recording.
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: NO
+schemes:
+  SlabBounce:
+    build:
+      targets:
+        SlabBounce: all
+    # the detectors are plain Swift loops: run optimised even when launched from Xcode
+    run:
+      config: Release
+    archive:
+      config: Release
