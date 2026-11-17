@@ -352,3 +352,42 @@ That makes the cradle radius about 17.2 in (3 in / 10 deg). Changes:
 - ground truth adds the sphere centre, the base centre and the base outline in pixels (floor and wall-top corners).
 - new clips: lined up (level), cradle radius 14 and 21 in, base turned 35 deg against the slab.
 - `frames.js` dumps still frames, the app's per-frame estimates and (separately) the truth, for offline prototypes.
+
+## v3 baseline (b20b, all 86 clips, two phases)
+
+Median tilt error 5.08 / 5.05 deg (worst clip 7.56), lock rate 86.3 / 86.7%, never locked: `ball_drop_d4`,
+`ball_held_d3_low`, `d3_t5_h135_concrete`; false locks 13 / 11 events; corner error 4.1 px; wobble 0.215 / 0.236 deg
+(normal), 0.138 deg (tilt reading); ball found on 55 / 57% of ball frames, 1 / 0 false ball events
+(`distract_mat_circles`); drop error 0.64 in. (Timings from these runs are not comparable: other work shared the CPU.)
+
+## Paused here (switching to a native iOS app)
+
+**Real-phone diagnostics (b19, iPhone, Brave, 720x1280, slab about 2 ft away on a desk, no ball)**, as read by the
+owner: 39% of frames fell out of edge tracking into the colour search (regionFallback 211 vs tracked 324; b10 had 13%),
+msAvg 37 ms; misfit often 1.2-1.8%, over the 1% gate (rejMisfit 539); aspect swinging 0.77-1.28 between samples, i.e.
+the near edge flipping between the top-face edge and the bottom of the 1 in cut face, which the rendered clips do not
+reproduce; the gyro step applied on only 6 frames (fit 0.45, gain 0.67); steadier samples at aspect 0.92-0.97, so the
+slab may be slightly rectangular. Real diagnostics outrank render scores. One reason the clips miss the flipping: at
+2 ft the cut face is 30-40 px tall in a 720x1280 frame, against 7-15 px at the test bed's 3-5 ft, and no clip is at
+desk distance.
+
+**In progress when paused**: using the base and its cradle for the tilt (generator v3). Four prototype agents were
+started on 212 dev frames (30 clips); the run was stopped before held-out verification. Partial, unverified: the
+"silhouette" prototype (rays from the slab's centre to where the dark base meets the floor, a base footprint fitted to
+those points on the level floor plane, the base's centre line, then the normal from the slab's top centre toward the
+cradle's sphere centre, R about 17.2 in) reached a 0.82 deg median on the dev frames against the app's 5.0 deg; an oracle
+given the true slab centre reached 0.33 deg. Prototype code is in `tests/out/proto/` (ignored, not committed). Nothing in
+`index.html` depends on it. Web tests: all 86 v3 clips render and run (baseline above).
+
+**What I would try next on the web**:
+1. Clips at desk distance (1.5-2.5 ft) with the cut face lit as in the owner's views, and a flip metric (share of
+   frames whose outline aspect jumps by more than 0.1); confirm the clips reproduce the flipping before any fix.
+2. Choose one edge consistently: model the slab as a box with thickness, predict where the cut face's band shows on
+   each side, and take the inner (top) edge of the pair, with hysteresis per side; or fit the pose to whichever edge
+   each side shows under the thickness model.
+3. Fewer fallbacks: score the misfit against the box model, so a side on the cut face's bottom does not fail the 1%
+   gate, and hold the previous outline (turned by the gyro) instead of starting a colour search.
+4. Gyro on iPhone: put pairs of (gyro turn, image turn) per frame in the diagnostics and fit a time offset (camera
+   latency) as well as gain and sign; the outline flipping also adds noise to the measured image turn, which lowers
+   the fit.
+5. Verify the base-silhouette tilt estimate on held-out clips and port it.
