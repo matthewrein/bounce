@@ -20,3 +20,8 @@ ios/Support/Info.plist
 ios/Config/Local.xcconfig
 # agent worktrees
 .claude/
+# Capture kits: the owner's private recordings and the bundles made from them. Never commit.
+ios/private/
+*.bouncekit/
+slab-kit-*
+kits/
