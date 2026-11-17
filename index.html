@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slab Bounce Tracer Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: full-bleed photo stage, instrument strip pinned underneath. Single dark theme by choice (camera tool). */
+:root{
+  color-scheme: dark;
+  --ink:#0f1722;        /* page and panel */
+  --ink-2:#1a2534;      /* raised controls */
+  --line:#2c3a4d;       /* hairlines */
+  --chalk:#ece7dc;      /* primary text */
+  --dust:#93a0b0;       /* secondary text */
+  --tape:#ffb020;       /* trajectory accent */
+  --edge:#55d6e2;       /* slab outline */
+  --good:#6fd08c; --warn:#ff8a5c;
+  --display:"Barlow Condensed","Arial Narrow",sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--ink);color:var(--chalk);font-family:var(--body);font-size:15px;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line)}
+h1{font-family:var(--display);font-weight:600;font-size:20px;letter-spacing:.04em;text-transform:uppercase;margin:0}
+.chip{font-size:13px;font-weight:500;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dust);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.chip::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--dust)}
+.chip.good{color:var(--good)} .chip.good::before{background:var(--good)}
+.chip.warn{color:var(--warn)} .chip.warn::before{background:var(--warn)}
+#stage{flex:1;min-height:0;position:relative;background:#070b11}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:manipulation}
+#hint{position:absolute;left:16px;right:16px;bottom:10px;text-align:center;font-size:13px;color:var(--chalk);text-shadow:0 1px 3px #000;pointer-events:none}
+#panel{border-top:1px solid var(--line);padding:12px 16px 14px;display:flex;flex-direction:column;gap:12px;max-height:60%;overflow-y:auto}
+.reads{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.read{display:flex;flex-direction:column;gap:2px}
+.read span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dust)}
+.read b{font-family:var(--display);font-weight:600;font-size:26px;line-height:1;font-variant-numeric:tabular-nums}
+.read b.hot{color:var(--tape)}
+.row{display:grid;grid-template-columns:1fr auto;gap:4px 12px;align-items:center}
+.row label{font-size:13px;color:var(--dust)}
+.row output{font-family:var(--display);font-size:17px;font-variant-numeric:tabular-nums}
+.row input{grid-column:1/-1}
+input[type=range]{width:100%;accent-color:var(--tape);height:28px;margin:0}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{flex:1;min-width:120px;text-align:center;font:600 15px var(--body);padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:var(--ink-2);color:var(--chalk);cursor:pointer;position:relative}
+.btn.primary{background:var(--tape);border-color:var(--tape);color:#1b1404}
+.btn input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
+.btn:focus-within,summary:focus-visible,input:focus-visible{outline:2px solid var(--edge);outline-offset:2px}
+details{border:1px solid var(--line);border-radius:10px;padding:0 12px}
+summary{padding:10px 0;font-weight:500;cursor:pointer;color:var(--dust)}
+details[open]{padding-bottom:12px}
+details .row{margin-top:8px}
+.note{font-size:12px;color:var(--dust);margin:8px 0 0;line-height:1.4}
+</style>
+</head>
+<body>
+<header>
+  <h1>Slab Bounce Tracer</h1>
+  <div id="status" class="chip">Example scene</div>
+</header>
+<div id="stage">
+  <canvas id="cv" aria-label="Photo with the slab outline and predicted ball path"></canvas>
+  <div id="hint">Tap the cement to re-pick it</div>
+</div>
+<div id="panel">
+  <div class="reads">
+    <div class="read"><span>Slab tilt</span><b id="rTilt">–</b></div>
+    <div class="read"><span>Apex</span><b id="rApex" class="hot">–</b></div>
+    <div class="read"><span>Lands</span><b id="rRange" class="hot">–</b></div>
+    <div class="read"><span>Air time</span><b id="rAir">–</b></div>
+  </div>
+  <div class="row">
+    <label for="speed">Bounce speed</label><output id="oSpeed" for="speed"></output>
+    <input id="speed" type="range" min="4" max="30" step="0.5" value="12">
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="live" type="button">Start camera</button>
+    <label class="btn">Use a photo<input id="pick" type="file" accept="image/*"></label>
+  </div>
+  <details>
+    <summary>Tune</summary>
+    <div class="row" id="pitchRow"><label for="pitch">Phone aimed down from level</label><output id="oPitch" for="pitch"></output>
+      <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
+    <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
+      <input id="size" type="range" min="6" max="24" step="0.5" value="12"></div>
+    <div class="row"><label for="tol">Color match looseness</label><output id="oTol" for="tol"></output>
+      <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
+    <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
+      <input id="fov" type="range" min="45" max="85" step="1" value="65"></div>
+    <p class="note" id="gnote">The dashed line is perpendicular to the slab face. The arc's bend depends on which way is down: with the camera running that comes from the phone's tilt sensor, otherwise set how steeply the phone is aimed at the floor.</p>
+  </details>
+</div>
+
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const cv=$("cv"), ctx=cv.getContext("2d");
+const P={speed:12,size:12,tol:26,pitch:50,fov:65};
+const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:""};
+const G=32.174; // ft/s^2
+
+/* ---------- vector helpers ---------- */
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l]};
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const focal=()=> (Math.max(S.sw,S.sh)/2)/Math.tan(P.fov*Math.PI/360);
+
+/* ---------- image preparation ---------- */
+function blur3(a,w,h){
+  const o=new Float32Array(a.length);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    let s=0,c=0;
+    for(let dy=-1;dy<=1;dy++){const yy=y+dy;if(yy<0||yy>=h)continue;
+      for(let dx=-1;dx<=1;dx++){const xx=x+dx;if(xx<0||xx>=w)continue;s+=a[yy*w+xx];c++;}}
+    o[y*w+x]=s/c;
+  }
+  return o;
+}
+function prepare(){
+  const k=220/Math.max(S.sw,S.sh), pw=Math.round(S.sw*k), ph=Math.round(S.sh*k);
+  if(!S.pc){S.pc=document.createElement("canvas");S.mc=document.createElement("canvas");}
+  const c=S.pc,mid=S.mc;
+  if(c.width!==pw||c.height!==ph){c.width=pw;c.height=ph;mid.width=pw*2;mid.height=ph*2;}
+  const x=c.getContext("2d",{willReadFrequently:true});
+  x.imageSmoothingQuality="high";
+  // two-step downscale to reduce aliasing
+  const mx=mid.getContext("2d");mx.imageSmoothingQuality="high";mx.drawImage(S.src,0,0,pw*2,ph*2);
+  x.drawImage(mid,0,0,pw,ph);
+  const d=x.getImageData(0,0,pw,ph).data,N=pw*ph;
+  let Y=new Float32Array(N),Cb=new Float32Array(N),Cr=new Float32Array(N);
+  for(let i=0;i<N;i++){const r=d[i*4],g=d[i*4+1],b=d[i*4+2];const y=.299*r+.587*g+.114*b;Y[i]=y;Cb[i]=b-y;Cr[i]=r-y;}
+  S.proc={pw,ph,k,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
+}
+
+/* ---------- slab detection: colour region -> hull -> 4 fitted edges ---------- */
+function cr2(o,a,b){return (a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x)}
+function hull(p){
+  p.sort((a,b)=>a.x-b.x||a.y-b.y);
+  const h=[];
+  for(const q of p){while(h.length>=2&&cr2(h[h.length-2],h[h.length-1],q)<=0)h.pop();h.push(q);}
+  const lo=h.length+1;
+  for(let i=p.length-2;i>=0;i--){const q=p[i];while(h.length>=lo&&cr2(h[h.length-2],h[h.length-1],q)<=0)h.pop();h.push(q);}
+  h.pop();return h;
+}
+function detectAt(sx,sy,tol){
+  const {pw,ph,Y,Cb,Cr,k}=S.proc,N=pw*ph;
+  sx=clamp(Math.round(sx),2,pw-3);sy=clamp(Math.round(sy),2,ph-3);
+  let y0=0,b0=0,r0=0;
+  for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const i=(sy+dy)*pw+sx+dx;y0+=Y[i];b0+=Cb[i];r0+=Cr[i];}
+  y0/=25;b0/=25;r0/=25;
+  const t2=tol*tol,m=new Uint8Array(N),e=new Uint8Array(N);
+  for(let i=0;i<N;i++){const a=(Y[i]-y0)*.6,b=Cb[i]-b0,c=Cr[i]-r0;m[i]=(a*a+b*b+c*c)<t2?1:0;}
+  for(let y=1;y<ph-1;y++)for(let x=1;x<pw-1;x++){const i=y*pw+x;e[i]=m[i]&m[i-1]&m[i+1]&m[i-pw]&m[i+pw];}
+  let s=-1;
+  find:for(let r=0;r<=10;r++)for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+    if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;
+    const x=sx+dx,y=sy+dy;if(x<1||y<1||x>=pw-1||y>=ph-1)continue;
+    if(e[y*pw+x]){s=y*pw+x;break find;}
+  }
+  if(s<0)return null;
+  const st=new Int32Array(N);let sp=0;st[sp++]=s;e[s]=2;
+  const rmin=new Int16Array(ph).fill(pw),rmax=new Int16Array(ph).fill(-1);
+  const cmin=new Int16Array(pw).fill(ph),cmax=new Int16Array(pw).fill(-1);
+  let count=0,border=0;
+  while(sp){
+    const i=st[--sp],x=i%pw,y=(i-x)/pw;count++;
+    if(x<=1||y<=1||x>=pw-2||y>=ph-2)border++;
+    if(x<rmin[y])rmin[y]=x;if(x>rmax[y])rmax[y]=x;if(y<cmin[x])cmin[x]=y;if(y>cmax[x])cmax[x]=y;
+    if(e[i-1]===1){e[i-1]=2;st[sp++]=i-1}
+    if(e[i+1]===1){e[i+1]=2;st[sp++]=i+1}
+    if(e[i-pw]===1){e[i-pw]=2;st[sp++]=i-pw}
+    if(e[i+pw]===1){e[i+pw]=2;st[sp++]=i+pw}
+  }
+  if(count<N*.004||count>N*.6||border>8)return null;
+  const pts=[];
+  for(let y=0;y<ph;y++)if(rmax[y]>=0){pts.push({x:rmin[y],y});pts.push({x:rmax[y],y});}
+  for(let x=0;x<pw;x++)if(cmax[x]>=0){pts.push({x,y:cmin[x]});pts.push({x,y:cmax[x]});}
+  let h=hull(pts.slice());
+  if(h.length<4)return null;
+  while(h.length>4){
+    let bi=0,ba=Infinity;const n=h.length;
+    for(let i=0;i<n;i++){const a=Math.abs(cr2(h[(i+n-1)%n],h[i],h[(i+1)%n]));if(a<ba){ba=a;bi=i;}}
+    h.splice(bi,1);
+  }
+  const cen={x:(h[0].x+h[1].x+h[2].x+h[3].x)/4,y:(h[0].y+h[1].y+h[2].y+h[3].y)/4};
+  // fit a line to each side from boundary points, pushed out 1px to undo the erosion
+  const lines=[];let perim=0;
+  for(let i=0;i<4;i++){
+    const A=h[i],B=h[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);perim+=len;
+    if(len<10)return null;
+    let dx=(B.x-A.x)/len,dy=(B.y-A.y)/len,px=(A.x+B.x)/2,py=(A.y+B.y)/2;
+    const lim=Math.max(1.5,len*.05);let sxx=0,sxy=0,syy=0,mx=0,my=0,n=0;const sel=[];
+    for(const p of pts){const t=((p.x-A.x)*dx+(p.y-A.y)*dy)/len;if(t<.12||t>.88)continue;
+      const d=Math.abs((p.x-A.x)*dy-(p.y-A.y)*dx);if(d<lim){sel.push(p);mx+=p.x;my+=p.y;n++;}}
+    if(n>=5){mx/=n;my/=n;
+      for(const p of sel){const a=p.x-mx,b=p.y-my;sxx+=a*a;sxy+=a*b;syy+=b*b;}
+      const th=.5*Math.atan2(2*sxy,sxx-syy);dx=Math.cos(th);dy=Math.sin(th);px=mx;py=my;}
+    let nx=-dy,ny=dx;if(nx*(px-cen.x)+ny*(py-cen.y)<0){nx=-nx;ny=-ny;}
+    lines.push({px:px+nx,py:py+ny,dx,dy});
+  }
+  const q=[];
+  for(let i=0;i<4;i++){
+    const a=lines[(i+3)%4],b=lines[i],c=a.dx*b.dy-a.dy*b.dx;
+    let p={x:h[i].x,y:h[i].y};
+    if(Math.abs(c)>1e-6){const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c;
+      const r={x:a.px+t*a.dx,y:a.py+t*a.dy};
+      if(Math.hypot(r.x-p.x,r.y-p.y)<perim/4*.3)p=r;}
+    q.push(p);
+  }
+  let area=0,sign=0;
+  for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];area+=a.x*b.y-b.x*a.y;
+    const z=cr2(a,b,c);if(z===0)return null;if(sign&&Math.sign(z)!==sign)return null;sign=Math.sign(z);}
+  area=Math.abs(area)/2;
+  const fill=(count+perim)/area;
+  if(fill<.8||fill>1.2)return null;
+  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill)};
+}
+function detect(seed){
+  const {pw,ph,k}=S.proc;let best=null;
+  const seeds=seed?[[seed.x*k,seed.y*k]]:
+    [[0,0],[-.12,0],[.12,0],[0,-.12],[0,.12],[-.12,-.12],[.12,-.12],[-.12,.12],[.12,.12]].map(o=>[pw/2+o[0]*pw,ph/2+o[1]*ph]);
+  for(const s of seeds)for(const m of [1,.7,1.45]){
+    const r=detectAt(s[0],s[1],P.tol*m);
+    if(r&&(!best||r.score<best.score-1e-9))best=r;
+  }
+  return best?best.q:null;
+}
+/* live tracking: follow the slab from frame to frame and smooth its corners */
+function track(){
+  let seed=S.seed;
+  if(S.quad)seed={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
+  const q=detect(seed);
+  if(!q){if(S.quad&&++S.lost>10){S.quad=null;S.lost=0;}return;}
+  S.lost=0;S.seed=null;
+  if(!S.quad){S.quad=q;return;}
+  let bk=0,bd=Infinity;
+  for(let k=0;k<4;k++){let d=0;for(let i=0;i<4;i++)d+=Math.hypot(q[(i+k)%4].x-S.quad[i].x,q[(i+k)%4].y-S.quad[i].y);if(d<bd){bd=d;bk=k;}}
+  const side=Math.hypot(q[1].x-q[0].x,q[1].y-q[0].y),a=bd/4>side*.25?1:.35;
+  S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
+}
+
+/* ---------- pose of a square from its 4 image corners ---------- */
+function solve(A,b){
+  const n=b.length;
+  for(let i=0;i<n;i++){
+    let p=i;for(let r=i+1;r<n;r++)if(Math.abs(A[r][i])>Math.abs(A[p][i]))p=r;
+    if(Math.abs(A[p][i])<1e-12)return null;
+    [A[i],A[p]]=[A[p],A[i]];[b[i],b[p]]=[b[p],b[i]];
+    for(let r=i+1;r<n;r++){const f=A[r][i]/A[i][i];for(let c=i;c<n;c++)A[r][c]-=f*A[i][c];b[r]-=f*b[i];}
+  }
+  const x=new Array(n);
+  for(let i=n-1;i>=0;i--){let s=b[i];for(let c=i+1;c<n;c++)s-=A[i][c]*x[c];x[i]=s/A[i][i];}
+  return x;
+}
+function solvePose(q,f,cx,cy,hs){
+  const M=[[-hs,-hs],[hs,-hs],[hs,hs],[-hs,hs]],A=[],b=[];
+  for(let i=0;i<4;i++){
+    const X=M[i][0],Y=M[i][1],x=(q[i].x-cx)/f,y=(q[i].y-cy)/f;
+    A.push([X,Y,1,0,0,0,-x*X,-x*Y]);b.push(x);
+    A.push([0,0,0,X,Y,1,-y*X,-y*Y]);b.push(y);
+  }
+  const h=solve(A,b);if(!h)return null;
+  const c0=[h[0],h[3],h[6]],c1=[h[1],h[4],h[7]],c2=[h[2],h[5],1];
+  const lam=2/(Math.hypot(...c0)+Math.hypot(...c1));
+  const c=mul(c2,lam),r1=norm(c0);
+  const r2=norm(sub(c1,mul(r1,dot(c1,r1))));
+  let n=norm(cross(r1,r2));if(dot(n,c)>0)n=mul(n,-1);
+  return {c,n,r1,r2,hs,f,cx,cy};
+}
+
+/* ---------- trajectory ---------- */
+function update(){
+  $("oSpeed").textContent=P.speed.toFixed(1)+" ft/s";
+  $("oPitch").textContent=P.pitch+"°";
+  $("oSize").textContent=P.size+" in";
+  $("oTol").textContent=P.tol;
+  $("oFov").textContent=P.fov+"°";
+  const st=$("status");
+  S.tr=null;
+  const pose=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24);
+  const sensor=S.live&&S.grav;
+  $("pitchRow").style.display=sensor?"none":"";
+  if(S.msg){st.className="chip warn";st.textContent=S.msg;}
+  if(!pose){
+    if(!S.msg){st.className="chip warn";st.textContent=S.live?"Looking for slab":"No slab found";}
+    $("hint").textContent=S.live?"Aim at the cement or tap it":"Tap the cement in the photo, or loosen the color match under Tune";
+    for(const id of ["rTilt","rApex","rRange","rAir"])$(id).textContent="–";
+    return;
+  }
+  if(!S.msg){st.className=S.example?"chip":"chip good";st.textContent=S.example?"Example scene":S.live?"Slab locked":"Slab found";}
+  $("hint").textContent="Tap the cement to re-pick it";
+  const a=P.pitch*Math.PI/180,g=sensor?S.grav:[0,Math.cos(a),Math.sin(a)];
+  const {c,n,r1,r2,hs}=pose,vup=-P.speed*dot(n,g);
+  let hf=0;
+  for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+    const d=add(mul(r1,hs*s[0]),mul(r2,hs*s[1]));hf=Math.min(hf,-dot(d,g));
+  }
+  const T=Math.min(4,(vup+Math.sqrt(vup*vup-2*G*hf))/G);
+  const at=t=>add(add(c,mul(n,P.speed*t)),mul(g,.5*G*t*t));
+  const end=sub(at(T),c),hz=sub(end,mul(g,dot(end,g)));
+  const apex=vup>0?vup*vup/(2*G):0;
+  S.tr={pose,T,at,ta:vup>0?Math.min(T,vup/G):0,apex};
+  $("rTilt").textContent=Math.round(Math.acos(clamp(-dot(n,g),-1,1))*180/Math.PI)+"°";
+  $("rApex").textContent=apex.toFixed(1)+" ft";
+  $("rRange").textContent=Math.hypot(...hz).toFixed(1)+" ft";
+  $("rAir").textContent=T.toFixed(2)+" s";
+}
+
+/* ---------- drawing ---------- */
+function resize(){
+  const r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;
+  S.W=r.width;S.H=r.height;cv.width=Math.round(r.width*d);cv.height=Math.round(r.height*d);
+  ctx.setTransform(d,0,0,d,0,0);
+}
+function view(){const s=(S.live?Math.max:Math.min)(S.W/S.sw,S.H/S.sh);return {s,ox:(S.W-S.sw*s)/2,oy:(S.H-S.sh*s)/2};}
+function label(t,x,y,col){
+  ctx.font='600 15px "Barlow Condensed","Arial Narrow",sans-serif';ctx.lineWidth=4;ctx.strokeStyle="rgba(8,12,18,.85)";
+  ctx.lineJoin="round";ctx.strokeText(t,x,y);ctx.fillStyle=col;ctx.fillText(t,x,y);
+}
+const still=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+function frame(now){
+  requestAnimationFrame(frame);
+  if(S.live){
+    const v=S.video;if(v.readyState<2||!v.videoWidth)return;
+    S.sw=v.videoWidth;S.sh=v.videoHeight;
+    prepare();track();update();
+  }
+  if(!S.src||!S.W)return;
+  ctx.clearRect(0,0,S.W,S.H);
+  const v=view();
+  ctx.drawImage(S.src,v.ox,v.oy,S.sw*v.s,S.sh*v.s);
+  if(!S.quad)return;
+  const D=p=>[p.x*v.s+v.ox,p.y*v.s+v.oy];
+  // slab outline
+  ctx.beginPath();S.quad.forEach((p,i)=>{const d=D(p);i?ctx.lineTo(d[0],d[1]):ctx.moveTo(d[0],d[1]);});ctx.closePath();
+  ctx.fillStyle="rgba(85,214,226,.12)";ctx.fill();
+  ctx.lineWidth=2;ctx.strokeStyle="#55d6e2";ctx.stroke();
+  ctx.fillStyle="#55d6e2";for(const p of S.quad){const d=D(p);ctx.beginPath();ctx.arc(d[0],d[1],3.5,0,6.283);ctx.fill();}
+  const tr=S.tr;if(!tr)return;
+  const {f,cx,cy,c,n}=tr.pose;
+  const pr=p=>p[2]>.05?[(f*p[0]/p[2]+cx)*v.s+v.ox,(f*p[1]/p[2]+cy)*v.s+v.oy]:null;
+  // perpendicular
+  const a=pr(c),b=pr(add(c,mul(n,1.2)));
+  if(a&&b){ctx.setLineDash([5,5]);ctx.lineWidth=1.5;ctx.strokeStyle="rgba(236,231,220,.9)";
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.setLineDash([]);}
+  // arc
+  const N=72,path=[];for(let i=0;i<=N;i++){const p=pr(tr.at(tr.T*i/N));if(!p)break;path.push(p);}
+  if(path.length>1){
+    for(const [w,col] of [[7,"rgba(8,12,18,.55)"],[3,"#ffb020"]]){
+      ctx.lineWidth=w;ctx.strokeStyle=col;ctx.lineCap="round";ctx.lineJoin="round";
+      ctx.beginPath();path.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.stroke();
+    }
+  }
+  // tenth-of-a-second ticks
+  ctx.fillStyle="#fff3d6";
+  for(let t=.1;t<tr.T;t+=.1){const p=pr(tr.at(t));if(p){ctx.beginPath();ctx.arc(p[0],p[1],2.2,0,6.283);ctx.fill();}}
+  // landing ring and apex
+  const L=pr(tr.at(tr.T));
+  if(L){ctx.lineWidth=2;ctx.strokeStyle="#ffb020";ctx.beginPath();ctx.arc(L[0],L[1],8,0,6.283);ctx.stroke();label("lands",L[0]+12,L[1]+5,"#ffb020");}
+  const A=tr.apex>0&&pr(tr.at(tr.ta));
+  if(A)label("apex "+tr.apex.toFixed(1)+" ft",A[0]+10,A[1]-8,"#ece7dc");
+  // ball
+  const tb=still?tr.ta:((now/1000)%(tr.T+.5));
+  if(tb<=tr.T){const p3=tr.at(tb),p=pr(p3);
+    if(p){const r=Math.max(5,f*.12/p3[2]*v.s);
+      ctx.beginPath();ctx.arc(p[0],p[1],r,0,6.283);ctx.fillStyle="#fff";ctx.fill();ctx.lineWidth=2;ctx.strokeStyle="#ffb020";ctx.stroke();}}
+}
+
+/* ---------- sources ---------- */
+function stopLive(){
+  if(S.stream)S.stream.getTracks().forEach(t=>t.stop());
+  S.stream=null;S.live=false;$("live").textContent="Start camera";
+}
+function onMotion(e){
+  const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
+  let g=[-a.x,-a.y,-a.z];
+  // phones disagree on the sign; in use, down is toward the phone's bottom edge or its back
+  if(-g[1]-g[2]<0)g=mul(g,-1);
+  const ang=((screen.orientation&&screen.orientation.angle)||window.orientation||0)*Math.PI/180;
+  const sx=g[0]*Math.cos(ang)-g[1]*Math.sin(ang),su=g[0]*Math.sin(ang)+g[1]*Math.cos(ang);
+  const cam=norm([sx,-su,-g[2]]);
+  S.grav=S.grav?norm(add(mul(S.grav,.85),mul(cam,.15))):cam;
+}
+async function startLive(){
+  if(S.live){stopLive();setSource(exampleScene(),true);return;}
+  S.msg="";
+  try{
+    if(window.DeviceMotionEvent&&typeof DeviceMotionEvent.requestPermission==="function"){
+      try{await DeviceMotionEvent.requestPermission();}catch(_){}
+    }
+    window.addEventListener("devicemotion",onMotion);
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error("insecure");
+    const stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}});
+    if(!S.video){
+      const v=document.createElement("video");v.playsInline=true;v.muted=true;v.setAttribute("playsinline","");
+      v.style.cssText="position:absolute;width:2px;height:2px;opacity:0;pointer-events:none";
+      $("stage").appendChild(v);S.video=v;
+    }
+    S.video.srcObject=stream;await S.video.play();
+    S.stream=stream;S.src=S.video;S.live=true;S.example=false;S.quad=null;S.seed=null;S.lost=0;
+    $("live").textContent="Stop camera";
+  }catch(err){
+    S.msg=err&&err.message==="insecure"?"Camera needs an https:// address":"Camera blocked. Allow it in browser settings";
+    update();
+  }
+}
+function setSource(canvas,example){
+  stopLive();S.msg="";
+  S.src=canvas;S.sw=canvas.width;S.sh=canvas.height;S.example=example;S.seed=null;
+  prepare();S.quad=detect(null);update();
+}
+function exampleScene(){
+  const w=900,h=1200,c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d");
+  x.fillStyle="#8b6c4e";x.fillRect(0,0,w,h);
+  for(let i=0;i<9;i++){x.fillStyle=i%2?"rgba(60,40,20,.10)":"rgba(255,230,190,.06)";x.fillRect(i*104-20,0,100,h);}
+  const f=(h/2)/Math.tan(65*Math.PI/360),a=50*Math.PI/180,g=[0,Math.cos(a),Math.sin(a)];
+  const cen=[0,.1,4.3],n=norm(add(mul(g,-1),[.17,0,-.05]));
+  const r1=norm(sub([.94,0,.34],mul(n,dot([.94,0,.34],n)))),r2=cross(n,r1);
+  const quad=(o,hs)=>[[-1,-1],[1,-1],[1,1],[-1,1]].map(s=>{
+    const p=add(o,add(mul(r1,hs*s[0]),mul(r2,hs*s[1])));return [f*p[0]/p[2]+w/2,f*p[1]/p[2]+h/2];});
+  const poly=(q,col)=>{x.beginPath();q.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1]));x.closePath();x.fillStyle=col;x.fill();};
+  poly(quad(add(cen,mul(g,.32)),.52),"rgba(30,20,10,.35)");
+  poly(quad(add(cen,mul(g,.22)),.4),"#3a332c");
+  const top=quad(cen,.5);poly(top,"#b8b6ae");
+  x.save();x.beginPath();top.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1]));x.closePath();x.clip();
+  let sd=7;const rnd=()=>(sd=(sd*16807)%2147483647)/2147483647;
+  for(let i=0;i<1400;i++){x.fillStyle=rnd()>.5?"rgba(255,255,255,.07)":"rgba(0,0,0,.07)";x.fillRect(rnd()*w,rnd()*h,3,3);}
+  x.restore();
+  return c;
+}
+function loadFile(file){
+  if(!file)return;
+  const url=URL.createObjectURL(file),img=new Image();
+  img.onload=()=>{
+    const k=Math.min(1,1600/Math.max(img.naturalWidth,img.naturalHeight));
+    const c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*k);c.height=Math.round(img.naturalHeight*k);
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);setSource(c,false);
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url);const st=$("status");st.className="chip warn";st.textContent="Couldn't open that photo";};
+  img.src=url;
+}
+
+/* ---------- wiring ---------- */
+$("live").addEventListener("click",startLive);
+for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
+for(const key of ["speed","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
+  P[key]=parseFloat(e.target.value);
+  if(key==="tol"&&!S.live)S.quad=detect(S.seed);
+  update();
+});
+cv.addEventListener("click",e=>{
+  if(!S.src)return;
+  const r=cv.getBoundingClientRect(),v=view(),x=(e.clientX-r.left-v.ox)/v.s,y=(e.clientY-r.top-v.oy)/v.s;
+  if(x<0||y<0||x>S.sw||y>S.sh)return;
+  S.seed={x,y};if(S.live){S.quad=null;S.lost=0;}else{S.quad=detect(S.seed);update();}
+});
+new ResizeObserver(resize).observe(cv);
+resize();
+setSource(exampleScene(),true);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
