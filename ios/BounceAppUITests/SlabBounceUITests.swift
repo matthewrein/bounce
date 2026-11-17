@@ -33,14 +33,15 @@ final class SlabBounceUITests: XCTestCase {
         return nil
     }
 
-    /// "8.3°" -> 8.3; "11.2 in" -> 11.2 (inches); "2 ft 1 in" -> 25 (inches); "0.71 s" -> 0.71
+    /// The first number in a readout: "8.3°" -> 8.3; "Drop 11.2 in (ball)" -> 11.2 (inches); "2 ft 1 in" -> 25 (inches)
     func number(_ s: String) -> Double? {
-        let parts = s.replacingOccurrences(of: "°", with: " ").split(separator: " ")
-        if let ft = parts.firstIndex(of: "ft"), ft > 0, let f = Double(parts[ft - 1]) {
-            let inch = parts.count > ft + 1 ? Double(parts[ft + 1]) ?? 0 : 0
-            return f * 12 + inch
+        let parts = s.replacingOccurrences(of: "°", with: " ").split(separator: " ").map(String.init)
+        guard let i = parts.firstIndex(where: { Double($0) != nil }), let v = Double(parts[i]) else { return nil }
+        if i + 1 < parts.count, parts[i + 1] == "ft" {
+            let inch = i + 2 < parts.count ? Double(parts[i + 2]) ?? 0 : 0
+            return v * 12 + inch
         }
-        return parts.first.flatMap { Double($0) }
+        return v
     }
 
     func screenshot(_ app: XCUIApplication, _ name: String) {
