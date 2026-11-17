@@ -93,6 +93,41 @@ async function exportRecording(page, name, frameIdx, label) {
   return frameIdx.length;
 }
 
+// Full-resolution luma crops (300x720) around the slab and the space above it (where a held ball is), as PGM, for the ball
+// finder's tests: ball_<clip>_<fi>.pgm plus ball_crops.json (crop origin, lens, true circle and corners in crop pixels).
+async function exportBallCrops(page) {
+  const items = [["ball_held_d4", [30, 90]], ["ball_held_offcenter_d4", [60]], ["ball_held_satin_d4", [60]], ["ball_held_d5_high", [60]],
+    ["ball_held_d3_other", [60]], ["ball_held_dim", [60]], ["d4_t10_h90_mat", [60]], ["distract_floorball", [60]], ["distract_mat_circles", [60]]];
+  const dir = path.join(OUT, "balls"); fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
+  const meta = [];
+  for (const [name, fis] of items) {
+    const spec = byName[name], gt = gtOf(name); if (!spec || !gt || gt.private) continue;
+    const jp = splitJpegs(fs.readFileSync(path.join(__dirname, "out/clips", name, "clip.mjpeg")));
+    for (const fi of fis) {
+      const g = gt.frames[fi]; if (!g.corners) continue;
+      const xs = g.corners.map((c) => c[0]), ys = g.corners.map((c) => c[1]), side = Math.max(...xs) - Math.min(...xs);
+      const cx = (Math.max(...xs) + Math.min(...xs)) / 2, CW = 300, CH = 720, x0 = Math.max(0, Math.min(720 - CW, Math.round(cx - CW / 2)));
+      const y1 = Math.min(1280, Math.round(Math.max(...ys) + side * 0.4)), y0 = Math.max(0, y1 - CH);
+      const bytes = await page.evaluate(async ([b64, x0, y0, CW, CH]) => {
+        const img = new Image(); img.src = "data:image/jpeg;base64," + b64; await img.decode();
+        const c = document.createElement("canvas"); c.width = CW; c.height = CH; const x = c.getContext("2d"); x.drawImage(img, x0, y0, CW, CH, 0, 0, CW, CH);
+        const d = x.getImageData(0, 0, CW, CH).data, out = new Uint8Array(CW * CH);
+        for (let i = 0; i < out.length; i++) out[i] = Math.round(0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]);
+        return Array.from(out);
+      }, [jp[fi].toString("base64"), x0, y0, CW, CH]);
+      const file = `ball_${name}_${fi}.pgm`;
+      fs.writeFileSync(path.join(dir, file), Buffer.concat([Buffer.from(`P5\n${CW} ${CH}\n255\n`), Buffer.from(bytes)]));
+      const b = g.ball;
+      meta.push({ file, clip: name, fi, cropOrigin: [x0, y0], fovDeg: spec.cam.fov || 72.5, fullWidth: 720, fullHeight: 1280,
+        corners: g.corners.map((c) => [r(c[0] - x0, 3), r(c[1] - y0, 3)]), normal: g.normal, down: g.grav, ...slabSides(spec), ballDiameterMm: 35,
+        ball: b && b.x != null ? { x: r(b.x - x0, 3), y: r(b.y - y0, 3), rOnAxis: b.r, rim: b.rim, held: b.held, onSlab: b.onSlab, visible: b.visible, dropMetres: r(b.drop * FT, 5) } : null,
+        floorBall: !!(spec.extras || []).find((e) => e.type === "floorball") });
+    }
+  }
+  fs.writeFileSync(path.join(dir, "ball_crops.json"), JSON.stringify(meta, null, 1));
+  return meta.length;
+}
+
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   console.log("poses:", exportPoses(), "balls:", exportBalls());
@@ -105,5 +140,6 @@ async function exportRecording(page, name, frameIdx, label) {
   ];
   for (const n of ["d3_t10_h0_mat", "d5_t15_h45_wood", "warm_lamp_d4", "level_lined_up_d4", "cradle_r14_d4", "two_lights_d4", "matchtone_concrete_d4", "d5_t8_h315_darkfloor"]) recs.push([n, [60], "single_" + n]);
   for (const [n, f, label] of recs) console.log(label, await exportRecording(page, n, f, label), "frames");
+  console.log("ball crops:", await exportBallCrops(page));
   await browser.close(); srv.srv.close();
 })();

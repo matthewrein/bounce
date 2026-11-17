@@ -1,0 +1,535 @@
+[
+ {
+  "file": "ball_ball_held_d4_30.pgm",
+  "clip": "ball_held_d4",
+  "fi": 30,
+  "cropOrigin": [
+   212,
+   60
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    67.63,
+    549.87
+   ],
+   [
+    183.61,
+    514.55
+   ],
+   [
+    231.47,
+    613.61
+   ],
+   [
+    107.97,
+    654.34
+   ]
+  ],
+  "normal": [
+   -0.00486,
+   -0.52732,
+   -0.84965
+  ],
+  "down": [
+   0.005480023408182206,
+   0.6417769627944128,
+   0.76687176201098
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 160.2,
+   "y": 96.91,
+   "rOnAxis": 17.91,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.61045
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_d4_90.pgm",
+  "clip": "ball_held_d4",
+  "fi": 90,
+  "cropOrigin": [
+   203,
+   62
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    68.71,
+    550.75
+   ],
+   [
+    184.91,
+    516.61
+   ],
+   [
+    231.87,
+    615.56
+   ],
+   [
+    108.11,
+    655.22
+   ]
+  ],
+  "normal": [
+   0.00673,
+   -0.53516,
+   -0.84473
+  ],
+  "down": [
+   -0.006323858408248869,
+   0.6488433109193589,
+   0.7608957659824613
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 164.18,
+   "y": 102.65,
+   "rOnAxis": 17.86,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.60875
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_offcenter_d4_60.pgm",
+  "clip": "ball_held_offcenter_d4",
+  "fi": 60,
+  "cropOrigin": [
+   209,
+   149
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    67.61,
+    549.58
+   ],
+   [
+    183.6,
+    515.55
+   ],
+   [
+    231.87,
+    614.26
+   ],
+   [
+    106.95,
+    654.76
+   ]
+  ],
+  "normal": [
+   0.00459,
+   -0.62466,
+   -0.78088
+  ],
+  "down": [
+   -0.004138070804985035,
+   0.7176092817584621,
+   0.6964336257706955
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 197.43,
+   "y": 267.66,
+   "rOnAxis": 17.71,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.49576
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_satin_d4_60.pgm",
+  "clip": "ball_held_satin_d4",
+  "fi": 60,
+  "cropOrigin": [
+   208,
+   140
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    68.39,
+    568.08
+   ],
+   [
+    182.98,
+    534.34
+   ],
+   [
+    231.45,
+    613.99
+   ],
+   [
+    105,
+    654.49
+   ]
+  ],
+  "normal": [
+   -0.07292,
+   -0.77827,
+   -0.62367
+  ],
+  "down": [
+   -0.007647849355669572,
+   0.7164788220840351,
+   0.6975669200193673
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 162.81,
+   "y": 191.29,
+   "rOnAxis": 17.2,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.5512
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_d5_high_60.pgm",
+  "clip": "ball_held_d5_high",
+  "fi": 60,
+  "cropOrigin": [
+   207,
+   302
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    81.66,
+    609.51
+   ],
+   [
+    177.86,
+    587.24
+   ],
+   [
+    218.58,
+    638.06
+   ],
+   [
+    112.34,
+    665.22
+   ]
+  ],
+  "normal": [
+   -0.05196,
+   -0.97324,
+   -0.22386
+  ],
+  "down": [
+   -0.005992012199716788,
+   0.9267043756326673,
+   0.37574339112360555
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 174.43,
+   "y": 25.51,
+   "rOnAxis": 13.38,
+   "rim": 0.81,
+   "held": true,
+   "onSlab": true,
+   "visible": true,
+   "dropMetres": 0.91495
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_d3_other_60.pgm",
+  "clip": "ball_held_d3_other",
+  "fi": 60,
+  "cropOrigin": [
+   217,
+   246
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    39.84,
+    490.04
+   ],
+   [
+    192.17,
+    439.53
+   ],
+   [
+    260.5,
+    569.18
+   ],
+   [
+    89.99,
+    631.71
+   ]
+  ],
+  "normal": [
+   -0.06408,
+   -0.66245,
+   -0.74636
+  ],
+  "down": [
+   0.006752031300022043,
+   0.688325351517355,
+   0.7253706780204402
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 137.32,
+   "y": 230.57,
+   "rOnAxis": 24.52,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.37167
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_ball_held_dim_60.pgm",
+  "clip": "ball_held_dim",
+  "fi": 60,
+  "cropOrigin": [
+   224,
+   55
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    69.68,
+    565.05
+   ],
+   [
+    182.71,
+    523.64
+   ],
+   [
+    230.88,
+    608.47
+   ],
+   [
+    107.41,
+    655.39
+   ]
+  ],
+  "normal": [
+   -0.15036,
+   -0.63747,
+   -0.75566
+  ],
+  "down": [
+   0.007822387333870464,
+   0.64387002537949,
+   0.7650948965155981
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": {
+   "x": 163.94,
+   "y": 113.47,
+   "rOnAxis": 18.02,
+   "rim": 0.77,
+   "held": true,
+   "onSlab": true,
+   "visible": false,
+   "dropMetres": 0.60951
+  },
+  "floorBall": false
+ },
+ {
+  "file": "ball_d4_t10_h90_mat_60.pgm",
+  "clip": "d4_t10_h90_mat",
+  "fi": 60,
+  "cropOrigin": [
+   205,
+   46
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    68.97,
+    556.54
+   ],
+   [
+    184.02,
+    535.28
+   ],
+   [
+    231.61,
+    627.2
+   ],
+   [
+    108.7,
+    654.9
+   ]
+  ],
+  "normal": [
+   0.12769,
+   -0.63839,
+   -0.75905
+  ],
+  "down": [
+   -0.002378216189606766,
+   0.6428191783385149,
+   0.7660142609951541
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": null,
+  "floorBall": false
+ },
+ {
+  "file": "ball_distract_floorball_60.pgm",
+  "clip": "distract_floorball",
+  "fi": 60,
+  "cropOrigin": [
+   217,
+   54
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    68.26,
+    547.6
+   ],
+   [
+    184.45,
+    511.32
+   ],
+   [
+    231.97,
+    613.5
+   ],
+   [
+    108.93,
+    654.78
+   ]
+  ],
+  "normal": [
+   -0.00611,
+   -0.47829,
+   -0.87818
+  ],
+  "down": [
+   0.006254694650082622,
+   0.564590634864488,
+   0.8253473776647918
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": null,
+  "floorBall": true
+ },
+ {
+  "file": "ball_distract_mat_circles_60.pgm",
+  "clip": "distract_mat_circles",
+  "fi": 60,
+  "cropOrigin": [
+   222,
+   17
+  ],
+  "fovDeg": 72.5,
+  "fullWidth": 720,
+  "fullHeight": 1280,
+  "corners": [
+   [
+    85.52,
+    608.95
+   ],
+   [
+    176.36,
+    576.99
+   ],
+   [
+    214.24,
+    632.3
+   ],
+   [
+    115.61,
+    668.27
+   ]
+  ],
+  "normal": [
+   -0.16716,
+   -0.75558,
+   -0.63337
+  ],
+  "down": [
+   0.009904007528723498,
+   0.7031899456122892,
+   0.7109330566408182
+  ],
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "ball": null,
+  "floorBall": false
+ }
+]
