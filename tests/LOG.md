@@ -25,6 +25,7 @@ frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking
 | b13 clean gravity (kept) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | **0.219** | 2.3 | 0 | 23.5 | 74 | 1.3 / 0.5 / 0.2 |
 | b14 gyro-steadied smoothing (kept; 49 clips) | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | **0.276** | **0.178** | 2.3 | 0 | 22.7 | 72 | 1.3 / 0.5 / 0.2 |
 | b15 default (cut-edge correction off) = b14 | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | 0.276 | 0.178 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
+| b16 ball: upper outline accepted (kept; 61 clips) | 84.3 | 4 | 6 | 4.78 | 5.2 | 13.2 | - | 0.300 | 0.172 | **20.7** | **0** | - | - | 1.3 / 0.5 / 0.2 |
 | b15 with "Correct for the slab's cut edge" on | 82.7 | 4 | 7 | **2.63** | **1.30** | 13.2 | 15/42 | 0.345 | 0.241 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
@@ -170,3 +171,21 @@ thickness setting is right.
 Why it isn't simply better: deciding which of two parallel straight edges is the top face's edge is ambiguous in
 three situations the clips cover - a cut face in shadow (dark like the base), the black base's own edge just outside
 the cut face, and a slab whose top edge bows (curved slab). Each fix for one moved error to another.
+
+## b16 - find a held ball from its upper outline (kept)
+
+Why the held ball was missed: the detector wanted 81% of the ball's outline. Held above the floor and seen from above,
+a mirror ball's lower half reflects the very floor that lies behind it, so its outline there is all but invisible
+(measured: luma 105-113 both inside and outside the rim on the lower spokes), and a pinch grip hides part of the top.
+
+b16 keeps the full-outline path and adds a second one: the radius is chosen from the upper half's spokes only, and the
+ball is accepted if at least 14 of the 24 upper spokes agree on a tight circle (rms under 0.6 px) at a size that puts
+it no further away than the slab, and if the inside of its upper half looks like a mirror (a highlight 40+ grey levels
+above the floor just outside, and plenty of light/dark detail). A ball found this way is shown only once two scans in
+a row agree on it (or it continues the ball already shown).
+
+New distractor clips with round things *behind* the slab, so they appear above it in the image (fp_tin_behind_d4,
+fp_lid_sticker_behind_d5, fp_floorball_behind_d4): the first version of this change fired on a black-lidded tin there;
+the mirror-appearance test removed that. Result (2 phases vs b15): held-ball detection at 4 ft 0 -> 53% of frames
+(drop-height error 1.4-1.8 in), 5 ft with the ball 3 ft up 0 -> 7%, dim light 0 -> 2%; false ball detections still
+0 on all 61 clips; no other clip metric changed.
