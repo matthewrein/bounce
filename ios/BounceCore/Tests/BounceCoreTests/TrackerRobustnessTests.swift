@@ -107,7 +107,9 @@ final class SceneDetector: SlabDetecting {
     var silent = false
     /// flip the near side to the cut face's bottom with this probability per call
     var flipProbability = 0.0
-    private(set) var flips = 0, calls = 0
+    /// the mirror error: the near side put a band inside the top (an outer edge that was already the top's, shifted in)
+    var inwardProbability = 0.0
+    private(set) var flips = 0, calls = 0, inward = 0
     /// another square object (a lookalike), reported first unless the seed lies on the real slab
     var other: SlabPose? = nil
     /// report the lookalike only (the real slab is out of view, say)
@@ -139,6 +141,9 @@ final class SceneDetector: SlabDetecting {
         var found: [[Vec2]] = []
         if !onlyOther, var q = outline(of: world.slab, in: v) {
             if flipProbability > 0, rng.next() < flipProbability, let f = world.cutFlipOutline(in: v, spec: self.spec) { q = f; flips += 1 }
+            if inwardProbability > 0, rng.next() < inwardProbability, let f = world.cutFlipOutline(in: v, spec: self.spec) {
+                q = zip(q, f).map { $0 + ($0 - $1) }; inward += 1
+            }
             if occludedCorner { let c = (q[0] + q[1] + q[2] + q[3]) / 4; q[1] = q[1] + (c - q[1]) * 0.45 }
             if let (i, px) = sideShift {
                 let a = q[i], b = q[(i + 1) % 4], c = (q[0] + q[1] + q[2] + q[3]) / 4
@@ -402,6 +407,137 @@ final class TrackerRobustnessTests: XCTestCase {
         print(String(format: "LiDAR-checked relock: relocks %d, worst %.2f deg", tr.counts["relocks"] ?? 0, worst))
         XCTAssertEqual(tr.counts["relocks"] ?? 0, 0)
         XCTAssertLessThan(worst, 1.0)
+    }
+
+    func testNearEdgeFlipsFromTheStartDoNotKeepAWrongLock() {
+        // The near edge flips at random from the first frame, so the first three detections are sometimes all flipped
+        // and the tracker confirms on them. Only asking whether a re-check was the lock's flip, never whether the lock was
+        // the re-check's flip, left such a lock 5-6 deg off for as long as flips continued (the top outline counted as an
+        // implausible move, which every flipped re-check agreeing with the lock reset). At 1.5 m the band is about 4 px
+        // and some flipped re-checks also passed for the top, pulling even a good lock 3-6 deg off.
+        var flippedLocks = 0
+        // limit: how far off the lock may be, about the noise floor without flips (a band of 7 px at 0.64 m, 4 px at 1.5 m)
+        for (dist, elev, limit) in [(0.64, 45.0, 1.0), (1.5, 55.0, 1.5)] {
+            for p in [0.5, 0.7] {
+                var endOff = 0, spellMax = 0.0, framesOff = 0, frames = 0, toTop = 0
+                for trial in 0..<12 {
+                    let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 4 + Double(trial % 5), heading: 250 + Double(trial) * 9, yaw: -8 + Double(trial))
+                    let w = World(slab: slab, lens: .processing)
+                    let det = SceneDetector(w, noise: 0.5, seed: UInt64(800 + trial))
+                    det.flipProbability = p
+                    let tr = SlabTracker(settings: appSettings(), detector: det)
+                    let e = Units.radians(elev), pos = slab.center + Vec3(0.05, sin(e), cos(e)) * dist
+                    var spell = 0.0
+                    for k in 0..<(30 * 30) {
+                        let t = Double(k) / 30
+                        let o = step(tr, det, swaying(w, pos, slab.center, k), t)
+                        if o.events.contains("locked"), err(o.slab, slab) > 3 { flippedLocks += 1 }
+                        guard o.state == .locked else { continue }
+                        let er = err(o.slab, slab)
+                        // the longest the lock stays more than 1.5 deg off, and how often it is past the limit after 5 s
+                        if er > 1.5 { spell += 1.0 / 30; spellMax = max(spellMax, spell) } else { spell = 0 }
+                        if t > 5 { frames += 1; if er > limit { framesOff += 1 } }
+                    }
+                    if err(tr.slab, slab) > limit { endOff += 1 }
+                    toTop += tr.counts["relocksToTop"] ?? 0
+                }
+                let off = Double(framesOff) / Double(max(1, frames))
+                print(String(format: "flips from the start, %.2f m %.0f deg, p=%.1f: more than %.1f deg off at 30 s %d/12, after 5 s %.1f%% of frames; longest more than 1.5 deg off %.1f s; relocks to the top %d",
+                             dist, elev, p, limit, endOff, off * 100, spellMax, toTop))
+                XCTAssertEqual(endOff, 0, "\(dist) m p \(p)")
+                XCTAssertLessThan(off, 0.02, "\(dist) m p \(p)")
+                XCTAssertLessThan(spellMax, 3.5, "\(dist) m p \(p)")
+            }
+        }
+        // the scenario happened: some trials did confirm on flipped outlines
+        XCTAssertGreaterThan(flippedLocks, 5)
+    }
+
+    func testALockOnFlippedOutlinesMovesToTheTopAtOnce() {
+        // Flipped outlines for the first 2 s (it locks on them), then clean ones: the old tracker needed about 3.4 s of
+        // clean re-checks (11-12 of them, the cradle check tripling the evidence) to leave the flipped lock.
+        var times: [Double] = []
+        for trial in 0..<12 {
+            let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 7, heading: 300 + Double(trial) * 11, yaw: -8)
+            let w = World(slab: slab, lens: .processing)
+            let det = SceneDetector(w, noise: 0.5, seed: UInt64(400 + trial))
+            det.flipProbability = 1
+            let tr = SlabTracker(settings: appSettings(), detector: det)
+            let pos = slab.center + Vec3(0.0, 0.45, 0.45)
+            var k = 0
+            for _ in 0..<(30 * 2) { step(tr, det, swaying(w, pos, slab.center, k), Double(k) / 30); k += 1 }
+            XCTAssertEqual(tr.state, .locked)
+            XCTAssertGreaterThan(err(tr.slab, slab), 3, "trial \(trial) locked on the flipped outlines")
+            det.flipProbability = 0
+            let t0 = Double(k) / 30
+            var fixedAt: Double? = nil
+            for _ in 0..<(30 * 6) {
+                let o = step(tr, det, swaying(w, pos, slab.center, k), Double(k) / 30); k += 1
+                if fixedAt == nil, err(o.slab, slab) < 1 { fixedAt = Double(k) / 30 - t0 }
+            }
+            times.append(fixedAt ?? 99)
+            XCTAssertLessThan(err(tr.slab, slab), 1, "trial \(trial)")
+            XCTAssertEqual(tr.counts["relocksToTop"] ?? 0, 1, "trial \(trial)")
+        }
+        times.sort()
+        print(String(format: "locked on flipped outlines, then clean: within 1 deg after median %.2f s, worst %.2f s", times[6], times.last!))
+        XCTAssertLessThan(times.last!, 1.2)
+    }
+
+    func testASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance() {
+        // The mirror of the flip: a detector that sometimes puts the near side a band inside the top. Geometry alone
+        // cannot tell which of two outlines a band apart is the top, so the rule that the inner one is would follow it;
+        // up close the pose fits can (the inner outline misfits the square by about 1 px, the top by the noise). The
+        // tracker before used to confirm on such outlines and then ignore the top as their flip: more than 3 deg off 33%
+        // and 83% of the time at q 0.1 and 0.3. (At 1.5 m the fits cannot tell, and the inner outline is taken.)
+        for q in [0.1, 0.3] {
+            var endOff = 0, framesOff = 0, frames = 0, ignored = 0
+            for trial in 0..<12 {
+                let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 3 + Double(trial % 7), heading: 200 + Double(trial) * 13, yaw: -20 + Double(trial))
+                let w = World(slab: slab, lens: .processing)
+                let det = SceneDetector(w, noise: 0.5, seed: UInt64(6000 + trial))
+                det.inwardProbability = q
+                let tr = SlabTracker(settings: appSettings(), detector: det)
+                let e = Units.radians(45.0), pos = slab.center + Vec3(0.05, sin(e), cos(e)) * 0.64
+                for k in 0..<(30 * 30) {
+                    let t = Double(k) / 30
+                    let o = step(tr, det, swaying(w, pos, slab.center, k), t)
+                    if t > 5, o.state == .locked { frames += 1; if err(o.slab, slab) > 3 { framesOff += 1 } }
+                }
+                if err(tr.slab, slab) > 1 { endOff += 1 }
+                ignored += tr.counts["recheckInnerWorse"] ?? 0
+            }
+            let off = Double(framesOff) / Double(max(1, frames))
+            print(String(format: "side a band inside the top, q=%.1f at 0.64 m: more than 1 deg off at 30 s %d/12, more than 3 deg off %.1f%% of frames after 5 s; %d such re-checks ignored",
+                         q, endOff, off * 100, ignored))
+            XCTAssertEqual(endOff, 0, "q \(q)")
+            XCTAssertLessThan(off, 0.02, "q \(q)")
+            XCTAssertGreaterThan(ignored, 10, "q \(q)")
+        }
+    }
+
+    func testCleanOutlinesNeverMoveTheLockToAnInnerOutline() {
+        // The other side of the rule above: noisy clean outlines of a still slab (a walk around it, 0.6-1.4 m) must not
+        // look like the top under a flipped lock often enough to move a good lock inward.
+        for noise in [1.0, 1.5] {
+            var inner = 0, toTop = 0, rechecks = 0
+            for trial in 0..<8 {
+                let slab = World.slabAt(Vec3(0, 0.066, 0), tilt: 3 + Double(trial), heading: Double(trial) * 45)
+                let w = World(slab: slab, lens: .processing)
+                let det = SceneDetector(w, noise: noise, seed: UInt64(900 + trial))
+                let tr = SlabTracker(settings: appSettings(), detector: det)
+                for k in 0..<(30 * 40) {
+                    let t = Double(k) / 30
+                    let az = Units.radians(90 * t / 40), el = Units.radians(35 + Double(trial) * 3)
+                    let pos = slab.center + Vec3(sin(az) * cos(el), sin(el), cos(az) * cos(el)) * (0.6 + 0.12 * Double(trial))
+                    step(tr, det, swaying(w, pos, slab.center, k), t)
+                }
+                inner += tr.counts["recheckInner"] ?? 0; toTop += tr.counts["relocksToTop"] ?? 0; rechecks += tr.counts["rechecks"] ?? 0
+            }
+            print("clean outlines at \(noise) px: \(rechecks) re-checks, \(inner) taken for the top under a flipped lock, \(toTop) relocks to it")
+            XCTAssertEqual(toTop, 0, "\(noise) px")
+            XCTAssertLessThan(Double(inner), 0.01 * Double(rechecks), "\(noise) px")
+        }
     }
 
     // MARK: movers only near an in-view lock (#9)

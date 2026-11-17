@@ -30,6 +30,7 @@ final class RecordingFormatTests: XCTestCase {
         s.shapeLimits.maxDistance = 2.5; s.shapeLimits.maxTiltDegrees = 20
         s.cornerNoisePixels = 0.8; s.matchSigmas = 2.5; s.maxMatchDistance = 0.07; s.maxMatchAngleDegrees = 9; s.maxLockSigmaDegrees = 1.2
         s.slideWindow = 5; s.slideSigmas = 4; s.moveRadius = 0.25; s.cradleRadius = nil; s.cutFlipTolerancePixels = 2.5; s.minMissesForLost = 4
+        s.topRelockCount = 3; s.topRelockSeconds = 2.5
         s.unconfirmedTimeout = 4; s.poseJumpDistance = 0.3; s.limitedResumeSeconds = 1.5; s.seedTimeout = 5; s.depthSmoothingSeconds = 0.4
         s.depthHoldSeconds = 0.8; s.depthMinInlierFraction = 0.6; s.depthMaxOffsetFraction = 0.03; s.depthMaxAngleDegrees = 7
         s.sideEvidenceCap = 3; s.sideEvidenceDecay = 0.9; s.sideFlipMargin = 0.2; s.sideDecidedEvidence = 2

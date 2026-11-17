@@ -97,6 +97,8 @@ extension TrackerSettings: Codable {
         .init("moveRadius", \.moveRadius),
         .init(optional: "cradleRadius", \.cradleRadius),
         .init("cutFlipTolerancePixels", \.cutFlipTolerancePixels),
+        .init("topRelockCount", \.topRelockCount),
+        .init("topRelockSeconds", \.topRelockSeconds),
         .init("minMissesForLost", \.minMissesForLost),
         .init("unconfirmedTimeout", \.unconfirmedTimeout),
         .init("poseJumpDistance", \.poseJumpDistance),

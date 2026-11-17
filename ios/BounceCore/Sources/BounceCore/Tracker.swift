@@ -66,7 +66,9 @@ public struct DetectionRecord: Codable, Equatable {
     public var found: Int
     public var rejected: [String]
     /// what it led to: the counters it bumped (`SlabTracker.counts` keys), e.g. "recheckAgree", "recheckDisagree",
-    /// "relocks", "locks", "confirmRestarts", "cutFlips", "recheckMiss"
+    /// "relocks", "locks", "confirmRestarts", "cutFlips", "recheckMiss", "recheckInner" (the top found where the lock
+    /// has the cut face's bottom), "recheckOuterBetter" (the top found a band outside the lock), "recheckInnerWorse" (an
+    /// outline a band inside the lock, ignored), "relocksToTop"
     public var outcome: [String]
     /// the outline the tracker used, if any: its pose's centre and normal (world), tilt from level (degrees), the
     /// normal's standard deviation at 1 px corner noise (degrees), the fit's rms corner misfit (pixels), the distance
@@ -160,6 +162,16 @@ public struct TrackerSettings: Equatable {
     /// a re-detection within this many pixels (rms over the corners) of the lock's outline with a side taken at the
     /// bottom of its cut face (the box model) is that flip, not a move
     public var cutFlipTolerancePixels: Double = 2
+    /// The other way round: the lock was made from outlines caught at the bottom of the cut face (it can confirm on
+    /// them when the near edge flips from the start), and a re-detection finds the top edge, the lock being its flip.
+    /// This many such re-detections that agree with each other, within `topRelockSeconds`, re-lock onto the top;
+    /// flipped re-detections between them agree with the lock and do not count against them, and the cradle check does
+    /// not apply. Of two outlines a band apart the inner one is taken for the top (as the edge refiner does) unless the
+    /// pose fits say otherwise: an inner outline that fits the square clearly worse than the lock's measurements is a
+    /// side put a band inside the top and is ignored, and an outer one that fits clearly better is the top, the lock
+    /// resting on such an inner outline (see `SlabTracker.clearlyWorseFit`). Far away the fits cannot tell them apart.
+    public var topRelockCount: Int = 2
+    public var topRelockSeconds: Double = 3
 
     // Losing the lock.
     /// consecutive in-view misses needed (as well as `lostAfter`) before the lock is lost
@@ -305,7 +317,9 @@ public struct TrackerOutput {
 /// history shows it), so the agreement gates follow the noise: a slab 5 ft away at the processing frame's 480 px is
 /// measured far less precisely in depth than one at 2 ft. Re-detections that disagree with the lock are checked before
 /// they can move it: a side taken at the bottom of its cut face (the box model), a far-away lookalike, a jump that LiDAR
-/// contradicts, or a tilt change the cradle cannot make, are not moves.
+/// contradicts, or a tilt change the cradle cannot make, are not moves. The other way round, a lock made from outlines
+/// caught at the bottom of the cut face moves to the top edge as soon as a couple of re-checks find it (the pose fits
+/// decide which of two outlines a band apart is the top where they can, else the inner one is).
 public final class SlabTracker {
     /// Changing the settings is reported with the next frame (`TrackerOutput.controls`).
     public var settings: TrackerSettings {
@@ -371,6 +385,7 @@ public final class SlabTracker {
     private var lockEstimate: Estimate?
     private var candidates: [Measurement] = []             // while confirming
     private var movers: [Measurement] = []                 // disagreeing re-detections while locked
+    private var partners: [Measurement] = []               // re-detections a band from the lock, taken for the top
     private var recent: [Measurement] = []                 // the latest re-detections near the lock, agreeing or not
     private var implausible = 0                            // re-locks held back as implausible since the last one
     private var noiseSamples: [Double] = []                // re-checks' squared distances from the lock (see cornerNoiseEstimate)
@@ -830,13 +845,22 @@ public final class SlabTracker {
     private func confirm(_ m: Measurement, _ f: TrackerFrame, _ events: inout [String]) {
         let t = f.timestamp, s = cornerNoiseEstimate
         guard let ref = SlabTracker.estimate(candidates) else { candidates = [m]; return }
-        // one side caught at the bottom of its cut face: keep the inner (top) outline
-        if cutFlip(m.quad, of: ref.pose, f, noise: s) != nil {
+        let fit = SlabTracker.meanRms(candidates)
+        // one side caught at the bottom of its cut face: keep the inner (top) outline, unless this one fits the square
+        // clearly better (the candidates have a side a band inside the top)
+        if let sides = cutFlip(m.quad, of: ref.pose, f, noise: s) {
+            if m.rms < fit - SlabTracker.clearlyBetterFit * s && fitsTell(ref.pose, sides, f, noise: s) {
+                bump("confirmRestarts"); candidates = [m]; lastMeasured = (m.pose.normal, t); events.append("candidate-restart")
+                return
+            }
             bump("cutFlips"); note("candidate-cutflip", &events)
             return
         }
-        if let rq = project(ref.pose, f.view), cutFlip(rq, of: m.pose, f, noise: s) != nil {
-            bump("cutFlips"); bump("confirmRestarts")
+        // the candidates are this outline's flip: it is the top, unless it fits clearly worse (a side a band inside)
+        if let rq = project(ref.pose, f.view), let sides = cutFlip(rq, of: m.pose, f, noise: s, closer: SlabTracker.innerCloser) {
+            bump("cutFlips")
+            if m.rms > fit + SlabTracker.clearlyWorseFit * s && fitsTell(m.pose, sides, f, noise: s) { note("candidate-cutflip", &events); return }
+            bump("confirmRestarts")
             candidates = [m]; lastMeasured = (m.pose.normal, t); events.append("candidate-restart")
             return
         }
@@ -862,7 +886,7 @@ public final class SlabTracker {
     }
 
     private func lock(_ t: Double, _ events: inout [String]) {
-        hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; implausible = 0
+        hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
         events.append("locked"); bump("locks")
     }
@@ -874,7 +898,13 @@ public final class SlabTracker {
         guard let L = lockEstimate else { return }
         let t = f.timestamp, s = cornerNoiseEstimate
         // the near edge caught at the bottom of its cut face: the lock is where it was, but this outline is not the top
-        if cutFlip(m0.quad, of: L.pose, f, noise: s) != nil {
+        if let sides = cutFlip(m0.quad, of: L.pose, f, noise: s) {
+            // unless it fits the square clearly better than the lock's own measurements: then the lock has a side a band
+            // inside the top, and this is the top
+            if m0.rms < SlabTracker.meanRms(hist) - SlabTracker.clearlyBetterFit * s && fitsTell(L.pose, sides, f, noise: s) {
+                topRecheck(applySideEvidence(m0, &events), f, outer: true, chk: chk, depthCheck: depthCheck, &events)
+                return
+            }
             bump("recheckCutFlip"); lastGood = t; misses = 0
             if unconfirmed != nil { confirmLock(&events) }
             note("recheck-cutflip", &events)
@@ -890,6 +920,19 @@ public final class SlabTracker {
         let m = applySideEvidence(m0, &events)
         guard let L2 = lockEstimate else { return }  // the side evidence may have swapped the lock
         lastMeasured = (m.pose.normal, t)
+        // the other way round: the lock is this outline's cut-face flip (it was confirmed on outlines caught at the
+        // bottom of the cut face) and this one is the top
+        if let lq = project(L2.pose, f.view), let sides = cutFlip(lq, of: m.pose, f, noise: s, closer: SlabTracker.innerCloser) {
+            if m.rms > SlabTracker.meanRms(hist) + SlabTracker.clearlyWorseFit * s && fitsTell(m.pose, sides, f, noise: s) {
+                // it fits clearly worse than the lock's measurements: a side put a band inside the top
+                bump("recheckInnerWorse"); lastGood = t; misses = 0
+                if unconfirmed != nil { confirmLock(&events) }
+                note("recheck-inner-worse", &events)
+                return
+            }
+            topRecheck(m, f, outer: false, chk: chk, depthCheck: depthCheck, &events)
+            return
+        }
         recent.append(m)
         if recent.count > max(2, settings.slideWindow) { recent.removeFirst(recent.count - max(2, settings.slideWindow)) }
         let agreed = agrees(L2, m.est, noise: s)
@@ -907,6 +950,9 @@ public final class SlabTracker {
             } else {
                 movers = []; implausible = 0
             }
+            // against a lock on the wrong edge of a band, its re-checks on that edge agree with it: they do not count
+            // against the top re-checks gathered so far, anything else does
+            if let e = SlabTracker.estimate(partners), !bandApart(m, e.pose, f, noise: s) { partners = [] }
             lastGood = t; misses = 0
             bump("recheckAgree"); note("ok", &events)
             if unconfirmed != nil { confirmLock(&events) }
@@ -925,30 +971,48 @@ public final class SlabTracker {
 
     /// Re-detections that agree with each other but not with the lock (the slab was moved, or slid a little): re-lock
     /// onto them, unless LiDAR contradicts them or the cradle could not have made the change (then only after three times
-    /// the evidence).
+    /// the evidence). `top`: they are the top, a band from the lock's outline (`topRecheck`; no cradle check).
     @discardableResult
     private func tryRelock(to ms: [Measurement], _ f: TrackerFrame, chk: DepthCheck?, depthCheck: (SlabPose) -> DepthCheck?, slide: Bool,
-                           _ events: inout [String]) -> Bool {
+                           top: Bool = false, _ events: inout [String]) -> Bool {
         guard let L = lockEstimate, let M = SlabTracker.estimate(ms) else { return false }
         var depthAgrees = false
         if let lc = chk, let mc = depthCheck(M.pose) {
             if lc.angleToImageDegrees < 4 && mc.angleToImageDegrees > lc.angleToImageDegrees + 4 {
                 bump("relockRejectedDepth"); events.append("relock-rejected-depth")
-                movers = []; recent = []
+                movers = []; recent = []; partners = []
                 return false
             }
             depthAgrees = mc.angleToImageDegrees < 4
         }
-        if unconfirmed == nil, !depthAgrees, !plausibleSlide(from: L, to: M) {
+        if !top, unconfirmed == nil, !depthAgrees, !plausibleSlide(from: L, to: M) {
             implausible += 1
             if implausible == 1 { bump("relockImplausible"); events.append("relock-implausible") }
             if implausible < 2 * settings.moveCount { return false }
         }
-        hist = ms; refreshLock(); movers = []; recent = []; implausible = 0
+        hist = ms; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
-        events.append("relocked"); bump("relocks"); if slide { bump("slides") }
+        events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
         ballLocator?.reset(); ballState = nil
         return true
+    }
+
+    /// A re-check a band from the lock on a side whose cut face shows, taken for the top: the lock is its cut-face flip
+    /// (`outer` false: the lock was confirmed on flipped outlines), or it is the lock's flip and fits the square clearly
+    /// better (`outer` true: the lock has a side a band inside the top). The slab is where the lock is, and
+    /// `topRelockCount` of these that agree with each other within `topRelockSeconds` re-lock onto them; re-checks on
+    /// the lock's edge between them agree with the lock and leave them be.
+    private func topRecheck(_ m: Measurement, _ f: TrackerFrame, outer: Bool, chk: DepthCheck?, depthCheck: (SlabPose) -> DepthCheck?,
+                            _ events: inout [String]) {
+        let t = f.timestamp, s = cornerNoiseEstimate
+        lastGood = t; misses = 0
+        if unconfirmed != nil { confirmLock(&events) }
+        bump(outer ? "recheckOuterBetter" : "recheckInner")
+        partners.removeAll { t - $0.time > settings.topRelockSeconds }
+        if let e = SlabTracker.estimate(partners), agrees(e, m.est, noise: s) { partners.append(m) } else { partners = [m] }
+        if partners.count >= max(1, settings.topRelockCount),
+           tryRelock(to: partners, f, chk: chk, depthCheck: depthCheck, slide: false, top: true, &events) { return }
+        note(outer ? "recheck-outer" : "recheck-inner", &events)
     }
 
     /// In the cradle the top's centre moves about `cradleRadius` times the change of tilt, opposite the way the normal
@@ -1033,7 +1097,7 @@ public final class SlabTracker {
 
     private func lose(_ events: inout [String]) {
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
-        movers = []; recent = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
+        movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
         events.append("lost"); bump("lost")
     }
@@ -1041,7 +1105,7 @@ public final class SlabTracker {
     /// Everything but the tap's seed.
     private func forget() {
         state = .searching; hist = []; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; candidates = []; movers = []
-        recent = []; implausible = 0
+        recent = []; partners = []; implausible = 0
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"
@@ -1053,7 +1117,7 @@ public final class SlabTracker {
         seed = nil   // its world point is in the old frame
         switch state {
         case .locked:
-            unconfirmed = (0, 0); movers = []; recent = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
+            unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
             events.append("lock-unconfirmed: " + reason)
         case .confirming:
             candidates = []; state = .searching; events.append("candidate-lost: " + reason)
@@ -1066,7 +1130,13 @@ public final class SlabTracker {
     /// If `quad` (any start, either way round) is `ref`'s outline in this view with one side, or two neighbouring ones,
     /// taken at the bottom of the cut face instead of the top edge (the near edge flipping on a real phone), the pose
     /// sides that flipped.
-    func cutFlip(_ quad: [Vec2], of ref: SlabPose, _ f: TrackerFrame, noise s: Double) -> Set<Int>? {
+    ///
+    /// `closer`: `quad` must lie nearer the flipped outline than this fraction of its distance from `ref`'s top outline
+    /// (rms over the corners). Taking a flip for the top lets it into the lock's average and pulls the tilt by degrees,
+    /// while taking the top for a flip only skips one re-check, so asking whether a new outline is the reference's flip is
+    /// lenient (`flipCloser`); asking the other way round, whether a reference is a new outline's flip (which moves the
+    /// lock or the candidates onto that outline), is strict (`innerCloser`).
+    func cutFlip(_ quad: [Vec2], of ref: SlabPose, _ f: TrackerFrame, noise s: Double, closer: Double = SlabTracker.flipCloser) -> Set<Int>? {
         guard quad.count == 4 else { return nil }
         let box = SlabBoxView(pose: ref.transformed(by: f.view.cameraFromWorld), spec: settings.spec, intrinsics: f.view.intrinsics)
         guard let T = box.topOutline else { return nil }
@@ -1083,9 +1153,48 @@ public final class SlabTracker {
         for sides in options {
             guard let F = box.outlineWithCutBottom(onSides: sides) else { continue }
             let d = rms(Q, F)
-            if d < tol && d < 0.5 * d0 && d < (best?.d ?? .infinity) { best = (sides, d) }
+            if d < tol && d < closer * d0 && d < (best?.d ?? .infinity) { best = (sides, d) }
         }
         return best?.sides
+    }
+
+    /// See `cutFlip`. At 1.5 m (a band of about 4 px) and 0.5 px corner noise, with a half enough flipped re-checks
+    /// passed for the top to pull the lock 3-6 deg off when the near edge flipped on most re-checks; with 0.7 it stayed
+    /// within about 1 deg, at the cost of skipping about 1 clean re-check in 160 at 1.5 px noise.
+    static let flipCloser = 0.7
+    static let innerCloser = 0.5
+
+    /// Which of two outlines a band apart is the top, from how well each fits the slab's square (the pose fit's rms
+    /// corner misfit): the top fits to the corner noise, an outline with a side a band off does not. At 0.5 px noise the
+    /// misfit is about 0.3 px for the top, 1.1 for the cut-face flip and 1.0 for a side a band inside at 0.64 m; 0.3,
+    /// 0.6 and 0.55 at 1 m; about 0.3 for all three at 1.5 m (a band of 4 px). In units of the corner noise (pixels):
+    /// an inner outline that fits worse than the reference's measurements by `clearlyWorseFit` is not the top, an outer
+    /// one that fits better by `clearlyBetterFit` is; both only where the fits can tell (`fitsTell`), else the rule that
+    /// the inner one is the top decides (comparing misfits that noise dominates picks the luckiest outline, and a lock
+    /// made from those then judges the real top by an unfairly low misfit).
+    static let clearlyWorseFit = 0.3
+    static let clearlyBetterFit = 0.5
+    /// the fits can tell where an outline with the sides a band off misfits by at least this many corner noises
+    static let fitsTellMisfit = 0.8
+
+    /// Whether the pose fits can tell p's top outline from the one with these sides a band off in this view: that one,
+    /// noise-free, misfits the square by `fitsTellMisfit` corner noises or more.
+    func fitsTell(_ p: SlabPose, _ sides: Set<Int>, _ f: TrackerFrame, noise s: Double) -> Bool {
+        let box = SlabBoxView(pose: p.transformed(by: f.view.cameraFromWorld), spec: settings.spec, intrinsics: f.view.intrinsics)
+        guard let F = box.outlineWithCutBottom(onSides: sides),
+              let fit = PoseSolver.solve(corners: F, intrinsics: f.view.intrinsics, spec: settings.spec,
+                                         down: f.view.directionToCamera(ARKitConvention.worldDown)) else { return false }
+        return fit.rmsPixels >= SlabTracker.fitsTellMisfit * s
+    }
+
+    /// mean rms corner misfit of measurements' pose fits (pixels)
+    static func meanRms(_ ms: [Measurement]) -> Double { ms.isEmpty ? 0 : ms.reduce(0) { $0 + $1.rms } / Double(ms.count) }
+
+    /// Whether m's outline and a pose's lie a band apart on a side whose cut face shows (either is the other's flip).
+    func bandApart(_ m: Measurement, _ p: SlabPose, _ f: TrackerFrame, noise s: Double) -> Bool {
+        if cutFlip(m.quad, of: p, f, noise: s) != nil { return true }
+        guard let q = project(p, f.view) else { return false }
+        return cutFlip(q, of: m.pose, f, noise: s, closer: SlabTracker.innerCloser) != nil
     }
 
     /// `q` turned (start and direction) to correspond corner by corner with `ref`.
@@ -1139,7 +1248,7 @@ public final class SlabTracker {
             let keep = ms.filter { $0.alt != nil }.map { m -> Measurement in var x = m; x.swapSides(); return x }
             return keep.isEmpty ? ms : keep
         }
-        candidates = swapped(candidates); movers = swapped(movers); recent = swapped(recent)
+        candidates = swapped(candidates); movers = swapped(movers); recent = swapped(recent); partners = swapped(partners)
         if state == .locked && !hist.isEmpty {
             hist = swapped(hist)
             refreshLock(); depthEstimate = nil
