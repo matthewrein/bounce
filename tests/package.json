@@ -1,0 +1,12 @@
+{
+  "name": "slab-bounce-testbed",
+  "private": true,
+  "description": "Synthetic camera clips and a scoring runner for index.html",
+  "scripts": {
+    "render": "node render.js",
+    "run": "node run.js"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  }
+}

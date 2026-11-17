@@ -110,7 +110,7 @@ const G=32.174; // ft/s^2
 const P={drop:3,reb:70,ball:35,size:7,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b11";
+const BUILD="b12";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -740,8 +740,9 @@ function frame(now){
   if(S.live){
     const v=S.video;if(v.readyState<2||!v.videoWidth)return;
     S.sw=v.videoWidth;S.sh=v.videoHeight;S.liveSrc=[S.sw,S.sh];
+    const t0=performance.now();
     prepare();track();if(S.fid%2===0)scanBall();update();
-    const now=performance.now();S.fps=S.tPrev?(S.fps||30)*.9+.1*1000/(now-S.tPrev):30;S.tPrev=now;
+    const now=performance.now();S.ms=now-t0;S.msAvg=S.msAvg==null?S.ms:S.msAvg*.95+S.ms*.05;S.fps=S.tPrev?(S.fps||30)*.9+.1*1000/(now-S.tPrev):30;S.tPrev=now;
     if(S.fid%30===0){HIST.push([Math.round(now/100)/10,S.quad?1:0,S.tilt==null?null:+S.tilt.toFixed(1),S.lastMisfit==null?null:+S.lastMisfit.toFixed(4),P.fov,S.jit==null?null:+S.jit.toFixed(2),Math.round(S.fps),S.ball?1:0,S.aspect==null?null:+S.aspect.toFixed(3),S.dist==null?null:+S.dist.toFixed(2)]);if(HIST.length>40)HIST.shift();}
   }
   if(!S.src||!S.W)return;
@@ -876,12 +877,13 @@ function diag(){
     screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
     sensor:{gravity:r(S.grav,3),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
     set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
-    status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[Math.round(p.x),Math.round(p.y)]),
+    status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[r(p.x,1),r(p.y,1)]),ms:r(S.ms,1),msAvg:r(S.msAvg,1),
     tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),
-    tilt:r(S.tilt,1),distFt:r(S.dist,2),normal:r(S.nrm,3),jitterPx:r(S.jit,2),fps:r(S.fps,0),
+    tilt:r(S.tilt,2),distFt:r(S.dist,2),normal:r(S.nrm,4),jitterPx:r(S.jit,2),fps:r(S.fps,0),
     ball:S.ball&&{x:Math.round(S.ball.x),y:Math.round(S.ball.y),r:r(S.ball.r,1),dropFt:S.tr&&S.tr.from?r(S.tr.from.drop,2):null},
     counts:K,histCols:"t,locked,tilt,misfit,fov,jitterPx,fps,ball,aspect,dist",hist:HIST};
 }
+window.slabDiagnostics=diag; // same JSON as the Copy diagnostics button; lets the test bed read it every frame
 $("diag").addEventListener("click",()=>{
   const text=JSON.stringify(diag()),b=$("diag"),out=$("diagOut");
   const show=()=>{out.hidden=false;out.value=text;out.focus();out.select();b.textContent="Select all and copy the text below";};
