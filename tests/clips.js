@@ -6,7 +6,8 @@
 
 const base = () => ({
   fps: 30, frames: 120,
-  slab: { size: 7, aspect: 1, thick: 0.9, sag: 0.1, bevel: 0.05, tilt: 10, heading: 0, yaw: 20 },
+  // the real slab (owner's description): ~7 in square, ~1 in thick at the edge, top a shallow dish ~1/8 in deep
+  slab: { size: 7, aspect: 1, thick: 1.0, dish: 0.125, bevel: 0.05, tilt: 10, heading: 0, yaw: 20 },
   base: { sx: 1.12, sz: 1.06, yawOff: 12, chamfer: 1.0, minH: 1.3, rough: 0.45 },
   floor: "mat",
   light: { type: "indoor", level: 1, amb: 0.8, sun: 2.2, el: 50, az: 30 },
@@ -66,7 +67,7 @@ const LIST = [
   ["noslab_base_only", "noslab", { slabPresent: false, baseOnly: true, floor: "concrete", cam: still(4, 50), slab: { tilt: 10 } }],
   // slab variations
   ["rect_slab_d4", "shape", { slab: { aspect: 1.03, tilt: 10, heading: 45 }, cam: still(4, 50) }],
-  ["curved_slab_d4", "shape", { slab: { sag: 0.25, tilt: 11, heading: 135, yaw: 40 }, cam: still(4, 50) }],
+  ["curved_slab_d4", "shape", { slab: { dish: 0.25, tilt: 11, heading: 135, yaw: 40 }, cam: still(4, 50) }],
   ["thick_lowview_d4", "shape hard", { slab: { thick: 1.15, tilt: 8, heading: 180, yaw: 0 }, cam: still(4, 35) }],
   ["lens_off_d4", "shape", { cam: { ...still(4, 50), fov: 70, k1: -0.03 }, slab: { tilt: 10, heading: 100 } }],
   ["ios_sign_noacc_d4", "sensor", { sensor: { iosSign: true, noAcc: true, bias: 0.5 }, cam: still(4, 50), slab: { tilt: 10, heading: 10 } }],
@@ -104,8 +105,28 @@ const LIST = [
   ["fp_tin_behind_d4", "fp", { extras: [{ type: "tin", x: 0.05, z: -1.0 }, { type: "tin", x: -0.45, z: -1.6, lid: "black", r: 0.09 }], cam: still(4, 48), slab: { tilt: 10, heading: 20 } }],
   ["fp_lid_sticker_behind_d5", "fp", { extras: [{ type: "sticker", x: 0.1, z: -0.8, r: 0.07 }, { type: "coin", x: -0.2, z: -1.2, r: 0.05 }, { type: "tin", x: 0.4, z: -2.2, r: 0.14 }], cam: still(5, 42), slab: { tilt: 12, heading: 200 } }],
   ["fp_floorball_behind_d4", "fp", { extras: [{ type: "floorball", x: 0.0, z: -0.9 }, { type: "floorball", x: 0.3, z: -1.5 }], cam: still(4, 50), slab: { tilt: 9, heading: 60 } }],
+  // ---- generator v2 (after the owner's notes: dish-shaped top, ~1 in thick, polished titanium ball) ----
+  // dish depth range and a flat top
+  ["flat_top_d4", "shape", { slab: { dish: 0, tilt: 10, heading: 70 }, cam: still(4, 50) }],
+  ["dish_shallow_d5", "shape", { slab: { dish: 0.0625, tilt: 12, heading: 250, yaw: 30 }, cam: still(5, 45) }],
+  ["dish_deep_d3", "shape", { slab: { dish: 0.1875, tilt: 9, heading: 110, yaw: -15 }, cam: still(3, 58) }],
+  ["thin_slab_d4", "shape", { slab: { thick: 0.75, tilt: 10, heading: 20 }, cam: still(4, 48) }],
+  // camera: rolling shutter (rows read out over ~25 ms), frame hiccups, heavier tremor
+  ["rs_shake_d4", "motion jitter", { cam: { ...still(4, 50), shake: 2, rs: 0.025 }, slab: { tilt: 11, heading: 300 } }],
+  ["rs_pan_d4", "motion jitter", { cam: { keys: [{ t: 0, D: 4, el: 50, az: 0, yaw: 0 }, { t: 1.6, D: 4, el: 50, az: 0 }, { t: 2.6, D: 4, el: 50, az: 0, yaw: 8 }, { t: 3.6, D: 4, el: 50, az: 0, yaw: 0 }], rs: 0.03 }, slab: { tilt: 10, heading: 80 } }],
+  ["hiccup_d4", "motion jitter", { cam: { ...still(4, 50), hiccup: 0.12 }, slab: { tilt: 10, heading: 160 } }],
+  ["tremor_heavy_d4", "motion jitter", { cam: { ...still(4, 50), tremor: 3.5, swayK: 0.6 }, slab: { tilt: 12, heading: 210 } }],
+  // light: colour temperature and white balance, two lights, a shadow passing over the slab
+  ["warm_lamp_d4", "light", { light: { kelvin: 2700, level: 0.25, el: 60, az: -40 }, wb: [0.75, 1, 1.5], cam: still(4, 50), slab: { tilt: 9, heading: 40 } }],
+  ["cool_window_d5", "light", { light: { kelvin: 6800, el: 25, az: 100, sun: 2.8, second: { kelvin: 2900, el: 70, az: -60, sun: 1.0 } }, cam: still(5, 45), slab: { tilt: 13, heading: 190 } }],
+  ["two_lights_d4", "light", { light: { el: 45, az: 40, sun: 1.8, second: { el: 45, az: 220, sun: 1.6 } }, cam: still(4, 50), slab: { tilt: 10, heading: 330 } }],
+  ["passing_shadow_d4", "light hard", { light: { el: 55, az: 20, sun: 2.6, passing: { t0: 1.0, t1: 3.2, w: 0.6, h: 2.5, dist: 2.2 } }, cam: still(4, 50), slab: { tilt: 11, heading: 60 } }],
+  // the titanium ball off the slab's centre (the dish turns its bounce toward the middle) and a satin finish
+  ["ball_held_offcenter_d4", "ball", { ball: { h: 1.6, dx: 0.17, dz: 0.12, arm: "other" }, cam: still(4, 50, 0, { pitch: 6 }), slab: { tilt: 10, heading: 0 } }],
+  ["ball_drop_offcenter_d4", "ball", { ball: { h: 1.4, dx: -0.16, dz: 0.1, drop: 2.0, arm: "other" }, cam: still(4, 50, 0, { pitch: 5 }), slab: { tilt: 12, heading: 90 } }],
+  ["ball_held_satin_d4", "ball", { ball: { h: 1.8, dx: 0.05, dz: -0.08, rough: 0.3, arm: "other" }, cam: still(4, 50, 0, { pitch: 6 }), slab: { tilt: 10, heading: 220 } }],
+  ["ball_held_d3_other", "ball", { ball: { h: 1.2, dx: 0.0, dz: 0.06, arm: "other" }, cam: still(3, 55, 0, { pitch: 8 }), slab: { tilt: 8, heading: 300 } }],
 ];
-
 function clips(filter) {
   const out = LIST.map(([name, tags, o], i) => {
     const s = merge(base(), JSON.parse(JSON.stringify(o)));

@@ -261,3 +261,27 @@ Results, 2 phases, 64 clips:
   works (frames identified by the video's clock): on 5 clips lock rate, accuracy, wobble and ball detection match step
   mode, but time to lock is 0.8-1.8 s instead of ~0.3 s, because searching costs 50-90 ms a frame on this machine and
   the sweep sees fewer frames per second. Tracking ran at 11-17 ms a frame.
+
+## Generator v2 (after the slab owner's notes) - all clips re-rendered (SCENE_VERSION 2)
+
+The owner described the real slab: the top is a shallow dish (curved both ways, about 1/8 in lower in the middle than at
+the corners, so a ball bounces back toward the middle), about 1 in thick at the edge, and the ball is polished
+titanium, not chrome. Changes to the scenario generator:
+- **Slab**: the top is now a paraboloid dish (`slab.dish`, default 0.125 in; the edges sag by half that between the
+  corners), 1 in thick by default (the convex 0.1 in "sag" of v1 was the wrong way round). New clips: flat top, dish
+  1/16 in at 5 ft, 3/16 in at 3 ft, a 1/4 in dish (the old curved-slab clip), a 3/4 in slab.
+- **Ground truth**: the plane through the four top corners still defines the slab's normal; new per frame for the
+  ball: where it would land on the dish if dropped straight down, the drop height to the dish (`ball.drop`; the old
+  plane-based height is `dropPlane`) and the dish's own normal there (`ball.hitNormal`), which the new **bounceErr**
+  metric compares with the direction the app launches the ball (with no ball, the slab's middle).
+- **Ball**: polished titanium (base colour of titanium, metallic, roughness 0.14; one clip 0.3), also the distractor
+  balls on the floor. Ball dropped off-centre now bounces off the dish's own normal.
+- **Camera**: rolling shutter (`cam.rs`, rows read out over 25-30 ms; rendered in 8 bands, ground-truth corners
+  projected at their own row's time), frame hiccups (`cam.hiccup`: the camera now and then drops a frame, the previous
+  one stays up longer), heavier tremor / lighter sway (`cam.tremor`, `cam.swayK`).
+- **Light**: colour temperature (`light.kelvin`) with a camera white balance that only partly corrects it (`wb`), a
+  second light with its own shadows (`light.second`), and something passing between the light and the slab whose
+  shadow sweeps across it mid-clip (`light.passing`; invisible to the camera).
+- 16 new clips at the end of `clips.js` (dish range, thin slab, rolling shutter still and panning, hiccups, heavy
+  tremor, warm lamp, cool window plus warm lamp, two lights, passing shadow, ball held / dropped off-centre, satin ball,
+  ball at 3 ft held from the far side).

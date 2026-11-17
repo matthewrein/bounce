@@ -22,10 +22,10 @@ async function renderClip(page, spec) {
   const hash = crypto.createHash("sha1").update(JSON.stringify(spec) + sceneHash).digest("hex").slice(0, 12);
   const gtFile = path.join(dir, "gt.json");
   if (!FORCE && !PREVIEW && fs.existsSync(gtFile)) { try { if (JSON.parse(fs.readFileSync(gtFile)).hash === hash) return "cached"; } catch (_) {} }
-  const n = PREVIEW ? 1 : spec.frames, frames = [], parts = [];
+  const n = PREVIEW ? 1 : spec.frames, frames = [], parts = [], pf = +opt("previewFrame", 0);
   const t0 = Date.now();
   for (let i = 0; i < n; i++) {
-    const r = await page.evaluate(([s, i]) => window.renderClipFrame(s, i), [spec, i]);
+    const r = await page.evaluate(([s, i]) => window.renderClipFrame(s, i), [spec, PREVIEW ? pf : i]);
     const buf = Buffer.from(r.jpeg.split(",")[1], "base64"); parts.push(buf); frames.push(r.gt);
     if (PREVIEW) fs.writeFileSync(path.join(OUT, spec.name + "_f0.jpg"), buf);
   }

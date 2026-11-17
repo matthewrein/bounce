@@ -4,7 +4,7 @@
 import * as THREE from "./node_modules/three/build/three.module.js";
 
 // bump when a change alters how existing clips look (the renderer caches clips by spec + this version)
-export const SCENE_VERSION = "1";
+export const SCENE_VERSION = "2";
 const W = 720, H = 1280, G_FT = 32.174, M_PER_FT = 0.3048, IN = 1 / 12;
 
 /* ---------------- small utilities ---------------- */
@@ -113,19 +113,28 @@ async function photoTex(name) { // optional private photo crops; only used when 
 // mean albedo of a texture image, so photo textures can be scaled to the procedural brightness
 function meanRGB(img) { const c = cnv(64, 64), x = c.getContext("2d"); x.drawImage(img, 0, 0, 64, 64); const d = x.getImageData(0, 0, 64, 64).data; let s = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) { s[0] += d[i]; s[1] += d[i + 1]; s[2] += d[i + 2]; } return s.map((v) => v / 4096); }
 
+// approximate RGB (0..1) of a black body at the given colour temperature
+function kelvinRGB(K) {
+  const t = K / 100; let r, g, b;
+  if (t <= 66) { r = 255; g = 99.47 * Math.log(t) - 161.12; b = t <= 19 ? 0 : 138.52 * Math.log(t - 10) - 305.04; }
+  else { r = 329.7 * Math.pow(t - 60, -0.1332); g = 288.12 * Math.pow(t - 60, -0.0755); b = 255; }
+  const c = (v) => Math.min(255, Math.max(0, v)) / 255, m = Math.max(c(r), c(g), c(b));
+  return [c(r) / m, c(g) / m, c(b) / m];
+}
 /* ---------------- geometry ---------------- */
-// Slab in its own frame: bottom face on y=0, top corners at y=t. The top is gently curved along x (sag at the middle),
+// Slab in its own frame: bottom face on y=0, top corners at y=t. The top is a shallow paraboloid dish, lowest in the
+// middle by `dish` (corners highest, edge midpoints dish/2 down), so a ball bounces back toward the middle,
 // with an optional small chamfer around the top edge. Returns meshes plus the four top corners (virtual sharp corners).
 function slabMeshes(o, matTop, matSide) {
-  const hx = o.hx, hz = o.hz, t = o.t, sag = o.sag, c = o.bevel;
-  const ht = (u) => t + sag * (1 - (u / hx) ** 2);
+  const hx = o.hx, hz = o.hz, t = o.t, c = o.bevel;
+  const ht = (u, v) => t - dishDepth(o.dish, hx, hz, u, v);
   const N = 28, us = [-hx], vs = [-hz];
   for (let i = 0; i <= N; i++) { us.push(-hx + c + (2 * hx - 2 * c) * i / N); vs.push(-hz + c + (2 * hz - 2 * c) * i / N); }
   us.push(hx); vs.push(hz);
   const M = us.length, pos = [], uv = [], idx = [];
   for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
     const edge = i === 0 || j === 0 || i === M - 1 || j === M - 1;
-    pos.push(us[i], ht(us[i]) - (edge ? c : 0), vs[j]); uv.push((us[i] + hx) / (2 * hx), 1 - (vs[j] + hz) / (2 * hz));
+    pos.push(us[i], ht(us[i], vs[j]) - (edge ? c : 0), vs[j]); uv.push((us[i] + hx) / (2 * hx), 1 - (vs[j] + hz) / (2 * hz));
   }
   for (let j = 0; j < M - 1; j++) for (let i = 0; i < M - 1; i++) { const a = j * M + i, b = a + 1, d = a + M, e = d + 1; idx.push(a, d, b, b, d, e); }
   const gTop = new THREE.BufferGeometry(); gTop.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); gTop.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); gTop.setIndex(idx); gTop.computeVertexNormals();
@@ -134,7 +143,7 @@ function slabMeshes(o, matTop, matSide) {
   const sides = [[[-hx, -hz], [hx, -hz]], [[hx, -hz], [hx, hz]], [[hx, hz], [-hx, hz]], [[-hx, hz], [-hx, -hz]]];
   for (const [A, B] of sides) {
     const p = [], q = [], id = [], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
-    for (let k = 0; k <= N; k++) { const s = k / N, x = A[0] + (B[0] - A[0]) * s, z = A[1] + (B[1] - A[1]) * s, top = ht(x) - c;
+    for (let k = 0; k <= N; k++) { const s = k / N, x = A[0] + (B[0] - A[0]) * s, z = A[1] + (B[1] - A[1]) * s, top = ht(x, z) - c;
       p.push(x, 0, z, x, top, z); q.push(s * L / (7 * IN), 0, s * L / (7 * IN), top / (1.1 * IN)); }
     for (let k = 0; k < N; k++) { const a = 2 * k; id.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(p, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(q, 2)); g.setIndex(id); g.computeVertexNormals();
@@ -143,6 +152,8 @@ function slabMeshes(o, matTop, matSide) {
   for (const m of meshes) { m.castShadow = true; m.receiveShadow = true; }
   return { meshes, corners: [[-hx, t, -hz], [hx, t, -hz], [hx, t, hz], [-hx, t, hz]].map((a) => new THREE.Vector3(...a)) };
 }
+// how far the dish top lies below the plane through the corners at (u,v) in the slab's frame
+function dishDepth(dish, hx, hz, u, v) { return dish * (1 - ((u / hx) ** 2 + (v / hz) ** 2) / 2); }
 // prism with a horizontal polygon footprint (x,z list) from y=0 up to a plane given by topY(x,z)
 function prism(foot, topY, mat) {
   const p = [], id = [], n = foot.length;
@@ -204,13 +215,13 @@ async function build(spec) {
   const B = spec.base || {};
   const foot = chamferRect(hx * (B.sx || 1.1), hz * (B.sz || 1.05), (B.chamfer || 1.0) * IN, rad((S.yaw || 0) + (B.yawOff || 0)), (B.ox || 0) * IN, (B.oz || 0) * IN);
   // the slab's bottom plane passes through P0 with normal n; lift P0 so the base is at least `minH` tall and the slab clears the ground
-  const t = (S.thick || 0.9) * IN, minH = (B.minH || 1.3) * IN;
+  const t = (S.thick || 1.0) * IN, minH = (B.minH || 1.3) * IN;
   const below = (x, z) => -(n.x * x + n.z * z) / n.y; // plane height offset relative to P0.y at (x,z)
   let P0y = 0; for (const [x, z] of foot) P0y = Math.max(P0y, minH - below(x, z));
   const slabFoot = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]].map(([x, z]) => new THREE.Vector3(x, 0, z).applyQuaternion(q));
   for (const v of slabFoot) P0y = Math.max(P0y, 0.25 * IN - v.y);
   const P0 = new THREE.Vector3(0, P0y, 0);
-  out.n = n; out.q = q; out.P0 = P0; out.hx = hx; out.hz = hz; out.t = t;
+  out.n = n; out.q = q; out.P0 = P0; out.hx = hx; out.hz = hz; out.t = t; out.dish = (S.dish ?? 0.125) * IN;
   // material set-up (procedural by default, photo crops when asked and available)
   const tex = { top: canvasTex(TEX.cementTop(r)), side: canvasTex(TEX.cementSide(r)), base: canvasTex(TEX.baseBlack(r)) };
   if (spec.photoTextures) {
@@ -228,7 +239,7 @@ async function build(spec) {
   const matTop = mk("top", 0.92), matSide = mk("side", 0.95), matBase = mk("base", B.rough || 0.45);
   matTop.color.multiply(new THREE.Color(...tint)); matSide.color.multiply(new THREE.Color(...(S.sideTint || tint)));
   if (spec.slabPresent !== false) {
-    const sl = slabMeshes({ hx, hz, t, sag: (S.sag ?? 0.1) * IN, bevel: (S.bevel ?? 0.05) * IN }, matTop, matSide);
+    const sl = slabMeshes({ hx, hz, t, dish: (S.dish ?? 0.125) * IN, bevel: (S.bevel ?? 0.05) * IN }, matTop, matSide);
     const grp = new THREE.Group(); for (const m of sl.meshes) grp.add(m); grp.position.copy(P0); grp.quaternion.copy(q); scene.add(grp);
     grp.updateMatrixWorld(true); out.corners = sl.corners.map((c) => c.clone().applyMatrix4(grp.matrixWorld));
     out.slabGroup = grp;
@@ -239,14 +250,32 @@ async function build(spec) {
 
   // lights
   const amb = L.amb ?? 0.8, sun = L.sun ?? 2.2;
-  scene.add(new THREE.HemisphereLight(L.type === "outdoor" ? 0xbfd8ff : 0xfff4e6, 0x5a5048, amb * Math.PI * 0.35));
-  const dl = new THREE.DirectionalLight(L.type === "outdoor" ? 0xfff2dc : 0xfff6ea, sun * Math.PI * 0.35);
+  // optional colour temperature (kelvin) for the main light and the sky fill; the camera's white balance is set in post
+  const kc = L.kelvin ? kelvinRGB(L.kelvin) : null;
+  scene.add(new THREE.HemisphereLight(kc ? new THREE.Color(...kc) : (L.type === "outdoor" ? 0xbfd8ff : 0xfff4e6), 0x5a5048, amb * Math.PI * 0.35));
+  const dl = new THREE.DirectionalLight(kc ? new THREE.Color(...kc) : (L.type === "outdoor" ? 0xfff2dc : 0xfff6ea), sun * Math.PI * 0.35);
   const lel = rad(L.el ?? 50), laz = rad(L.az ?? 30);
   dl.position.set(Math.cos(lel) * Math.sin(laz) * 10, Math.sin(lel) * 10, Math.cos(lel) * Math.cos(laz) * 10).add(out.C);
   dl.target.position.copy(out.C); scene.add(dl.target);
   dl.castShadow = true; dl.shadow.mapSize.set(2048, 2048); Object.assign(dl.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 1, far: 30 });
   dl.shadow.bias = -0.0004; dl.shadow.normalBias = 0.01; dl.shadow.radius = L.softShadow ?? 3; scene.add(dl);
   if (L.fill) { const f2 = new THREE.PointLight(0xffffff, L.fill * 4, 0, 2); f2.position.set(-2, 4, 2).add(out.C); scene.add(f2); }
+  if (L.second) { // a second lamp or window: a second set of shadows
+    const L2 = L.second, d2 = new THREE.DirectionalLight(L2.kelvin ? new THREE.Color(...kelvinRGB(L2.kelvin)) : 0xffffff, (L2.sun ?? 1.5) * Math.PI * 0.35);
+    const e2 = rad(L2.el ?? 40), a2 = rad(L2.az ?? 200);
+    d2.position.set(Math.cos(e2) * Math.sin(a2) * 10, Math.sin(e2) * 10, Math.cos(e2) * Math.cos(a2) * 10).add(out.C);
+    d2.target.position.copy(out.C); scene.add(d2.target);
+    d2.castShadow = true; d2.shadow.mapSize.set(1024, 1024); Object.assign(d2.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 1, far: 30 });
+    d2.shadow.bias = -0.0004; d2.shadow.normalBias = 0.01; scene.add(d2);
+  }
+  if (L.passing) { // something (a person, an arm) passing between the main light and the slab: invisible to the camera,
+    // but its shadow sweeps across the slab between t0 and t1 seconds
+    const P2 = L.passing, occ = new THREE.Mesh(new THREE.BoxGeometry(P2.w ?? 0.5, P2.h ?? 2, P2.d ?? 0.5), new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+    occ.castShadow = true; scene.add(occ);
+    const ld = dl.position.clone().sub(out.C).normalize(), side = new THREE.Vector3().crossVectors(ld, new THREE.Vector3(0, 1, 0)).normalize();
+    out.movers = (out.movers || []).concat([(t) => { const s = Math.min(1, Math.max(0, (t - (P2.t0 ?? 1)) / ((P2.t1 ?? 3) - (P2.t0 ?? 1))));
+      occ.position.copy(out.C).add(ld.clone().multiplyScalar(P2.dist ?? 2.5)).add(side.clone().multiplyScalar(-1.8 + 3.6 * s)); }]);
+  }
 
   // extras: things that might fool the slab or ball detectors
   for (const e of spec.extras || []) addExtra(scene, e, out, r);
@@ -255,7 +284,8 @@ async function build(spec) {
   if (spec.ball) {
     out.crt = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
     out.cube = new THREE.CubeCamera(0.02, 100, out.crt); scene.add(out.cube);
-    const bm = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, metalness: 1, roughness: 0.06, envMap: out.crt.texture });
+    // polished titanium: a mirror, but a darker, warmer grey than chrome and a little soft (spec.ball.rough)
+    const bm = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.542, 0.497, 0.449), metalness: 1, roughness: spec.ball.rough ?? 0.14, envMap: out.crt.texture });
     out.ball = new THREE.Mesh(new THREE.SphereGeometry(35 / 1000 / M_PER_FT / 2, 48, 32), bm); out.ball.castShadow = true; scene.add(out.ball);
     if (spec.ball.hand !== false) {
       // a pinch grip: two fingertips on either side of the ball's top, a palm, and a forearm running to the shoulder.
@@ -272,7 +302,7 @@ async function build(spec) {
   const sr = rng(spec.seed * 7 + 3);
   const ax = new THREE.Vector3(gauss(sr), gauss(sr), gauss(sr)).normalize();
   out.sensorBias = new THREE.Quaternion().setFromAxisAngle(ax, rad(spec.sensor?.bias ?? 0.3));
-  out.shake = makeShake(rng(spec.seed * 13 + 5), spec.cam.shake ?? 1);
+  out.shake = makeShake(rng(spec.seed * 13 + 5), spec.cam.shake ?? 1, spec.cam.tremor ?? 1, spec.cam.swayK ?? 1);
   out.handSway = [bandSignal(r, 0.2, 1.2), bandSignal(r, 0.2, 1.2), bandSignal(r, 0.2, 1.2)];
   if (spec.cam.sway) { const wr = rng(spec.seed * 97 + 29), sw = spec.cam.sway; out.sway = [0, 1, 2].map(() => bandSignal(wr, sw.f0 ?? 0.1, sw.f1 ?? 0.5)); }
   if (spec.cam.wyaw) { const yr = rng(spec.seed * 101 + 37); out.wyaw = bandSignal(yr, spec.cam.wyaw.f0 ?? 0.2, spec.cam.wyaw.f1 ?? 1); }
@@ -293,7 +323,7 @@ function addExtra(scene, e, ctx, r) {
     else m.position.copy(at(e.x, e.z)).setY(0.003);
   } else if (e.type === "floorball") {
     const Rb = 35 / 1000 / M_PER_FT / 2;
-    m = new THREE.Mesh(new THREE.SphereGeometry(Rb, 48, 32), std({ color: 0xf2f2f2, metalness: 1, roughness: 0.06 })); m.position.copy(at(e.x, e.z)).setY(Rb);
+    m = new THREE.Mesh(new THREE.SphereGeometry(Rb, 48, 32), std({ color: new THREE.Color().setRGB(0.542, 0.497, 0.449), metalness: 1, roughness: 0.14 })); m.position.copy(at(e.x, e.z)).setY(Rb);
     // a floor ball reflects a generic room (static); good enough to look like chrome
     const crt = new THREE.WebGLCubeRenderTarget(64, { type: THREE.HalfFloatType }); const cc = new THREE.CubeCamera(0.02, 100, crt); cc.position.copy(m.position); scene.add(cc); m.material.envMap = crt.texture; ctx.staticCubes = (ctx.staticCubes || []).concat([[cc, m]]);
   } else if (e.type === "box") {
@@ -310,12 +340,12 @@ function addExtra(scene, e, ctx, r) {
 }
 
 /* ---------------- camera motion: keyframes + hand shake ---------------- */
-function makeShake(r, k) {
+function makeShake(r, k, tremK = 1, swayK = 1) {
   // slow sway plus physiological tremor, in rotation (deg) and translation (ft)
   const s = (f0, f1) => bandSignal(r, f0, f1);
   const rot = [s(0.2, 1.5), s(0.2, 1.5), s(0.2, 1.5)], trem = [s(6, 11), s(6, 11), s(6, 11)], tr = [s(0.2, 1.5), s(0.2, 1.5), s(0.2, 1.5)];
   return (t) => ({
-    rot: rot.map((f, i) => k * (0.35 * f(t) + 0.04 * trem[i](t))), // degrees
+    rot: rot.map((f, i) => k * (0.35 * swayK * f(t) + 0.04 * tremK * trem[i](t))), // degrees
     tr: tr.map((f) => k * 0.009 * f(t)), // ~3 mm rms per axis at k=1
   });
 }
@@ -359,6 +389,18 @@ function isStill(spec, t) {
 
 /* ---------------- ball motion ---------------- */
 const RB = 35 / 1000 / M_PER_FT / 2;
+// Where a vertical line through world point p meets the dish top: how far below p (ft), and the dish's own normal there
+// (world). The dish lies below the plane through the corners by dishDepth(); found by a few fixed-point steps.
+function dishHit(ctx, p) {
+  const up = new THREE.Vector3(0, 1, 0), n = ctx.n, qi = ctx.q.clone().invert();
+  let s = n.dot(p.clone().sub(ctx.C)) / n.y, loc = null;
+  for (let k = 0; k < 4; k++) {
+    const hit = p.clone().sub(up.clone().multiplyScalar(s)); loc = hit.clone().sub(ctx.C).applyQuaternion(qi);
+    s = (n.dot(p.clone().sub(ctx.C)) + dishDepth(ctx.dish, ctx.hx, ctx.hz, loc.x, loc.z)) / n.y;
+  }
+  const nl = new THREE.Vector3(-ctx.dish * loc.x / (ctx.hx * ctx.hx), 1, -ctx.dish * loc.z / (ctx.hz * ctx.hz)).normalize().applyQuaternion(ctx.q);
+  return { s, loc, normal: nl };
+}
 function ballAt(ctx, t) {
   const b = ctx.spec.ball, C = ctx.C, n = ctx.n;
   const sway = ctx.handSway.map((f) => f(t) * 0.006 * (b.sway ?? 1));
@@ -366,10 +408,10 @@ function ballAt(ctx, t) {
   const hold = { pos: p0, held: true };
   if (b.drop == null || t < b.drop) return hold;
   const d0 = b.drop, ps = ballAt(ctx, d0 - 1e-6).pos; // release point
-  const hPlane = n.dot(ps.clone().sub(C)); // distance from the plane along its normal
-  const tau = Math.sqrt(Math.max(0, 2 * (hPlane - RB) / (n.y * G_FT))), dt = t - d0;
+  const dh = dishHit(ctx, ps), nh = dh.normal; // it falls straight onto the dish and bounces off the dish's own normal there
+  const tau = Math.sqrt(Math.max(0, 2 * (dh.s - RB) / G_FT)), dt = t - d0;
   if (dt <= tau) return { pos: ps.clone().add(new THREE.Vector3(0, -0.5 * G_FT * dt * dt, 0)), held: false };
-  const vin = new THREE.Vector3(0, -G_FT * tau, 0), vout = vin.clone().sub(n.clone().multiplyScalar(2 * vin.dot(n))).multiplyScalar(0.7);
+  const vin = new THREE.Vector3(0, -G_FT * tau, 0), vout = vin.clone().sub(nh.clone().multiplyScalar(2 * vin.dot(nh))).multiplyScalar(0.7);
   const pi = ps.clone().add(new THREE.Vector3(0, -0.5 * G_FT * tau * tau, 0)), u = dt - tau;
   const p = pi.add(vout.multiplyScalar(u)).add(new THREE.Vector3(0, -0.5 * G_FT * u * u, 0));
   if (p.y < RB) p.y = RB;
@@ -387,12 +429,19 @@ function project(spec, P) {
   const k1 = spec.cam.k1 || 0; if (k1) { const r2 = (x * x + y * y) / (f * f), s = 1 + k1 * r2; x *= s; y *= s; }
   return [W / 2 + x, H / 2 + y];
 }
+// Project a world point as the camera saw it. With a rolling shutter (spec.cam.rs: readout time, s) each image row is
+// read at its own time, so the point is projected with the camera pose of the row it lands on.
+function projectAt(ctx, t, P) {
+  const rs = ctx.spec.cam.rs || 0; let tt = t, p = null;
+  for (let k = 0; k < (rs ? 3 : 1); k++) { p = project(ctx.spec, toApp(cameraAt(ctx, tt), P)); if (!p) return null; tt = t + rs * (p[1] / H - 0.5); }
+  return p;
+}
 function groundTruth(ctx, t) {
   const spec = ctx.spec, cam = cameraAt(ctx, t), f = focalPx(spec), gt = { t: +t.toFixed(4), still: isStill(spec, t) };
   const up = new THREE.Vector3(0, 1, 0);
   gt.grav = dirToApp(cam, up.clone().negate());
   if (ctx.corners) {
-    const pc = ctx.corners.map((c) => project(spec, toApp(cam, c)));
+    const pc = ctx.corners.map((c) => projectAt(ctx, t, c));
     gt.corners = pc.every(Boolean) ? pc.map((p) => [+p[0].toFixed(2), +p[1].toFixed(2)]) : null;
     gt.slabVisible = !!gt.corners && gt.corners.every(([x, y]) => x >= 3 && y >= 3 && x <= W - 3 && y <= H - 3);
     gt.normal = dirToApp(cam, ctx.n).map((v) => +v.toFixed(5));
@@ -401,11 +450,11 @@ function groundTruth(ctx, t) {
     gt.side = +(gt.corners ? [0, 1, 2, 3].reduce((s, i) => s + Math.hypot(gt.corners[(i + 1) % 4][0] - gt.corners[i][0], gt.corners[(i + 1) % 4][1] - gt.corners[i][1]), 0) / 4 : 0).toFixed(1);
   } else { gt.slabVisible = false; gt.corners = null; }
   if (ctx.ball) {
-    const b = ballAt(ctx, t), P = toApp(cam, b.pos), c = project(spec, P), dist = Math.hypot(...P);
+    const b = ballAt(ctx, t), P = toApp(cam, b.pos), c = projectAt(ctx, t, b.pos), dist = Math.hypot(...P);
     const rr = f * RB / Math.sqrt(Math.max(1e-6, dist * dist - RB * RB));
-    // drop height: straight down from the ball's centre to the plane through the slab corners, minus the radius
-    const n = ctx.n, s = n.dot(b.pos.clone().sub(ctx.C)) / n.y, hit = b.pos.clone().sub(up.clone().multiplyScalar(s));
-    const loc = hit.clone().sub(ctx.C).applyQuaternion(ctx.q.clone().invert());
+    // drop height: straight down from the ball's centre to the dish top, minus the radius (dropPlane: to the plane
+    // through the corners instead); hitNormal: the dish's own normal where it lands (what it bounces off)
+    const n = ctx.n, sp = n.dot(b.pos.clone().sub(ctx.C)) / n.y, dh = dishHit(ctx, b.pos), s = dh.s, loc = dh.loc;
     const on = Math.abs(loc.x) <= ctx.hx && Math.abs(loc.z) <= ctx.hz;
     let rim = 0;
     if (c) {
@@ -424,7 +473,8 @@ function groundTruth(ctx, t) {
       rim = ok / 48;
     }
     const vis = rim >= 0.8;
-    gt.ball = { x: c ? +c[0].toFixed(2) : null, y: c ? +c[1].toFixed(2) : null, r: +rr.toFixed(2), visible: vis, rim: +rim.toFixed(2), held: b.held, onSlab: on, drop: +(s - RB).toFixed(4) };
+    gt.ball = { x: c ? +c[0].toFixed(2) : null, y: c ? +c[1].toFixed(2) : null, r: +rr.toFixed(2), visible: vis, rim: +rim.toFixed(2), held: b.held, onSlab: on, drop: +(s - RB).toFixed(4), dropPlane: +(sp - RB).toFixed(4),
+      hitNormal: dirToApp(cam, dh.normal).map((v) => +v.toFixed(5)), hitLocal: [+(loc.x / ctx.hx).toFixed(3), +(loc.z / ctx.hz).toFixed(3)] };
   }
   return gt;
 }
@@ -514,6 +564,7 @@ async function prepareClip(spec) { const key = JSON.stringify(spec); if (!CTX ||
 function disposeScene(s) { s.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { for (const k in o.material) { const v = o.material[k]; if (v && v.isTexture) v.dispose(); } o.material.dispose(); } }); }
 function place(ctx, t) {
   const cam = cameraAt(ctx, t); ctx.camera.position.copy(cam.pos); ctx.camera.quaternion.copy(cam.q); ctx.camera.updateMatrixWorld(true);
+  if (ctx.movers) for (const m of ctx.movers) m(t);
   if (ctx.ball) {
     const b = ballAt(ctx, t); ctx.ball.position.copy(b.pos);
     if (ctx.hand) poseHand(ctx, ballAt(ctx, Math.min(t, ctx.spec.ball.drop ?? t)).pos, cam);
@@ -573,12 +624,18 @@ window.renderClipFrame = async (spec, i) => {
   const span = (tt) => { const g = groundTruth(ctx, tt); const pts = []; if (g.corners) pts.push(...g.corners); if (g.ball && g.ball.x != null) pts.push([g.ball.x, g.ball.y]); return pts; };
   const a = span(t - expT / 2), b = span(t + expT / 2); let mv = 0; for (let k = 0; k < Math.min(a.length, b.length); k++) mv = Math.max(mv, Math.hypot(a[k][0] - b[k][0], a[k][1] - b[k][1]));
   const K = Math.max(1, Math.min(8, Math.ceil(mv / 1.5))); let tq = performance.now();
-  const acc = new Float32Array(W * H * 3);
-  for (let s = 0; s < K; s++) {
-    const ts = t + expT * ((s + 0.5) / K - 0.5); place(ctx, ts);
-    if (ctx.cube && s === 0) { ctx.ball.visible = false; ctx.cube.position.copy(ctx.ball.position); ctx.cube.update(R, ctx.scene); ctx.ball.visible = true; }
-    const buf = renderOnce(ctx);
-    for (let y = 0; y < H; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = 0; x < W; x++) { acc[dst + x * 3] += enc(buf[src + x * 4] * expo); acc[dst + x * 3 + 1] += enc(buf[src + x * 4 + 1] * expo); acc[dst + x * 3 + 2] += enc(buf[src + x * 4 + 2] * expo); } }
+  const acc = new Float32Array(W * H * 3), wb = spec.wb || [1, 1, 1];
+  // rolling shutter: the frame is read out top to bottom over spec.cam.rs seconds, so each band of rows is rendered
+  // with the camera (and ball) where they were when that band was read
+  const rs = spec.cam.rs || 0, NB = rs ? 8 : 1;
+  for (let band = 0; band < NB; band++) {
+    const y0 = Math.round(band * H / NB), y1 = Math.round((band + 1) * H / NB), tb = rs * (((y0 + y1) / 2) / H - 0.5);
+    for (let s = 0; s < K; s++) {
+      const ts = t + tb + expT * ((s + 0.5) / K - 0.5); place(ctx, ts);
+      if (ctx.cube && s === 0 && band === 0) { ctx.ball.visible = false; ctx.cube.position.copy(ctx.ball.position); ctx.cube.update(R, ctx.scene); ctx.ball.visible = true; }
+      const buf = renderOnce(ctx);
+      for (let y = y0; y < y1; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = 0; x < W; x++) { acc[dst + x * 3] += enc(buf[src + x * 4] * expo * wb[0]); acc[dst + x * 3 + 1] += enc(buf[src + x * 4 + 1] * expo * wb[1]); acc[dst + x * 3 + 2] += enc(buf[src + x * 4 + 2] * expo * wb[2]); } }
+    }
   }
   tm("subframes", tq); tq = performance.now();
   // AE follows this frame's brightness for the next one
