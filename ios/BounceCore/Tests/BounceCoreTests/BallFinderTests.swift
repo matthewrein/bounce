@@ -35,6 +35,24 @@ struct BallCrop {
         return (w.region, w.radii, BallLocator.imageUp(at: w.region.center, depth: s.center.length, intrinsics: K, down: down))
     }
 
+    /// The crop turned a quarter turn clockwise: pixel (i, j) moves to (H - 1 - j, i), a point (x, y) to (H - y, x), and
+    /// camera axes (X, Y, Z) to (-Y, X, Z). (An ARKit frame from a phone held upright arrives turned like this.)
+    func turnedClockwise() -> BallCrop {
+        let W = luma.width, H = luma.height
+        var p = Plane(width: H, height: W)
+        for j in 0..<H { for i in 0..<W { p[H - 1 - j, i] = luma[i, j] } }
+        let K2 = CameraIntrinsics(fx: K.fy, fy: K.fx, cx: Double(H) - K.cy, cy: K.cx, width: H, height: W)
+        func pt(_ q: Vec2) -> Vec2 { Vec2(Double(H) - q.y, q.x) }
+        return BallCrop(name: name, luma: p, K: K2, corners: corners.map(pt), down: Vec3(-down.y, down.x, down.z), spec: spec, ball: ball,
+                        truthCenter: truthCenter.map(pt), truthOnAxis: truthOnAxis, truthDrop: truthDrop, floorBall: floorBall)
+    }
+
+    /// The same crop with other luma.
+    func with(luma l: Plane) -> BallCrop {
+        BallCrop(name: name, luma: l, K: K, corners: corners, down: down, spec: spec, ball: ball, truthCenter: truthCenter,
+                 truthOnAxis: truthOnAxis, truthDrop: truthDrop, floorBall: floorBall)
+    }
+
     static func all() throws -> [BallCrop] {
         let dir = Fixtures.root.appendingPathComponent("balls")
         let rows = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("ball_crops.json"))) as! [[String: Any]]
@@ -53,6 +71,44 @@ struct BallCrop {
                             truthDrop: b.map { dbl($0["dropMetres"]) } ?? .nan, floorBall: (r["floorBall"] as? Bool) ?? false)
         }
     }
+}
+
+/// Ways to spoil a picture a little, as a phone's sensor and light would.
+enum Perturbation: CustomStringConvertible {
+    case noise(sigma: Double, seed: UInt64)
+    case gain(Float)
+    case blur
+
+    func apply(_ p: Plane) -> Plane {
+        var q = p
+        switch self {
+        case let .noise(sigma, seed):
+            var rng = SeededRandom(seed)
+            for i in 0..<q.data.count { q.data[i] += Float(rng.gaussian() * sigma) }
+        case let .gain(g):
+            for i in 0..<q.data.count { q.data[i] *= g }
+        case .blur:
+            // [1 2 1] / 4 across and down (a Gaussian of about 0.7 px)
+            let W = p.width, H = p.height
+            var t = p
+            for y in 0..<H { for x in 1..<(W - 1) { t[x, y] = (p[x - 1, y] + 2 * p[x, y] + p[x + 1, y]) / 4 } }
+            for y in 1..<(H - 1) { for x in 0..<W { q[x, y] = (t[x, y - 1] + 2 * t[x, y] + t[x, y + 1]) / 4 } }
+        }
+        return q
+    }
+
+    var description: String {
+        switch self {
+        case let .noise(sigma, seed): return String(format: "noise %.0f/%d", sigma, seed)
+        case let .gain(g): return String(format: "gain %.1f", g)
+        case .blur: return "blur"
+        }
+    }
+
+    /// The set the perturbed-fixture tests use (chosen before the tests were first run).
+    static let standardSet: [Perturbation] = [.noise(sigma: 2, seed: 1), .noise(sigma: 2, seed: 2), .noise(sigma: 2, seed: 3),
+                                              .noise(sigma: 4, seed: 1), .noise(sigma: 4, seed: 2), .noise(sigma: 4, seed: 3),
+                                              .gain(0.6), .gain(0.4), .blur]
 }
 
 /// A sphere rendered through a pinhole camera (3x3 samples per pixel) over a textured background.
@@ -95,6 +151,29 @@ struct SphereScene {
         return img
     }
 
+    /// A polished ball (whole outline) painted over a picture: only the pixels near it are rendered (3x3 samples each);
+    /// where a sample misses the ball it takes the picture's own pixel.
+    static func paint(ballAt center: Vec3, radius: Double, up: Vec3, K: CameraIntrinsics, over base: Plane) -> Plane {
+        var img = base
+        let surface = mirrorSurface(up: up, lowerVisible: true)
+        guard let pc = K.project(center), let r = Bounce.imageRadius(ballCenter: center, intrinsics: K, ball: BallSpec(diameter: 2 * radius)) else { return img }
+        let reach = r * 1.6 + 3
+        for y in max(0, Int(pc.y - reach))..<min(K.height, Int(pc.y + reach) + 1) {
+            for x in max(0, Int(pc.x - reach))..<min(K.width, Int(pc.x + reach) + 1) {
+                var v: Float = 0
+                for sy in 0..<3 {
+                    for sx in 0..<3 {
+                        let d = K.ray(Vec2(Double(x) + (Double(sx) + 0.5) / 3, Double(y) + (Double(sy) + 0.5) / 3)).normalized, b = d.dot(center)
+                        let disc = b * b - center.lengthSquared + radius * radius
+                        v += disc >= 0 ? (surface((d * (b - disc.squareRoot()) - center) / radius) ?? base[x, y]) : base[x, y]
+                    }
+                }
+                img[x, y] = v / 9
+            }
+        }
+        return img
+    }
+
     /// A polished ball as seen from above: the upper half reflects the room (a bright window and light-and-dark bands),
     /// the lower half the floor; `lowerVisible: false` makes the lower half the background's own luma.
     static func mirrorSurface(up: Vec3, lowerVisible: Bool) -> (Vec3) -> Float? {
@@ -132,7 +211,8 @@ final class BallFinderTests: XCTestCase {
     }
 
     /// The locator, fed each crop twice in a row with the slab pose solved from the true corners, reports the ball and
-    /// its drop height to within 2.5 cm.
+    /// its drop height to within 2.5 cm. (Fails on ball_held_offcenter_d4_60, -2.7 cm, since the lower-half refit that
+    /// had been added after seeing this crop was removed: it made clean balls seen by a pitched camera 2-6% too large.)
     func testLocatorDropHeight() throws {
         var lines: [String] = [], errs: [Double] = []
         for c in try BallCrop.all() where c.truthCenter != nil {
@@ -173,7 +253,9 @@ final class BallFinderTests: XCTestCase {
         }
     }
 
-    /// The ball on the floor is seen as a ball, and rejected because its straight drop does not land on the slab.
+    /// A ball on the floor that the finder does find is rejected because its straight drop does not land on the slab.
+    /// (This crop has two floor balls: the far one, about 2.4 half-sides off the slab, is found; the one just beside
+    /// the slab's corner is not found at all, so it does not test the drop rule; testFloorBallBesideOrBehindTheSlab does.)
     func testFloorBallIsFoundButDoesNotLandOnTheSlab() throws {
         let c = try BallCrop.all().first { $0.floorBall }!
         let w = c.window, slab = c.slab
@@ -281,10 +363,7 @@ final class BallFinderTests: XCTestCase {
         let o1 = loc.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
         XCTAssertNotNil(o1)
         XCTAssertEqual(o1?.circle.partial, false)
-        // 15 mm (3%): relaxed from 10 mm after seeing 11.9 mm here. In this scene the lower half of the outline is a
-        // thin dark crescent inside the rim, whose crossings come out a little outside it, so the lower-half fit
-        // (BallFinder.Options.lowerHalfMargin) is taken and is 2.3% too large; the fit to the whole outline is within 0.3%.
-        XCTAssertLessThan(o1?.center.distance(to: B) ?? 1, 0.015)
+        XCTAssertLessThan(o1?.center.distance(to: B) ?? 1, 0.010)
         XCTAssertEqual(o1?.drop.dropHeight ?? 0, 0.4, accuracy: 0.015)
         XCTAssertNotNil(loc.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g))
         // gone: held over for maxMissedUpdates scans, then dropped
@@ -365,9 +444,190 @@ final class BallFinderTests: XCTestCase {
         XCTAssertEqual(BallLocator.carry(local, from: old, to: new).distance(to: move.apply(B)), 0, accuracy: 1e-9)
     }
 
+    // MARK: the fixtures turned, spoiled; balls on the floor; pitched cameras (limits set before these were first run)
+
+    /// The held-ball tests on the crops turned a quarter turn either way, as the phone's camera delivers its frames:
+    /// the same limits as upright (centre 2 px, radius 15%, drop height 2.5 cm). (Fails when added: offcenter turned 270,
+    /// satin turned 270 and dim turned 90 are 2.7-3.3 cm off; see the commit message.)
+    func testHeldBallOnTurnedCrops() throws {
+        var lines: [String] = []
+        for c0 in try BallCrop.all() where c0.truthCenter != nil {
+            let cw = c0.turnedClockwise()
+            for (turn, c) in [("90", cw), ("270", cw.turnedClockwise().turnedClockwise())] {
+                let w = c.window, t = c.truthCenter!, rt = c.truthImageRadius
+                let found = BallFinder.find(luma: c.luma, radiusRange: w.radii, roi: w.region, intrinsics: c.K, up: w.up)
+                let b = found.min { $0.center.distance(to: t) < $1.center.distance(to: t) }
+                let loc = BallLocator(), slab = c.slab
+                loc.update(luma: c.luma, intrinsics: c.K, slab: slab, spec: c.spec, ball: c.ball, down: c.down)
+                let o = loc.update(luma: c.luma, intrinsics: c.K, slab: slab, spec: c.spec, ball: c.ball, down: c.down)
+                let label = "\(c.name) turned \(turn)"
+                lines.append(String(format: "%-36@ up (%+.2f, %+.2f): centre off %@, radius %@, drop %@", label as NSString, w.up.x, w.up.y,
+                                    b.map { String(format: "%.2f px", $0.center.distance(to: t)) } ?? "-",
+                                    b.map { String(format: "%+.1f%%%@", 100 * ($0.radius / rt - 1), $0.partial ? " partial" : "") } ?? "-",
+                                    o.map { String(format: "%+.1f cm", 100 * ($0.drop.dropHeight - c.truthDrop)) } ?? "none"))
+                guard let b, let o else { XCTFail("\(label): not found"); continue }
+                XCTAssertLessThan(b.center.distance(to: t), 2, label)
+                XCTAssertLessThan(abs(b.radius / rt - 1), 0.15, label)
+                XCTAssertLessThan(abs(o.drop.dropHeight - c.truthDrop), 0.025, label)
+            }
+        }
+        print("turned crops:\n  " + lines.joined(separator: "\n  "))
+    }
+
+    /// The crops with noise (2 and 4 grey levels, three seeds each), darker (x0.6, x0.4) and blurred: the held ball is
+    /// missed in at most 6 of the 63 runs, never reported more than 4 cm off in drop height, the median error is at most
+    /// 1.5 cm; and no ball is ever reported over the slab in the crops without one. (Fails when added: with noise, a
+    /// printed circle on the mat in distract_mat_circles is reported as a partial find on two scans in a row.)
+    func testPerturbedCrops() throws {
+        let crops = try BallCrop.all()
+        var errs: [Double] = [], missed: [String] = [], falses: [String] = []
+        var table: [String] = []
+        for c0 in crops {
+            var row: [String] = []
+            for pert in Perturbation.standardSet {
+                let c = c0.with(luma: pert.apply(c0.luma)), slab = c.slab
+                let loc = BallLocator()
+                if c.truthCenter == nil {
+                    for k in 0..<3 {
+                        if let o = loc.update(luma: c.luma, intrinsics: c.K, slab: slab, spec: c.spec, ball: c.ball, down: c.down) {
+                            falses.append("\(c.name) \(pert) scan \(k): \(o.circle)")
+                        }
+                    }
+                    continue
+                }
+                loc.update(luma: c.luma, intrinsics: c.K, slab: slab, spec: c.spec, ball: c.ball, down: c.down)
+                if let o = loc.update(luma: c.luma, intrinsics: c.K, slab: slab, spec: c.spec, ball: c.ball, down: c.down) {
+                    let e = o.drop.dropHeight - c.truthDrop
+                    errs.append(abs(e)); row.append(String(format: "%+5.1f", 100 * e))
+                } else {
+                    missed.append("\(c.name) \(pert)"); row.append("  -  ")
+                }
+            }
+            if c0.truthCenter != nil { table.append(String(format: "%-26@ ", c0.name as NSString) + row.joined(separator: " ")) }
+        }
+        errs.sort()
+        let median = errs.isEmpty ? .nan : errs[errs.count / 2]
+        print("perturbed crops, drop error (cm) per perturbation [\(Perturbation.standardSet.map(\.description).joined(separator: ", "))]:\n  "
+              + table.joined(separator: "\n  ")
+              + String(format: "\n  %d runs: missed %d, reported %d, median error %.1f cm, worst %.1f cm, over 2.5 cm %d; false reports %d",
+                       errs.count + missed.count, missed.count, errs.count, 100 * median, 100 * (errs.last ?? .nan),
+                       errs.filter { $0 > 0.025 }.count, falses.count))
+        XCTAssertEqual(errs.count + missed.count, 63)
+        XCTAssertLessThanOrEqual(missed.count, 6, "missed: \(missed)")
+        XCTAssertLessThanOrEqual(errs.last ?? 0, 0.04)
+        XCTAssertLessThanOrEqual(median, 0.015)
+        XCTAssertTrue(falses.isEmpty, "\(falses)")
+    }
+
+    /// A clean polished ball held 0.45 m over the slab and seen by a camera pitched 30-50 degrees down, at three places in
+    /// the picture, with its whole outline showing (its lower half darker than the floor): the locator, fed the
+    /// picture twice, reports it every time within 2% in radius, 1.5 cm in drop height and 10 mm in position.
+    func testPitchedCameraCleanBall() {
+        var lines: [String] = []
+        for r in pitchedScenes(lowerVisible: true) {
+            lines.append(r.line)
+            guard let o = r.found else { XCTFail("\(r.label): not found"); continue }
+            XCTAssertLessThan(abs(o.circle.radius / r.radius - 1), 0.02, r.label)
+            XCTAssertLessThan(abs(o.drop.dropHeight - 0.45), 0.015, r.label)
+            XCTAssertLessThan(o.center.distance(to: r.ball), 0.010, r.label)
+        }
+        print("pitched camera, whole outline:\n  " + lines.joined(separator: "\n  "))
+    }
+
+    /// The same scenes with the ball's lower half the very floor behind it (the web app's premise for its partial find):
+    /// whenever the locator reports the ball, its drop height is within 2.5 cm and its position within 15 mm, and it is
+    /// reported in at least 5 of the 9 scenes. KNOWN TO FAIL: a circle inscribed in the outline (touching its top and
+    /// the edge of the reflected floor) is reported in several scenes; see the open issues in the report.
+    func testPitchedCameraBallWhoseLowerHalfBlends() {
+        var lines: [String] = [], reported = 0
+        for r in pitchedScenes(lowerVisible: false) {
+            lines.append(r.line)
+            guard let o = r.found else { continue }
+            reported += 1
+            XCTAssertLessThan(abs(o.drop.dropHeight - 0.45), 0.025, r.label)
+            XCTAssertLessThan(o.center.distance(to: r.ball), 0.015, r.label)
+        }
+        XCTAssertGreaterThanOrEqual(reported, 5)
+        print("pitched camera, lower half blends:\n  " + lines.joined(separator: "\n  "))
+    }
+
+    func pitchedScenes(lowerVisible: Bool) -> [(label: String, ball: Vec3, radius: Double, found: BallObservation?, line: String)] {
+        let K = CameraIntrinsics(fx: 500, fy: 500, cx: 200, cy: 240, width: 400, height: 480)
+        let ball = BallSpec(), spec = SlabSpec.standard
+        var out: [(label: String, ball: Vec3, radius: Double, found: BallObservation?, line: String)] = []
+        for pitch in [30.0, 40, 50] {
+            let p = Units.radians(pitch), g = Vec3(0, cos(p), sin(p)), up = -g
+            for at in [Vec2(200, 170), Vec2(140, 120), Vec2(280, 300)] {
+                let B = K.ray(at).normalized * 0.5
+                let u = Vec3(1, 0, 0).rejecting(up).normalized
+                let slab = SlabPose(center: B - up * (0.45 + ball.radius), normal: up, axisU: u, axisV: up.cross(u), halfU: spec.halfU, halfV: spec.halfV)
+                let img = SphereScene(K: K, center: B, radius: ball.radius, surface: SphereScene.mirrorSurface(up: up, lowerVisible: lowerVisible)).render(noise: 1)
+                let loc = BallLocator()
+                loc.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
+                let o = loc.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
+                let rt = Bounce.imageRadius(ballCenter: B, intrinsics: K, ball: ball)!
+                let label = String(format: "pitch %.0f at (%.0f, %.0f)", pitch, at.x, at.y)
+                let line = label + ": " + (o.map { String(format: "radius %+.1f%%%@, drop %+.1f cm, position %.1f mm", 100 * ($0.circle.radius / rt - 1),
+                                                          $0.circle.partial ? " (partial)" : "", 100 * ($0.drop.dropHeight - 0.45),
+                                                          1000 * $0.center.distance(to: B)) } ?? "not reported")
+                out.append((label, B, rt, o, line))
+            }
+        }
+        return out
+    }
+
+    /// A ball lying on the floor (6 cm below the slab's top: a 1 in slab on its base) just beside the slab, and one
+    /// behind it, which the camera sees above the slab: each is found in the picture (centre within 2 px), and the
+    /// locator never reports it, because its straight drop does not land on the slab.
+    func testFloorBallBesideOrBehindTheSlab() {
+        let K = CameraIntrinsics(fx: 600, fy: 600, cx: 320, cy: 240, width: 640, height: 480)
+        let ball = BallSpec()
+        var lines: [String] = []
+        for pitch in [40.0, 55] {
+            let v = SyntheticView.make(pitch: pitch, distance: 1.2, tilt: 0, yaw: 0, intrinsics: K)
+            let slab = v.pose, n = slab.normal, R = ball.radius
+            let away = slab.center.rejecting(n).normalized          // along the floor, away from the camera
+            let side = n.cross(away).normalized
+            let floorLift = n * (R - 0.06)
+            for (name, B) in [("beside", slab.center + side * (slab.halfU + 0.02 + R) + floorLift),
+                              ("behind", slab.center + away * (slab.halfV * 1.5 + 0.03 + R) + floorLift)] {
+                let img = SphereScene(K: K, center: B, radius: R, surface: SphereScene.mirrorSurface(up: n, lowerVisible: true)).render(noise: 1)
+                let t = K.project(B)!, rt = Bounce.imageRadius(ballCenter: B, intrinsics: K, ball: ball)!
+                let found = BallFinder.find(luma: img, radiusRange: (rt * 0.7)...(rt * 1.3), intrinsics: K,
+                                            up: BallLocator.imageUp(at: t, depth: B.length, intrinsics: K, down: v.down))
+                let b = found.min { $0.center.distance(to: t) < $1.center.distance(to: t) }
+                let loc = BallLocator()
+                var reports: [String] = []
+                for _ in 0..<3 {
+                    if let o = loc.update(luma: img, intrinsics: K, slab: slab, spec: v.spec, ball: ball, down: v.down) { reports.append("\(o.circle)") }
+                }
+                let label = String(format: "pitch %.0f, %@", pitch, name)
+                var line = label + ": found "
+                if let b {
+                    line += String(format: "%.2f px off, radius %+.1f%%", b.center.distance(to: t), 100 * (b.radius / rt - 1))
+                    if let Bf = Bounce.ballCenter(pixel: b.center, radiusPixels: b.radius, intrinsics: K, ball: ball) {
+                        if let d = Bounce.drop(ballCenter: Bf, pose: slab, spec: v.spec, ball: ball, down: v.down) {
+                            line += String(format: "; its drop lands at (u, v) = (%.3f, %.3f) m (half-side %.3f)", d.u, d.v, slab.halfU)
+                        } else {
+                            line += "; below the slab's top"
+                        }
+                    }
+                } else {
+                    line += "nothing"
+                }
+                lines.append(line + "; locator: " + (reports.isEmpty ? "nothing" : reports.joined(separator: ", ")))
+                XCTAssertLessThan(b?.center.distance(to: t) ?? 99, 2, label)
+                XCTAssertTrue(reports.isEmpty, label)
+            }
+        }
+        print("floor balls by the slab:\n  " + lines.joined(separator: "\n  "))
+    }
+
     // MARK: timing
 
-    /// Time per update() (meaningful in a release build: swift test -c release --filter BallFinderTests/testTiming).
+    /// Time per update() on the 300x720 crops (meaningful in a release build: swift test -c release -Xswiftc
+    /// -enable-testing --filter BallFinderTests/testTiming). The crops cut the search region short; see
+    /// testTimeOnFullFrames for whole frames.
     func testTiming() throws {
         let crops = try BallCrop.all().filter { $0.truthCenter != nil }
         var search: [Double] = [], follow: [Double] = []
@@ -389,6 +649,62 @@ final class BallFinderTests: XCTestCase {
         search.sort(); follow.sort()
         print(String(format: "update(): searching the column over the slab median %.2f ms (max %.2f), following a ball median %.2f ms (max %.2f)",
                      search[search.count / 2], search.last!, follow[follow.count / 2], follow.last!))
+    }
+
+    /// Time per update() on whole frames: 720x1280 (the web app's frames and the fixtures' source) and 1920x1440 (an
+    /// ARKit frame, the phone held upright so the frame is turned), the slab 3, 4 and 5 ft away, the camera pitched 40,
+    /// 55 and 70 degrees, a gridded floor with noise, and a ball held 0.3 m over the slab's middle. Meaningful in a
+    /// release build; a debug build runs one pose per frame size only.
+    func testTimeOnFullFrames() {
+        #if DEBUG
+        let poses: [(Double, Double)] = [(4, 55)]
+        #else
+        let poses: [(Double, Double)] = [3.0, 4, 5].flatMap { f in [40.0, 55, 70].map { (f, $0) } }
+        #endif
+        let frames = [("720x1280", CameraIntrinsics(verticalFovDegrees: 72.5, width: 720, height: 1280), 0.0),
+                      ("1920x1440", CameraIntrinsics(fx: 1450, fy: 1450, cx: 960, cy: 720, width: 1920, height: 1440), 90.0)]
+        let ball = BallSpec()
+        for (name, K, roll) in frames {
+            // the floor: a 2 px grid line every 24 px (36 in the larger frame) and noise of 2 grey levels
+            let cell = K.width > 1000 ? 36 : 24
+            var floor = Plane(width: K.width, height: K.height)
+            var rng = SeededRandom(5)
+            for y in 0..<K.height { for x in 0..<K.width { floor[x, y] = (x % cell < 2 || y % cell < 2 ? 90 : 120) + Float(rng.gaussian() * 2) } }
+            var search: [Double] = [], follow: [Double] = [], found = 0, lines: [String] = []
+            for (feet, pitch) in poses {
+                do {
+                    let v = SyntheticView.make(pitch: pitch, roll: roll, distance: Units.feet(feet), tilt: 0, intrinsics: K)
+                    let B = v.pose.center + v.pose.normal * (0.3 + ball.radius)
+                    let img = SphereScene.paint(ballAt: B, radius: ball.radius, up: -v.down, K: K, over: floor)
+                    let loc = BallLocator()
+                    var ts: [Double] = []
+                    for _ in 0..<3 {
+                        loc.reset()
+                        let t0 = DispatchTime.now().uptimeNanoseconds
+                        loc.update(luma: img, intrinsics: K, slab: v.pose, spec: v.spec, ball: ball, down: v.down)
+                        ts.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+                    }
+                    search += ts
+                    let o = loc.update(luma: img, intrinsics: K, slab: v.pose, spec: v.spec, ball: ball, down: v.down)
+                    var tf: [Double] = []
+                    for _ in 0..<3 {
+                        let t0 = DispatchTime.now().uptimeNanoseconds
+                        loc.update(luma: img, intrinsics: K, slab: v.pose, spec: v.spec, ball: ball, down: v.down)
+                        tf.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+                    }
+                    follow += tf
+                    if o != nil { found += 1 }
+                    let bands = BallLocator.searchBands(intrinsics: K, slab: v.pose, ball: ball, down: v.down, heights: 0.05...1.5)
+                    lines.append(String(format: "%.0f ft, pitch %.0f: search %.1f ms, follow %.1f ms, ball %@; bands %@", feet, pitch, ts.min()!, tf.min()!,
+                                        o == nil ? "missed" : "found",
+                                        bands.map { String(format: "r %.0f-%.0f /%d in %.0fx%.0f", $0.radii.lowerBound, $0.radii.upperBound, $0.scale, $0.region.width, $0.region.height) }.joined(separator: ", ")))
+                }
+            }
+            search.sort(); follow.sort()
+            print("\(name): update() searching median \(String(format: "%.1f", search[search.count / 2])) ms (max \(String(format: "%.1f", search.last!))), "
+                  + "following median \(String(format: "%.1f", follow[follow.count / 2])) ms (max \(String(format: "%.1f", follow.last!))); ball found in \(found) of \(poses.count)\n  "
+                  + lines.joined(separator: "\n  "))
+        }
     }
 }
 

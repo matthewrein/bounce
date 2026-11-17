@@ -78,12 +78,15 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 /// - The vote peak is often 2-4 px off the ball's centre, which spreads the rim over a range of radii; the rim is
 ///   measured from the centres its crossings agree on best (`RimMeasure.centerCandidates`), crossings are located to a
 ///   fraction of a pixel and the radius histogram uses quarter-pixel bins.
-/// - Circle fits are robust (points far off are dropped), and a find may be refitted to the lower half of its outline,
-///   which no finger covers (`RimMeasure.outermostOfLowerHalf`).
+/// - Circle fits are robust (points far off are dropped).
+/// - The first circle fitted from a start is rough, so its size is checked loosely (15% either way) and only the final
+///   circle has to lie within the radius range.
 /// - Several starts or peaks on one ball are settled by the outermost-radius rule (`outermost`).
 /// - A partial find may also come from any half of the outline (`Options.minArcSupport`): on the renders of the
 ///   owner's titanium ball the lower outline shows clearly while the top of the ball can blend into what it reflects.
-/// - Edge thresholds rise with the picture's noise (`Options.gradientPerNoise`).
+/// - Edge thresholds rise with the picture's noise (`Options.gradientPerNoise`), and the fixed ones scale with its
+///   exposure (`Options.referenceLuma`): with fixed thresholds a darker picture of the same scene loses the ball's
+///   outline before the stronger reflections inside it, and an inner ring was then reported as the ball.
 public enum BallFinder {
     public struct Options {
         /// edge pixels that vote: central-difference gradient magnitude (luma levels across 2 px)
@@ -105,12 +108,6 @@ public enum BallFinder {
         /// spokes (of 48) on a tight circle that spans at least half the rim, for a partial find from any part of the
         /// outline (not in the web app)
         public var minArcSupport: Int = 24
-        /// a found circle is also fitted to its lower half alone when at least this many of the lower spokes (of 21)
-        /// lie on it, and that fit kept if it is larger by more than this share (not in the web app; see
-        /// RimMeasure.outermostOfLowerHalf). The margin was set after measuring the fixtures: +2.0 to +3.5% where
-        /// fingers cover the top, -0.9 to +1.0% elsewhere and on clean synthetic spheres.
-        public var minLowerSupport: Int = 16
-        public var lowerHalfMargin: Double = 0.015
         public var minUpperSupport: Int = 14
         /// largest rms distance (pixels) of a partial find's rim points from its circle
         public var maxUpperRms: Double = 0.6
@@ -119,10 +116,15 @@ public enum BallFinder {
         public var minHighlight: Float = 40
         public var minMirrorDetail: Float = 12
         /// In a noisy or busy picture both edge thresholds rise with the median luma difference across 2 px in the
-        /// region (3 levels on the test renders, 8 on the dim one): the vote threshold to this many times it and the
+        /// region (3 levels on the test renders, 7.5 on the dim one): the vote threshold to this many times it and the
         /// rim-crossing threshold to that many times it, whichever is larger than the fixed thresholds above.
         public var gradientPerNoise: Float = 3
         public var rimContrastPerNoise: Float = 2
+        /// The fixed thresholds above (gradient, rim contrast, highlight, mirror detail) are for a picture whose median
+        /// luma in the region is this (the fixtures' is 109-115); they are scaled with the region's own median luma
+        /// (within 0.25-2x), so a darker exposure of the same scene is searched alike. Nil keeps them fixed (the web
+        /// app's behaviour).
+        public var referenceLuma: Float? = 110
         public init() {}
     }
 
@@ -165,14 +167,42 @@ public enum BallFinder {
     /// The options with the edge thresholds raised for the region's noise.
     static func adapted(_ o: Options, to luma: Plane, in region: ImageRect) -> Options {
         var o = o
+        if let ref = o.referenceLuma, ref > 0 {
+            let k = min(2, max(0.25, medianLuma(luma, region) / ref))
+            o.minGradient *= k; o.minRimContrast *= k; o.minHighlight *= k; o.minMirrorDetail *= k
+        }
         let noise = noiseLevel(luma, region)
         o.minGradient = max(o.minGradient, o.gradientPerNoise * noise)
         o.minRimContrast = max(o.minRimContrast, o.rimContrastPerNoise * noise)
         return o
     }
 
+    /// Median luma over a region (sampled on a 3-px grid).
+    static func medianLuma(_ luma: Plane, _ region: ImageRect) -> Float {
+        let W = luma.width
+        let x0 = max(0, Int(region.minX)), x1 = min(W, Int(region.maxX)), y0 = max(0, Int(region.minY)), y1 = min(luma.height, Int(region.maxY))
+        guard x1 > x0, y1 > y0 else { return 0 }
+        var counts = [Int](repeating: 0, count: 256)
+        var n = 0
+        luma.data.withUnsafeBufferPointer { Y in
+            var y = y0
+            while y < y1 {
+                var x = x0 + (y % 3)
+                while x < x1 { counts[min(255, max(0, Int(Y[y * W + x] + 0.5)))] += 1; n += 1; x += 3 }
+                y += 3
+            }
+        }
+        var acc = 0
+        for (v, c) in counts.enumerated() where c > 0 {
+            if 2 * (acc + c) >= n { return Float(v) }
+            acc += c
+        }
+        return 255
+    }
+
     /// Median absolute luma difference across 2 px (horizontal), sampled over a region: the picture's noise and fine
-    /// texture.
+    /// texture. Counted in whole-level bins (centred on whole levels) and interpolated within the median's bin, so it
+    /// changes smoothly with the noise rather than in whole levels.
     static func noiseLevel(_ luma: Plane, _ region: ImageRect) -> Float {
         let W = luma.width
         let x0 = max(1, Int(region.minX)), x1 = min(W - 1, Int(region.maxX)), y0 = max(0, Int(region.minY)), y1 = min(luma.height, Int(region.maxY))
@@ -185,7 +215,7 @@ public enum BallFinder {
                 var x = x0 + (y % 3)
                 while x < x1 {
                     let i = y * W + x
-                    counts[min(255, Int(abs(Y[i + 1] - Y[i - 1])))] += 1; n += 1
+                    counts[min(255, Int(abs(Y[i + 1] - Y[i - 1]) + 0.5))] += 1; n += 1
                     x += 3
                 }
                 y += 3
@@ -193,7 +223,10 @@ public enum BallFinder {
         }
         guard n > 0 else { return 0 }
         var acc = 0
-        for (v, c) in counts.enumerated() { acc += c; if 2 * acc >= n { return Float(v) } }
+        for (v, c) in counts.enumerated() where c > 0 {
+            if 2 * (acc + c) >= n { return max(0, Float(v) - 0.5 + (Float(n) / 2 - Float(acc)) / Float(c)) }
+            acc += c
+        }
         return 255
     }
 
@@ -235,26 +268,26 @@ public enum BallFinder {
             c.map { String(format: "(%.2f, %.2f) s %.2f", $0.x, $0.y, $0.r) } ?? "nil"
         }
         rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, upper: false)
-        if rim.count >= 26, let c = rim.robustFit(), c.r >= sMin, c.r <= sMax {
+        // The first fit is rough (from an off-centre start the rim spreads over a range of radii, and a ring reflected
+        // inside the ball can pull it in), so its size is checked loosely; the final circle's strictly.
+        if rim.count >= 26, let c = rim.robustFit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
             let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
             rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, upper: false)
             rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
             let n2 = rim.count
             let c2 = rim.robustFit()
             trace?("full: fit \(fmt(c)) -> pass 2: \(n2) spokes, robust fit \(fmt(c2)) on \(rim.count), rms \(String(format: "%.2f", c2.map { rim.rms($0) } ?? -1)), widest gap \(rim.widestGap()) spokes")
-            if let c2, abs(c2.r - c.r) <= c.r * 0.1 {
+            if let c2, abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax {
                 // the outline shows on at least 80% of the rim: a clear ball
                 if rim.count >= o.minFullSupport {
-                    let cf = rim.outermostOfLowerHalf(c2, up: F1.up, options: o)
-                    let (p, r) = F1.imageCircle(cf.x, cf.y, cf.r)
+                    let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
                     return BallCircle(center: p, radius: r, support: rim.count, partial: false)
                 }
                 // part of the outline, but a tight circle around at least half of it (here the top of a polished ball
                 // can blend into what it reflects, as its lower half can elsewhere), and it looks like a mirror
                 if rim.count >= o.minArcSupport, rim.widestGap() <= BallFinder.spokeCount / 2, rim.rms(c2) <= o.maxUpperRms,
                    looksLikeMirror(F1, c2, rim.luma, o, trace: trace) {
-                    let cf = rim.outermostOfLowerHalf(c2, up: F1.up, options: o)
-                    let (p, r) = F1.imageCircle(cf.x, cf.y, cf.r)
+                    let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
                     return BallCircle(center: p, radius: r, support: rim.count, partial: true)
                 }
             }
@@ -264,7 +297,7 @@ public enum BallFinder {
         rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, upper: true)
         rim.keepUpper()
         trace?("upper: \(rim.count) spokes, fit \(fmt(rim.fit()))")
-        guard rim.count >= o.minUpperSeed, let c = rim.fit(), c.r >= sMin, c.r <= sMax else { return nil }
+        guard rim.count >= o.minUpperSeed, let c = rim.fit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 else { return nil }
         let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
         rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, upper: true)
         rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
@@ -273,9 +306,11 @@ public enum BallFinder {
         // 14 of the 24 upper spokes (the fingers hide the top), on a tight circle
         guard rim.upperCount >= o.minUpperSupport, let c2 = fit2, abs(c2.r - c.r) <= c.r * 0.1,
               rim.rms(c2) <= o.maxUpperRms, looksLikeMirror(F1, c2, rim.luma, o, trace: trace) else { return nil }
-        let cr = rim.outermostOfLowerHalf(rim.robustFit() ?? c2, up: F1.up, options: o)
+        let support = rim.count
+        let cr = rim.robustFit() ?? c2
+        guard cr.r >= sMin, cr.r <= sMax else { return nil }
         let (p, r) = F1.imageCircle(cr.x, cr.y, cr.r)
-        return BallCircle(center: p, radius: r, support: rim.count, partial: true)
+        return BallCircle(center: p, radius: r, support: support, partial: true)
     }
 
     /// The mirror test: the upper half reflects the room above, so it holds a clear highlight well above the
@@ -340,28 +375,6 @@ public enum BallFinder {
         }
         guard r > 0, r.isFinite, cx.isFinite, cy.isFinite else { return nil }
         return (cx, cy, r)
-    }
-
-    /// A circle fit to a few points that drops those beyond 2.5 robust standard deviations (and at least 0.6 px),
-    /// refitting until none is dropped.
-    static func trimmedCircleFit(_ xIn: [Double], _ yIn: [Double]) -> (x: Double, y: Double, r: Double)? {
-        var xs = xIn, ys = yIn, n = xs.count
-        func fitN() -> (x: Double, y: Double, r: Double)? {
-            xs.withUnsafeBufferPointer { X in ys.withUnsafeBufferPointer { Y in circleFit(X, Y, count: n) } }
-        }
-        guard var c = fitN() else { return nil }
-        for _ in 0..<4 {
-            let e = (0..<n).map { ((xs[$0] - c.x) * (xs[$0] - c.x) + (ys[$0] - c.y) * (ys[$0] - c.y)).squareRoot() - c.r }
-            let med = RimMeasure.median(e), mad = RimMeasure.median(e.map { abs($0 - med) })
-            let lim = max(0.6, 2.5 * 1.4826 * mad)
-            var m = 0
-            for i in 0..<n where abs(e[i]) <= lim { xs[m] = xs[i]; ys[m] = ys[i]; m += 1 }
-            if m == n || m < 5 { break }
-            n = m
-            guard let c2 = fitN() else { return nil }
-            c = c2
-        }
-        return c
     }
 
     /// 3x3 linear solve (row-major), Cramer's rule; nil if singular.
@@ -749,23 +762,6 @@ struct RimMeasure {
         return c
     }
 
-    /// A held ball is gripped from above, so its lower outline is the part no finger covers, and fingers and
-    /// reflections only ever make edges inside the outline, which shrink a fitted circle. So when enough of the lower
-    /// half's spokes lie on the circle, it is also fitted to them alone, and that fit is kept if it is clearly larger
-    /// (by more than `lowerHalfMargin`: a half circle's fit scatters by a fraction of that, so taking the larger of two
-    /// fits that agree would only add noise) and agrees to within 10% in radius and a quarter radius in centre.
-    func outermostOfLowerHalf(_ c: (x: Double, y: Double, r: Double), up: Vec2, options o: BallFinder.Options) -> (x: Double, y: Double, r: Double) {
-        var lx: [Double] = [], ly: [Double] = []
-        lx.reserveCapacity(count); ly.reserveCapacity(count)
-        for i in 0..<count {
-            let (ca, sa) = BallFinder.spokeDirections[spoke[i]]
-            if ca * up.x + sa * up.y < -0.2 { lx.append(xs[i]); ly.append(ys[i]) }
-        }
-        guard lx.count >= o.minLowerSupport, let l = BallFinder.trimmedCircleFit(lx, ly), l.r > c.r * (1 + o.lowerHalfMargin),
-              l.r <= c.r * 1.1, (l.x - c.x) * (l.x - c.x) + (l.y - c.y) * (l.y - c.y) <= c.r * c.r / 16 else { return c }
-        return l
-    }
-
     static func median(_ a: [Double]) -> Double {
         guard !a.isEmpty else { return 0 }
         let s = a.sorted(), m = s.count / 2
@@ -836,7 +832,10 @@ public struct BallObservation: Equatable {
 /// where a ball held 5 cm to 1.5 m over the slab could be (the web app took 0.6-1.6x the size of a ball at the slab's
 /// distance, anywhere in the picture); a ball is turned into a position with `Bounce.ballCenter` (`.imageCircle`) and
 /// dropped with `Bounce.drop`; and everything remembered from earlier scans is kept relative to the slab, so it stays
-/// put while the phone moves (the web app compared image positions). Large images are searched at a reduced scale.
+/// put while the phone moves (the web app compared image positions). The range of radii can be wide (a ball held high
+/// is much nearer the camera than one just over the slab), so it is split into bands of up to 3x, each searched only
+/// where balls of that size can be and at a scale that makes them 12-36 px across (`searchBands`); the web app capped
+/// the radius at 70 px instead. A followed ball is looked for at 0.7-1.4x its last size.
 ///
 /// Keeps state between calls: use one locator per camera stream, from one queue at a time.
 public final class BallLocator {
@@ -851,8 +850,11 @@ public final class BallLocator {
         /// smoothing of a ball that stays put: share of the new position / radius taken each update
         public var positionGain: Double = 0.5
         public var radiusGain: Double = 0.3
-        /// the image is searched at a reduced scale when the smallest expected radius exceeds twice this (pixels)
+        /// the radius range is searched in bands, each at a reduced scale where its radii are this many pixels and up
+        /// to 3x as many (see `searchBands`)
         public var minSearchRadius: Double = 12
+        /// a followed ball is looked for at radii within this factor of its last radius
+        public var followRadiusFactor: Double = 1.4
         public var finder = BallFinder.Options()
         public init() {}
     }
@@ -876,33 +878,81 @@ public final class BallLocator {
         current = nil; followed = nil; pendingPartial = nil; missed = 0
     }
 
-    /// Where to look and what size of ball to expect for a ball held between `heights` over the slab (camera axes):
-    /// the image region its centre can be in (padded by the largest radius) and the range of radii (imageCircle sense,
-    /// with 15% to spare either way). Nil if no such ball would be in view.
-    public static func searchWindow(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
-                                    heights: ClosedRange<Double>) -> (region: ImageRect, radii: ClosedRange<Double>)? {
+    /// Where a ball held between `heights` over the slab (camera axes) would be seen, and how large: its centre's image
+    /// position and imageCircle radius for balls over the slab's footprint (within the 5% that still counts as landing
+    /// on it) at heights spaced evenly in log height. Only those in view.
+    static func searchSamples(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
+                              heights: ClosedRange<Double>) -> [(p: Vec2, r: Double)] {
         let up = -down.normalized
-        guard up.isFinite, up.length > 0.5 else { return nil }
+        guard up.isFinite, up.length > 0.5 else { return [] }
         let R = ball.radius
-        // the slab's footprint (within the 5% that still counts as landing on it), straight below the ball
         var foot: [Vec3] = []
         for su in [-1.05, 0, 1.05] { for sv in [-1.05, 0, 1.05] { foot.append(slab.point(u: su * slab.halfU, v: sv * slab.halfV)) } }
         let n = 40, h0 = max(0.005, heights.lowerBound), h1 = max(h0, heights.upperBound)
-        var box = ImageRect.empty, rLo = Double.infinity, rHi = 0.0
         let frame = ImageRect(width: K.width, height: K.height)
+        var out: [(p: Vec2, r: Double)] = []
+        out.reserveCapacity((n + 1) * foot.count)
         for i in 0...n {
             let h = h0 * pow(h1 / h0, Double(i) / Double(n))
             for P in foot {
                 let B = P + up * (h + R)
                 guard B.z > 0.05, let p = K.project(B), frame.contains(p),
                       let r = Bounce.imageRadius(ballCenter: B, intrinsics: K, ball: ball) else { continue }
-                box = box.union(p); rLo = min(rLo, r); rHi = max(rHi, r)
+                out.append((p, r))
             }
         }
-        guard rHi > 0, rLo.isFinite else { return nil }
-        let radii = (rLo * 0.85)...(rHi * 1.15)
-        let region = box.expanded(by: radii.upperBound * 1.2).clamped(width: K.width, height: K.height)
+        return out
+    }
+
+    /// Where to look and what size of ball to expect for a ball held between `heights` over the slab (camera axes):
+    /// the image region its centre can be in (padded by the largest radius) and the range of radii (imageCircle sense,
+    /// with 15% to spare either way). Nil if no such ball would be in view.
+    public static func searchWindow(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
+                                    heights: ClosedRange<Double>) -> (region: ImageRect, radii: ClosedRange<Double>)? {
+        let samples = searchSamples(intrinsics: K, slab: slab, ball: ball, down: down, heights: heights)
+        guard let lo = samples.map(\.r).min(), let hi = samples.map(\.r).max() else { return nil }
+        let radii = (lo * 0.85)...(hi * 1.15)
+        let region = samples.reduce(ImageRect.empty) { $0.union($1.p) }.expanded(by: radii.upperBound * 1.2).clamped(width: K.width, height: K.height)
         return region.isEmpty ? nil : (region, radii)
+    }
+
+    /// One part of the search: radii (full-image pixels), where balls of that size can be, and the integer factor the
+    /// image is shrunk by before searching it.
+    public struct SearchBand: Equatable {
+        public var region: ImageRect
+        public var radii: ClosedRange<Double>
+        public var scale: Int
+    }
+
+    /// The search window split by radius: bands spanning up to 3x in radius (the lowest from the smallest radius), each
+    /// searched at a scale that makes its smallest radius at least `minSearchRadius` pixels, so a band's radii are
+    /// about 12-36 px there (a remainder of less than a quarter of a band is added to the band below it), and only
+    /// where its balls can be (padded by its largest radius). Neighbouring bands overlap by 10% in radius.
+    public static func searchBands(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
+                                   heights: ClosedRange<Double>, minSearchRadius m: Double = 12) -> [SearchBand] {
+        let samples = searchSamples(intrinsics: K, slab: slab, ball: ball, down: down, heights: heights)
+        guard let sLo = samples.map(\.r).min(), let sHi = samples.map(\.r).max() else { return [] }
+        return bands(radii: (sLo * 0.85)...(sHi * 1.15), minSearchRadius: m, width: K.width, height: K.height) { lo, hi in
+            // where a ball of radius within [lo, hi] can be (each sample with its 15% to spare)
+            samples.reduce(ImageRect.empty) { $1.r * 1.15 >= lo && $1.r * 0.85 <= hi ? $0.union($1.p) : $0 }
+        }
+    }
+
+    /// The band split of a radius range; `centres(lo, hi)` gives the box the centres of balls with those radii lie in.
+    static func bands(radii: ClosedRange<Double>, minSearchRadius m: Double, width: Int, height: Int,
+                      centres: (Double, Double) -> ImageRect) -> [SearchBand] {
+        var out: [SearchBand] = []
+        let rHi = radii.upperBound
+        var k = max(1, Int(radii.lowerBound / m)), lo = radii.lowerBound
+        while lo < rHi && out.count < 12 {
+            var hi = min(rHi, 3 * m * Double(k))
+            if rHi <= hi * 1.25 { hi = rHi }
+            let bandLo = out.isEmpty ? lo : lo * 0.9
+            let region = centres(bandLo, hi).expanded(by: hi * 1.2).clamped(width: width, height: height)
+            if !region.isEmpty { out.append(SearchBand(region: region, radii: bandLo...hi, scale: k)) }
+            lo = hi; k *= 3
+        }
+        return out
     }
 
     /// One scan. `slab` is the slab's pose in this frame's camera (CV) axes, `down` gravity in the same axes.
@@ -913,16 +963,31 @@ public final class BallLocator {
         // what earlier scans saw, carried into this frame by the slab (the phone may have moved)
         let follow = followed.flatMap { circle(of: $0, in: slab, K: K, ball: ball) }
         let pending = pendingPartial.flatMap { circle(of: $0, in: slab, K: K, ball: ball) }
-        guard let window = Self.searchWindow(intrinsics: K, slab: slab, ball: ball, down: g, heights: options.minHeight...options.maxHeight) else {
+        var bands = Self.searchBands(intrinsics: K, slab: slab, ball: ball, down: g, heights: options.minHeight...options.maxHeight,
+                                     minSearchRadius: options.minSearchRadius)
+        guard let first = bands.first, let last = bands.last else {
             pendingPartial = nil
             return missedScan(K: K, slab: slab, spec: spec, ball: ball, down: g)
         }
-        var region = window.region
         if let f = follow {
-            region = ImageRect(center: f.center, halfSize: f.radius * options.followRadii).clamped(width: K.width, height: K.height)
+            // a box around the followed ball, at radii near its own
+            let box = ImageRect(center: f.center, halfSize: f.radius * options.followRadii).clamped(width: K.width, height: K.height)
+            let lo = max(first.radii.lowerBound, f.radius / options.followRadiusFactor)
+            let hi = min(last.radii.upperBound, f.radius * options.followRadiusFactor)
+            bands = hi > lo && !box.isEmpty
+                ? Self.bands(radii: lo...hi, minSearchRadius: options.minSearchRadius, width: K.width, height: K.height) { _, _ in box }
+                    .map { SearchBand(region: box, radii: $0.radii, scale: $0.scale) }
+                : []
         }
-        let up = Self.imageUp(at: region.center, depth: slab.center.length, intrinsics: K, down: g)
-        let circles = search(luma: luma, K: K, region: region, radii: window.radii, up: up)
+        var circles: [BallCircle] = []
+        for band in bands {
+            let up = Self.imageUp(at: band.region.center, depth: slab.center.length, intrinsics: K, down: g)
+            for c in search(luma: luma, K: K, region: band.region, radii: band.radii, scale: band.scale, up: up) {
+                // the same ball found in two neighbouring bands: keep the finer band's find
+                if !circles.contains(where: { $0.center.distance(to: c.center) < 0.5 * max($0.radius, c.radius) }) { circles.append(c) }
+            }
+        }
+        circles.sort { $0.support > $1.support }
 
         var part: Anchored? = nil
         var chosen: (BallCircle, Vec3, DropPoint)? = nil
@@ -931,6 +996,9 @@ public final class BallLocator {
                   let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab,
                   d.dropHeight <= options.maxHeight + 0.3 else { continue }
             if c.partial {
+                // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
+                // (radius at least 0.9x that of a ball at the slab's depth), here as a distance
+                if B.length > slab.center.length / 0.9 { continue }
                 // only part of the outline seen: report it only once the same ball turns up on two scans in a row
                 if part == nil { part = anchor(B, slab) }
                 let again = pending.map { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 } ?? false
@@ -987,10 +1055,9 @@ public final class BallLocator {
 
     // MARK: search
 
-    /// Runs the finder on the region, at a reduced scale when the ball would be large in this image.
-    func search(luma: Plane, K: CameraIntrinsics, region: ImageRect, radii: ClosedRange<Double>, up: Vec2) -> [BallCircle] {
-        let k = max(1, Int(radii.lowerBound / options.minSearchRadius))
-        if k == 1 {
+    /// Runs the finder on the region, with the image shrunk by `k` (area average).
+    func search(luma: Plane, K: CameraIntrinsics, region: ImageRect, radii: ClosedRange<Double>, scale k: Int, up: Vec2) -> [BallCircle] {
+        if k <= 1 {
             return BallFinder.find(luma: luma, radiusRange: radii, roi: region, intrinsics: K, up: up, options: options.finder)
         }
         // area-average the region (plus room for the rim measurement around it) down by k
