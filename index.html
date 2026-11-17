@@ -89,7 +89,7 @@ details .row{margin-top:8px}
     <div class="row" id="pitchRow"><label for="pitch">Phone aimed down from level</label><output id="oPitch" for="pitch"></output>
       <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
     <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
-      <input id="size" type="range" min="6" max="24" step="0.5" value="12"></div>
+      <input id="size" type="range" min="4" max="24" step="0.25" value="7"></div>
     <div class="row"><label for="tol">Color match looseness</label><output id="oTol" for="tol"></output>
       <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
     <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
@@ -107,10 +107,10 @@ details .row{margin-top:8px}
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
 const G=32.174; // ft/s^2
-const P={drop:3,reb:70,ball:35,size:12,tol:26,pitch:50,fov:65};
+const P={drop:3,reb:70,ball:35,size:7,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b9";
+const BUILD="b10";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -138,7 +138,7 @@ function blur3(a,w,h){
 }
 function prepare(){
   S.fid++;
-  const k=300/Math.max(S.sw,S.sh), pw=Math.round(S.sw*k), ph=Math.round(S.sh*k);
+  const k=480/Math.max(S.sw,S.sh), pw=Math.round(S.sw*k), ph=Math.round(S.sh*k);
   if(!S.pc){S.pc=document.createElement("canvas");S.mc=document.createElement("canvas");}
   const c=S.pc,mid=S.mc;
   if(c.width!==pw||c.height!==ph){c.width=pw;c.height=ph;mid.width=pw*2;mid.height=ph*2;}
@@ -146,9 +146,35 @@ function prepare(){
   x.imageSmoothingQuality="high";
   // two-step downscale to reduce aliasing
   const mx=mid.getContext("2d",{willReadFrequently:true});mx.imageSmoothingQuality="high";mx.drawImage(S.src,0,0,pw*2,ph*2);
-  const hd=mx.getImageData(0,0,pw*2,ph*2).data,hY=new Float32Array(pw*ph*4);
-  for(let i=0,n=hY.length;i<n;i++)hY[i]=.299*hd[i*4]+.587*hd[i*4+1]+.114*hd[i*4+2];
+  // Fine-detail image for edges and the ball. Searching: the whole frame. Locked: a zoomed window around the slab
+  // and the space above it, so a slab several feet away still gets plenty of pixels.
+  let hi;
+  if(S.live&&S.quad){
+    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    for(const p of S.quad){x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);}
+    const bw=x1-x0,bh=y1-y0,m=Math.max(bw,bh);
+    const ox=Math.max(0,Math.floor(x0-m*.6)),oy=Math.max(0,Math.floor(y0-m*4)),ex=Math.min(S.sw,Math.ceil(x1+m*.6)),ey=Math.min(S.sh,Math.ceil(y1+m*.6));
+    const rw=ex-ox,rh=ey-oy,sc=Math.min(1,640/rw,640/rh,260/m),w=Math.max(8,Math.round(rw*sc)),h=Math.max(8,Math.round(rh*sc));
+    if(!S.rc)S.rc=document.createElement("canvas");
+    if(S.rc.width!==w||S.rc.height!==h){S.rc.width=w;S.rc.height=h;}
+    const rx=S.rc.getContext("2d",{willReadFrequently:true});rx.imageSmoothingQuality="high";rx.drawImage(S.src,ox,oy,rw,rh,0,0,w,h);
+    const d=rx.getImageData(0,0,w,h).data,Yh=new Float32Array(w*h);
+    for(let i=0,n=Yh.length;i<n;i++)Yh[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+    hi={Y:Yh,w,h,ox,oy,s:w/rw};
+  }else{
+    const hd=mx.getImageData(0,0,pw*2,ph*2).data,Yh=new Float32Array(pw*ph*4);
+    for(let i=0,n=Yh.length;i<n;i++)Yh[i]=.299*hd[i*4]+.587*hd[i*4+1]+.114*hd[i*4+2];
+    hi={Y:Yh,w:pw*2,h:ph*2,ox:0,oy:0,s:k*2};
+  }
   x.drawImage(mid,0,0,pw,ph);
+  S.proc={pw,ph,k,hi,stale:true};
+}
+
+// The whole-frame colour and texture maps are costly, so they are only built on frames that need them
+// (searching, cross-checks, recovery); plain edge tracking skips them.
+function ensureProc(){
+  if(!S.proc.stale)return;
+  const {pw,ph}=S.proc,x=S.pc.getContext("2d",{willReadFrequently:true});
   const d=x.getImageData(0,0,pw,ph).data,N=pw*ph;
   let Y=new Float32Array(N),Cb=new Float32Array(N),Cr=new Float32Array(N);
   for(let i=0;i<N;i++){const r=d[i*4],g=d[i*4+1],b=d[i*4+2];const y=.299*r+.587*g+.114*b;Y[i]=y;Cb[i]=b-y;Cr[i]=r-y;}
@@ -160,9 +186,8 @@ function prepare(){
       for(let dx=-3;dx<=3;dx++){const xx=x+dx;if(xx<0||xx>=pw)continue;const v=Y[yy*pw+xx];s+=v;s2+=v*v;c++;}}
     const mu=s/c;Tx[y*pw+x]=Math.sqrt(Math.max(0,s2/c-mu*mu));
   }
-  S.proc={pw,ph,k,hY,hw:pw*2,hh:ph*2,Yr:Y,Tx,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
+  Object.assign(S.proc,{stale:false,Yr:Y,Tx,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)});
 }
-
 /* ---------- slab detection: colour region -> hull -> 4 fitted edges ---------- */
 function cr2(o,a,b){return (a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x)}
 function hull(p){
@@ -173,7 +198,8 @@ function hull(p){
   for(let i=p.length-2;i>=0;i--){const q=p[i];while(h.length>=lo&&cr2(h[h.length-2],h[h.length-1],q)<=0)h.pop();h.push(q);}
   h.pop();return h;
 }
-function detectAt(sx,sy,tol,ref){
+function detectAt(sx,sy,tol,ref,mark){
+  ensureProc();
   const {pw,ph,Y,Cb,Cr,Tx,Yr,k}=S.proc,N=pw*ph;
   sx=clamp(Math.round(sx),2,pw-3);sy=clamp(Math.round(sy),2,ph-3);
   let y0=0,b0=0,r0=0,x0=0;
@@ -221,7 +247,8 @@ function detectAt(sx,sy,tol,ref){
     if(e[i-pw]===1){e[i-pw]=2;st[sp++]=i-pw}
     if(e[i+pw]===1){e[i+pw]=2;st[sp++]=i+pw}
   }
-  if(count<N*.004||count>N*.6||border>8)return null;
+  if(mark)for(let i=0;i<N;i++)if(e[i]===2)mark[i]=1;
+  if(count<N*.0012||count>N*.6||border>8)return null;
   const pts=[];
   for(let y=0;y<ph;y++)if(rmax[y]>=0){pts.push({x:rmin[y],y});pts.push({x:rmax[y],y});}
   for(let x=0;x<pw;x++)if(cmax[x]>=0){pts.push({x,y:cmin[x]});pts.push({x,y:cmax[x]});}
@@ -237,7 +264,7 @@ function detectAt(sx,sy,tol,ref){
   const lines=[],edges=[];let perim=0;
   for(let i=0;i<4;i++){
     const A=h[i],B=h[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);perim+=len;
-    if(len<10)return null;
+    if(len<6)return null;
     let dx=(B.x-A.x)/len,dy=(B.y-A.y)/len,px=(A.x+B.x)/2,py=(A.y+B.y)/2;
     const lim=Math.max(1.5,len*.05);let sxx=0,sxy=0,syy=0,mx=0,my=0,n=0;const sel=[];
     for(const p of pts){const t=((p.x-A.x)*dx+(p.y-A.y)*dy)/len;if(t<.12||t>.88)continue;
@@ -256,7 +283,7 @@ function detectAt(sx,sy,tol,ref){
       for(let j=0;j<14;j++){const t=sA+(sB-sA)*(.15+.7*j/13),qx=px+dx*t+nx*o,qy=py+dy*t+ny*o;
         g+=smp(qx+nx,qy+ny)-smp(qx-nx,qy-ny);}
       g=Math.abs(g/14);gs.push(g);if(g>gmax)gmax=g;}
-    if(gmax>=10)for(let j=0;j<gs.length;j++)if(gs[j]>=.6*gmax&&gs[j]>=(gs[j-1]||0)&&gs[j]>=(gs[j+1]||0)){const o=-4+j*.5;px+=nx*o;py+=ny*o;break;}
+    if(gmax>=10)for(let j=0;j<gs.length;j++)if(gs[j]>=Math.max(6,.3*gmax)&&gs[j]>=(gs[j-1]||0)&&gs[j]>=(gs[j+1]||0)){const o=-4+j*.5;px+=nx*o;py+=ny*o;break;}
     edges.push(gmax);
     lines.push({px,py,dx,dy});
   }
@@ -274,15 +301,15 @@ function detectAt(sx,sy,tol,ref){
   for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];area+=a.x*b.y-b.x*a.y;
     const z=cr2(a,b,c);if(z===0)return null;if(sign&&Math.sign(z)!==sign)return null;sign=Math.sign(z);}
   area=Math.abs(area)/2;
-  if(area<N*.025)return null; // too small in view to be the slab
+  if(area<N*.006)return null; // too small in view to be the slab
   const dd=rad+2.5,fill=(count+perim*dd+4*dd*dd)/area;
-  if(fill<.8||fill>1.2)return null;
-  return {q:refineQuad(q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k}))),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
+  if(fill<.6||fill>1.5)return null; // loose: the rigid-square test after edge refinement is the real gate
+  return {q:refineQuad(q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),.09),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
 }
 // Sharpen the outline on the double-resolution image: find the edge at many points along each side,
 // fit a straight line through them ignoring strays, and take the corners where those lines cross.
 function refineQuad(q,wf){
-  const {hY,hw,hh,k}=S.proc,k2=k*2,P=q.map(p=>({x:p.x*k2,y:p.y*k2}));
+  const H=S.proc.hi,hY=H.Y,hw=H.w,hh=H.h,k2=H.s,P=q.map(p=>({x:(p.x-H.ox)*k2,y:(p.y-H.oy)*k2}));
   const cx=(P[0].x+P[1].x+P[2].x+P[3].x)/4,cy=(P[0].y+P[1].y+P[2].y+P[3].y)/4;
   const smp=(x,y)=>{x=clamp(x,0,hw-1.001);y=clamp(y,0,hh-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*hw+xi;
     return (hY[j]*(1-fx)+hY[j+1]*fx)*(1-fy)+(hY[j+hw]*(1-fx)+hY[j+hw+1]*fx)*fy;};
@@ -296,10 +323,10 @@ function refineQuad(q,wf){
       const t=len*(.08+.84*j/31),bx=A.x+dx*t,by=A.y+dy*t,gs=[];let gmax=0;
       // each reading averages a short run along the edge so cement speckle and sensor noise don't register as edges
       for(let o=-w;o<=w;o+=.5){let g=0;
-        for(let u=-2;u<=2;u+=2)g+=smp(bx+dx*u+nx*(o+1),by+dy*u+ny*(o+1))-smp(bx+dx*u+nx*(o-1),by+dy*u+ny*(o-1));
-        g=Math.abs(g/3);gs.push(g);if(g>gmax)gmax=g;}
-      if(gmax<6)continue;
-      for(let m=1;m<gs.length-1;m++)if(gs[m]>=.4*gmax&&gs[m]>=gs[m-1]&&gs[m]>=gs[m+1]){
+        for(let u=-4;u<=4;u+=2)g+=smp(bx+dx*u+nx*(o+1.5),by+dy*u+ny*(o+1.5))-smp(bx+dx*u+nx*(o-1.5),by+dy*u+ny*(o-1.5));
+        g=Math.abs(g/5);gs.push(g);if(g>gmax)gmax=g;}
+      if(gmax<8)continue;
+      for(let m=1;m<gs.length-1;m++)if(gs[m]>=Math.max(8,.25*gmax)&&gs[m]>=gs[m-1]&&gs[m]>=gs[m+1]){
         const den=gs[m-1]-2*gs[m]+gs[m+1],o=-w+m*.5+(den<0?.25*(gs[m-1]-gs[m+1])/den:0);
         pts.push({x:bx+nx*o,y:by+ny*o});break;}
     }
@@ -319,7 +346,7 @@ function refineQuad(q,wf){
   const lim=(wf||.035)*2+.01;
   const out=q.map((p0,i)=>{
     const a=lines[(i+3)%4],b=lines[i],c=a.dx*b.dy-a.dy*b.dx;if(Math.abs(c)<1e-6)return p0;
-    const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c,x=(a.px+t*a.dx)/k2,y=(a.py+t*a.dy)/k2;
+    const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c,x=(a.px+t*a.dx)/k2+H.ox,y=(a.py+t*a.dy)/k2+H.oy;
     const side=Math.hypot(q[(i+1)%4].x-p0.x,q[(i+1)%4].y-p0.y);
     return Math.hypot(x-p0.x,y-p0.y)<side*lim+3/k2?{x,y}:p0;
   });
@@ -338,7 +365,8 @@ function plausible(q){
   let err=ps.err;
   for(const d of [-8,8]){const p2=solvePose(q,focalFor(P.fov+d),S.sw/2,S.sh/2,P.size/24,null);if(p2&&p2.err<err)err=p2.err;}
   S.lastMisfit=err/side;
-  if(err>side*MISFIT||ps.c[2]<.4||ps.c[2]>12){bump('rejMisfit');return false;}
+  if(err>side*MISFIT){bump('rejMisfit');return false;}
+  if(S.live&&(ps.c[2]<.5||ps.c[2]>8)){bump('rejDistance');return false;} // expected a few feet from the camera
   if(S.live&&S.grav&&-dot(ps.n,S.grav)<Math.cos(MAXTILT*Math.PI/180)){bump('rejTilt');return false;}
   return true;
 }
@@ -361,10 +389,10 @@ function baseFrac(r){
 const DARK=.5,TOLS=[.5,.7,1,1.45];
 // Try several colour tolerances and keep the outline whose weakest side still sits on the clearest image edge.
 // Too tight a match stops at a lighting gradient and too loose a one leaks; either way one side has no real edge under it.
-function detectSeed(px,py,needBase,ref){
+function detectSeed(px,py,needBase,ref,mark){
   let best=null,bs=needBase?6:-1;
   for(const m of TOLS){
-    const r=detectAt(px,py,P.tol*m,ref);
+    const r=detectAt(px,py,P.tol*m,ref,mark);
     // when searching unprompted, the patch must also be smooth like cement, not patterned
     if(!r){bump('noRegion');continue;}
     if(!plausible(r.q))continue;
@@ -400,6 +428,34 @@ function squareUp(q){
   const ps=solvePose(q,focal(),S.sw/2,S.sh/2,P.size/24,S.live&&S.grav?S.grav:null,S.live?S.nS:null);if(!ps)return q;
   return MODEL.map(m=>{const p=add(ps.c,add(mul(ps.r1,m[0]*ps.hs),mul(ps.r2,m[1]*ps.hs)));return {x:ps.f*p[0]/p[2]+ps.cx,y:ps.f*p[1]/p[2]+ps.cy};});
 }
+// Unprompted search. Most of the view is ruled out cheaply: a starting point must be smooth like cement, not itself
+// dark, and close to something black (the base). The few survivors get the full treatment, and after a complete
+// pass over the view the largest valid find wins, so a small look-alike can't beat the slab.
+function sweep(){
+  ensureProc();
+  const {pw,ph,Y,Tx}=S.proc,N=pw*ph,smp=[];
+  for(let i=0;i<N;i+=11)smp.push(Y[i]);smp.sort((a,b)=>a-b);
+  const lim=Math.max(30,.45*smp[smp.length>>1]),D=new Int16Array(N),far=Math.max(pw,ph)*.12*3,BIG=30000;
+  for(let y=0;y<ph;y++)for(let x=0;x<pw;x++){const i=y*pw+x;
+    if(Y[i]<lim){D[i]=0;continue;}
+    let d=BIG;if(x)d=Math.min(d,D[i-1]+3);if(y){d=Math.min(d,D[i-pw]+3);if(x)d=Math.min(d,D[i-pw-1]+4);if(x<pw-1)d=Math.min(d,D[i-pw+1]+4);}
+    D[i]=d;}
+  for(let y=ph-1;y>=0;y--)for(let x=pw-1;x>=0;x--){const i=y*pw+x;let d=D[i];
+    if(x<pw-1)d=Math.min(d,D[i+1]+3);if(y<ph-1){d=Math.min(d,D[i+pw]+3);if(x<pw-1)d=Math.min(d,D[i+pw+1]+4);if(x)d=Math.min(d,D[i+pw-1]+4);}
+    D[i]=d;}
+  const step=16,cols=Math.floor(pw/step),rows=Math.floor(ph/step),total=cols*rows,mark=new Uint8Array(N);
+  let groups=0,out=null;
+  for(let n=0;n<total&&groups<3;n++){
+    const i=S.si%total;S.si++;
+    const x=Math.round((i%cols+.5)*step),y=Math.round((Math.floor(i/cols)+.5)*step),j=y*pw+x;
+    if(!(Y[j]<lim||Tx[j]/(Y[j]+10)>.075||D[j]>far||mark[j])){
+      groups++;const c=detectSeed(x,y,true,null,mark);
+      if(c&&(!S.cand||c.area>S.cand.area))S.cand=c;
+    }
+    if(S.si%total===0){out=S.cand;S.cand=null;if(out)break;}
+  }
+  return out;
+}
 /* live tracking: follow the slab from frame to frame and smooth its corners */
 function track(){
   let r=null;
@@ -409,7 +465,7 @@ function track(){
     const px=c.x*S.proc.k,py=c.y*S.proc.k;
     // Normal case: follow the four edges directly from where they were last frame. This is far steadier than
     // re-finding the slab by colour every frame, which can hop between slightly different outlines.
-    const tq=refineQuad(S.quad,.05);
+    const tq=refineQuad(S.quad,.09);
     if(tq.fitted===4&&plausible(tq)){
       r={q:tq,tracked:true};bump('tracked');
       // every so often, cross-check against a fresh colour-based find, and switch if they keep disagreeing
@@ -436,14 +492,7 @@ function track(){
   }else if(S.seed){
     r=detect(S.seed);if(!r&&++S.seedAge>45)S.seed=null;
   }else{
-    // sweep the view a few spots per frame, accepting only a square patch that sits on something black
-    const {pw,ph}=S.proc;
-    // and after a full sweep taking the largest, so a small look-alike can't win over the slab
-    for(let n=0;n<3;n++){
-      const i=S.si++%24,c=detectSeed((i%4+.5)/4*pw,((i>>2)+.5)/6*ph,true);
-      if(c&&(!S.cand||c.area>S.cand.area))S.cand=c;
-      if(S.si%24===0){r=S.cand;S.cand=null;if(r)break;}
-    }
+    r=sweep();
   }
   if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;bump('unlocks');}}return;}
   const q=squareUp(r.q);
@@ -479,7 +528,7 @@ function circleFit(pts){
   const rr=r[2]+r[0]*r[0]+r[1]*r[1];return rr>0?{x:r[0],y:r[1],r:Math.sqrt(rr)}:null;
 }
 function findBall(rExp){
-  const {hY,hw,hh}=S.proc,rmin=Math.max(4,rExp*.6),rmax=Math.min(70,rExp*1.6);
+  const H=S.proc.hi,hY=H.Y,hw=H.w,hh=H.h,rmin=Math.max(4,rExp*.6),rmax=Math.min(70,rExp*1.6);
   const aw=hw>>1,ah=hh>>1,acc=new Uint16Array(aw*ah);
   // every strong edge pixel votes for centres along its gradient direction, at each plausible radius
   for(let y=1;y<hh-1;y++)for(let x=1;x<hw-1;x++){
@@ -533,9 +582,9 @@ function ballDrop(b,pose,g){
 function scanBall(){
   const ps=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,null);
   if(!ps){S.ball=null;return;}
-  const k2=S.proc.k*2,g=downVec();let nb=null;
+  const H=S.proc.hi,k2=H.s,g=downVec();let nb=null;
   for(const b of findBall(ps.f*(P.ball/609.6)/ps.c[2]*k2)){
-    const c={x:b.x/k2,y:b.y/k2,r:b.r/k2},d=ballDrop(c,ps,g);if(d&&d.on){nb=c;break;}}
+    const c={x:b.x/k2+H.ox,y:b.y/k2+H.oy,r:b.r/k2},d=ballDrop(c,ps,g);if(d&&d.on){nb=c;break;}}
   if(!nb){if(S.ball&&++S.ballLost>(S.live?5:0))S.ball=null;return;}
   S.ballLost=0;
   if(S.live&&S.ball&&Math.hypot(nb.x-S.ball.x,nb.y-S.ball.y)<S.ball.r*2)
