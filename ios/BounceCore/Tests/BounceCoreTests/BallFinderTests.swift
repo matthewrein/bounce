@@ -211,8 +211,9 @@ final class BallFinderTests: XCTestCase {
     }
 
     /// The locator, fed each crop twice in a row with the slab pose solved from the true corners, reports the ball and
-    /// its drop height to within 2.5 cm. (Fails on ball_held_offcenter_d4_60, -2.7 cm, since the lower-half refit that
-    /// had been added after seeing this crop was removed: it made clean balls seen by a pitched camera 2-6% too large.)
+    /// its drop height to within 2.5 cm. (ball_held_offcenter_d4_60 was at -2.7 cm, the circle pulled in by edges just
+    /// inside the blended top, until the finder read the lower half of the outline on its own; see
+    /// BallFinder.outermost.)
     func testLocatorDropHeight() throws {
         var lines: [String] = [], errs: [Double] = []
         for c in try BallCrop.all() where c.truthCenter != nil {
@@ -447,8 +448,8 @@ final class BallFinderTests: XCTestCase {
     // MARK: the fixtures turned, spoiled; balls on the floor; pitched cameras (limits set before these were first run)
 
     /// The held-ball tests on the crops turned a quarter turn either way, as the phone's camera delivers its frames:
-    /// the same limits as upright (centre 2 px, radius 15%, drop height 2.5 cm). (Fails when added: offcenter turned 270,
-    /// satin turned 270 and dim turned 90 are 2.7-3.3 cm off; see the commit message.)
+    /// the same limits as upright (centre 2 px, radius 15%, drop height 2.5 cm). (Failed when added: offcenter turned
+    /// 270, satin turned 270 and dim turned 90 were 2.7-3.3 cm off.)
     func testHeldBallOnTurnedCrops() throws {
         var lines: [String] = []
         for c0 in try BallCrop.all() where c0.truthCenter != nil {
@@ -476,8 +477,10 @@ final class BallFinderTests: XCTestCase {
 
     /// The crops with noise (2 and 4 grey levels, three seeds each), darker (x0.6, x0.4) and blurred: the held ball is
     /// missed in at most 6 of the 63 runs, never reported more than 4 cm off in drop height, the median error is at most
-    /// 1.5 cm; and no ball is ever reported over the slab in the crops without one. (Fails when added: with noise, a
-    /// printed circle on the mat in distract_mat_circles is reported as a partial find on two scans in a row.)
+    /// 1.5 cm; and no ball is ever reported over the slab in the crops without one. (Failed when added: with noise, a
+    /// printed circle on the mat in distract_mat_circles was reported as a partial find on two scans in a row, its
+    /// circle made up of the print's top, the mat's straight edge and crossings of the noise; partial readings now
+    /// count only edges that run across the spokes.)
     func testPerturbedCrops() throws {
         let crops = try BallCrop.all()
         var errs: [Double] = [], missed: [String] = [], falses: [String] = []
@@ -536,8 +539,10 @@ final class BallFinderTests: XCTestCase {
 
     /// The same scenes with the ball's lower half the very floor behind it (the web app's premise for its partial find):
     /// whenever the locator reports the ball, its drop height is within 2.5 cm and its position within 15 mm, and it is
-    /// reported in at least 5 of the 9 scenes. KNOWN TO FAIL: a circle inscribed in the outline (touching its top and
-    /// the edge of the reflected floor) is reported in several scenes; see the open issues in the report.
+    /// reported in at least 5 of the 9 scenes. (Failed when added: a circle inscribed in the outline, touching its top
+    /// and the edge of the reflected floor, was reported in 7 of the 9 scenes. The upper outline's reading now
+    /// replaces a reading it encloses; see BallFinder.outermost. On other noise, image positions, distances and
+    /// steeper pitches this scene is still read wrongly at times; see the commit message.)
     func testPitchedCameraBallWhoseLowerHalfBlends() {
         var lines: [String] = [], reported = 0
         for r in pitchedScenes(lowerVisible: false) {
@@ -621,6 +626,65 @@ final class BallFinderTests: XCTestCase {
             }
         }
         print("floor balls by the slab:\n  " + lines.joined(separator: "\n  "))
+    }
+
+    /// Light discs printed on a gridded floor mat (3.6-5 cm across, about the ball's size), each beside the straight
+    /// edge of a dark mat, around the slab, seen from 1.2 m with the camera pitched 40 and 55 degrees, with noise of 2
+    /// and 4 grey levels: no ball is ever reported over the slab. (A synthetic counterpart of distract_mat_circles. The
+    /// finder does find most of these discs as round outlines; seen from 55 degrees a disc is foreshortened by only
+    /// 15%. What keeps them from being reported is that their size puts them 2-18 cm over the slab: a ball found from
+    /// half its outline must be at least `minPartialHeight` (0.2 m) over it, and any ball at least `minHeight`. That
+    /// floor was set after this scene, written as a probe, showed 17 such reports.)
+    func testPrintedDiscsBesideAMatEdge() {
+        let K = CameraIntrinsics(fx: 600, fy: 600, cx: 320, cy: 240, width: 640, height: 480)
+        let ball = BallSpec()
+        var reports: [String] = [], pictures = 0
+        for pitch in [40.0, 55] {
+            let v = SyntheticView.make(pitch: pitch, distance: 1.2, tilt: 0, yaw: 0, intrinsics: K)
+            let slab = v.pose, n = slab.normal
+            let floor = slab.center - n * 0.06                                 // a 1 in slab on its base
+            let along = slab.center.rejecting(n).normalized, side = n.cross(along).normalized
+            for (dx, dz, rDisc) in [(0.0, 0.16, 0.022), (0.12, 0.14, 0.018), (-0.12, 0.10, 0.025), (0.05, 0.22, 0.02)] {
+                let disc = floor + side * dx + along * dz, matEdge = dz - rDisc - 0.004
+                for sigma in [2.0, 4.0] {
+                    for seed in [UInt64(1), 2, 3] {
+                        // the floor seen through each pixel (2x2 samples): grid lines every 2.5 cm, the disc, the mat
+                        var img = Plane(width: K.width, height: K.height)
+                        var rng = SeededRandom(seed &+ UInt64(dx * 1000 + 500) &+ UInt64(pitch))
+                        for y in 0..<K.height {
+                            for x in 0..<K.width {
+                                var acc: Float = 0
+                                for sy in 0..<2 {
+                                    for sx in 0..<2 {
+                                        let d = K.ray(Vec2(Double(x) + (Double(sx) + 0.5) / 2, Double(y) + (Double(sy) + 0.5) / 2))
+                                        let t = floor.dot(n) / d.dot(n)
+                                        var value: Float = 118
+                                        if t > 0 {
+                                            let q = d * t - floor, u = q.dot(side), w = q.dot(along)
+                                            if abs((u * 100).truncatingRemainder(dividingBy: 2.5)) < 0.15 || abs((w * 100).truncatingRemainder(dividingBy: 2.5)) < 0.15 { value = 100 }
+                                            if (d * t - disc).length < rDisc { value = 190 }
+                                            if w < matEdge && w > matEdge - 0.08 && abs(u - dx) < 0.1 { value = 25 }
+                                        }
+                                        acc += value
+                                    }
+                                }
+                                img[x, y] = acc / 4 + Float(rng.gaussian() * sigma)
+                            }
+                        }
+                        pictures += 1
+                        let loc = BallLocator()
+                        for k in 0..<3 {
+                            if let o = loc.update(luma: img, intrinsics: K, slab: slab, spec: v.spec, ball: ball, down: v.down), o.missedUpdates == 0 {
+                                reports.append(String(format: "pitch %.0f, disc at (%.2f, %.2f) m, noise %.0f/%d, scan %d: ", pitch, dx, dz, sigma, seed, k) + "\(o.circle), drop \(String(format: "%.2f", o.drop.dropHeight)) m")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        print("printed discs: \(pictures) pictures, \(reports.count) reports" + (reports.isEmpty ? "" : ":\n  " + reports.joined(separator: "\n  ")))
+        XCTAssertEqual(pictures, 48)
+        XCTAssertTrue(reports.isEmpty, "\(reports)")
     }
 
     // MARK: timing

@@ -45,8 +45,10 @@ public struct BallCircle: Equatable, CustomStringConvertible {
     public var radius: Double
     /// how many of the 48 rim spokes found the outline where the circle runs
     public var support: Int
-    /// found from its upper outline only: a polished ball held above the floor and seen from above reflects the same
-    /// floor that lies behind its lower half, so the outline there is all but invisible
+    /// found from half its outline only (no reading of the whole outline was found): its upper half (a polished ball
+    /// held above the floor and seen from above can reflect the same floor that lies behind its lower half, so the
+    /// outline there is all but invisible) or its lower half (the top can blend into the floor it reflects at a grazing
+    /// angle, and the fingers cover it)
     public var partial: Bool
 
     public init(center: Vec2, radius: Double, support: Int, partial: Bool) {
@@ -65,7 +67,7 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 ///     each spoke's crossing nearest that radius is kept and a circle fitted; then measured again around that circle
 ///     with a tight tolerance;
 ///  3. a ball whose outline shows on at least 80% of the spokes and fits a circle is accepted ("full");
-///  4. otherwise the upper outline alone may do ("partial"): held above the floor and seen from above, a mirror ball's
+///  4. the upper outline alone may do too ("partial"): held above the floor and seen from above, a mirror ball's
 ///     lower half reflects the very floor behind it, while its upper half reflects the room above. At least 14 of the
 ///     upper spokes must agree on a tight circle (rms under 0.6 px), and the inside of the upper half must look like a
 ///     mirror: a highlight well above the background just outside, and plenty of light and dark detail.
@@ -81,9 +83,19 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 /// - Circle fits are robust (points far off are dropped).
 /// - The first circle fitted from a start is rough, so its size is checked loosely (15% either way) and only the final
 ///   circle has to lie within the radius range.
-/// - Several starts or peaks on one ball are settled by the outermost-radius rule (`outermost`).
-/// - A partial find may also come from any half of the outline (`Options.minArcSupport`): on the renders of the
-///   owner's titanium ball the lower outline shows clearly while the top of the ball can blend into what it reflects.
+/// - A partial find may also come from the lower half of the outline alone (`Options.minLowerShare`: 80% of the lower
+///   spokes, as the whole outline needs 80% of all): on the renders of the owner's titanium ball the lower outline
+///   shows clearly while the top of the ball blends into the floor it reflects at a grazing angle and is covered by
+///   the fingers.
+/// - Every start is read three ways (the whole outline, its lower half, its upper half), and the readings of one ball
+///   (from several starts and peaks) are settled by the outermost-outline rule (`outermost`): every edge a ball shows
+///   other than its outline lies inside it, so a reading that encloses another by more than the fits' scatter, and
+///   finds the outline on its half as often, gives the outline. Where half the outline blends in, the other edges
+///   can make an inscribed circle that more spokes cross than the outline itself.
+/// - The partial readings count a rim crossing only where the edge runs across the spoke (`Options.maxEdgeAngle`):
+///   resting on fewer spokes, they could otherwise be made up from texture and noise (a printed circle on the floor
+///   mat was reported this way in a noisy picture). Their final fits drop points inside the circle more readily than
+///   outside ones (`Options.innerLimit`).
 /// - Edge thresholds rise with the picture's noise (`Options.gradientPerNoise`), and the fixed ones scale with its
 ///   exposure (`Options.referenceLuma`): with fixed thresholds a darker picture of the same scene loses the ball's
 ///   outline before the stronger reflections inside it, and an inner ring was then reported as the ball.
@@ -105,9 +117,17 @@ public enum BallFinder {
         public var minFullSupport: Int = 39
         /// upper spokes that must agree on the radius to start a partial find, and that must lie on its circle
         public var minUpperSeed: Int = 13
-        /// spokes (of 48) on a tight circle that spans at least half the rim, for a partial find from any part of the
-        /// outline (not in the web app)
+        /// No longer used: a partial find from part of the outline other than its upper half now needs its whole lower
+        /// half (`minLowerShare`).
         public var minArcSupport: Int = 24
+        /// a partial find from the lower outline (not in the web app) needs at least this share of the lower spokes on
+        /// a tight circle: the share the whole outline needs (39 of 48 spokes, the web app's rule)
+        public var minLowerShare: Double = 0.8
+        /// In the final fits of the partial readings a rim point this far (pixels) inside the circle is dropped,
+        /// whatever the scatter of the others (2.5 times the quarter pixel to which an edge can be placed); one outside
+        /// is dropped only if it is far off the scatter. Every edge a ball shows other than its outline lies inside it,
+        /// while the background's edges lie on either side.
+        public var innerLimit: Double = 0.6
         public var minUpperSupport: Int = 14
         /// largest rms distance (pixels) of a partial find's rim points from its circle
         public var maxUpperRms: Double = 0.6
@@ -125,6 +145,12 @@ public enum BallFinder {
         /// (within 0.25-2x), so a darker exposure of the same scene is searched alike. Nil keeps them fixed (the web
         /// app's behaviour).
         public var referenceLuma: Float? = 110
+        /// Measured around a fitted circle for a partial reading, a rim crossing counts only where the edge runs across
+        /// the spoke, its normal within this many degrees of the spoke (0: any edge): an outline does (the fitted centre
+        /// is within a pixel or so of the true one, a few degrees on these radii), while the edges of texture, noise and
+        /// reflections cross the spokes at any angle, so only a third of them pass.
+        public var maxEdgeAngle: Double = 30
+        var maxSkew: Float { maxEdgeAngle > 0 ? Float(tan(maxEdgeAngle * .pi / 180)) : 0 }
         public init() {}
     }
 
@@ -148,20 +174,22 @@ public enum BallFinder {
         let options = adapted(options, to: luma, in: region)
         guard var votes = Votes(luma: luma, roi: region, rmin: rmin, rmax: rmax, options: options) else { return [] }
         var rim = RimMeasure(luma: luma, maxRadius: rmax * 1.6 + 4, minContrast: options.minRimContrast)
-        var found: [BallCircle] = []
+        // the readings of each ball found, and what they give
+        var balls: [(readings: [Reading], choice: Reading)] = []
         let z = max(2, Int((rmin / 2).rounded()))
         for _ in 0..<options.maxCandidates {
             guard let (seed, _) = votes.takePeak(minVotes: options.minVotes, clear: z) else { break }
-            if let c = examine(seed: seed, rmin: rmin, rmax: rmax, intrinsics: intrinsics, up: up, rim: &rim, options: options) {
-                // two peaks on one ball: keep the outermost well-supported find
-                if let k = found.firstIndex(where: { $0.center.distance(to: c.center) < 0.5 * max($0.radius, c.radius) }) {
-                    found[k] = outermost([found[k], c]) ?? found[k]
-                } else {
-                    found.append(c)
-                }
+            let rs = examine(seed: seed, rmin: rmin, rmax: rmax, intrinsics: intrinsics, up: up, rim: &rim, options: options)
+            guard let c = outermost(rs) else { continue }
+            // two peaks on one ball: choose from all their readings
+            if let k = balls.firstIndex(where: { $0.choice.circle.center.distance(to: c.circle.center) < 0.5 * max($0.choice.circle.radius, c.circle.radius) }) {
+                balls[k].readings += rs
+                balls[k].choice = outermost(balls[k].readings) ?? c
+            } else {
+                balls.append((rs, c))
             }
         }
-        return found.sorted { $0.support > $1.support }
+        return balls.map(\.choice.circle).sorted { $0.support > $1.support }
     }
 
     /// The options with the edge thresholds raised for the region's noise.
@@ -230,87 +258,175 @@ public enum BallFinder {
         return 255
     }
 
-    /// Steps 2-4 for one vote peak.
+    /// Steps 2-4 for one vote peak: every reading of an outline around it (`outermost` chooses among them).
     static func examine(seed: Vec2, rmin: Double, rmax: Double, intrinsics K: CameraIntrinsics?, up: Vec2,
-                        rim: inout RimMeasure, options o: Options, trace: ((String) -> Void)? = nil) -> BallCircle? {
+                        rim: inout RimMeasure, options o: Options, trace: ((String) -> Void)? = nil) -> [Reading] {
         let Fs = LocalFrame(at: seed, intrinsics: K, up: up)
         // the radius range in the frame's own units (the frame looks straight at the candidate)
         let sMin = rmin / Fs.stretch, sMax = rmax / Fs.stretch
-        rim.measure(Fs, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, upper: false)
+        rim.measure(Fs, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15)
         // start from the centres the crossings agree on (see centerCandidates); of what they lead to, keep the
         // outermost well-supported outline
-        var results: [BallCircle] = []
-        for (x, y) in rim.centerCandidates(reach: o.centerReach, maxRadius: sMax * 1.15) {
+        // (the upper outline alone also starts from the centres its own crossings agree on: where the lower half
+        // blends in, the whole rim's crossings can agree on a circle inscribed in the outline)
+        let starts = rim.centerCandidates(reach: o.centerReach, maxRadius: sMax * 1.15)
+        var upperStarts = rim.centerCandidates(reach: o.centerReach, maxRadius: sMax * 1.15, half: .upper)
+        upperStarts.removeAll { u in starts.contains { ($0.0 - u.0) * ($0.0 - u.0) + ($0.1 - u.1) * ($0.1 - u.1) < 0.36 } }
+        var results: [Reading] = []
+        for ((x, y), modes) in starts.map({ ($0, Set<Reading.Mode>([.full, .lower, .upper])) }) + upperStarts.map({ ($0, Set<Reading.Mode>([.upper])) }) {
             let F0 = x == 0 && y == 0 ? Fs : LocalFrame(at: Fs.image(x, y), intrinsics: K, up: up)
             trace?(String(format: "start (%.1f, %.1f) from the seed", x, y))
-            if let c = examine(from: F0, sMin: sMin, sMax: sMax, intrinsics: K, up: up, rim: &rim, options: o, trace: trace) {
-                trace?("  -> \(c)")
+            for c in examine(from: F0, sMin: sMin, sMax: sMax, intrinsics: K, up: up, rim: &rim, options: o, modes: modes, trace: trace) {
+                trace?("  -> \(c.circle) (\(c.mode))")
                 results.append(c)
             }
         }
-        return outermost(results)
+        return results
     }
 
-    /// Of several finds on one ball, the outermost well-supported one: of those with at least 80% of the best support,
-    /// the largest (inside a mirror ball lie reflections' edges, and a dark band reflected inside its top can pair up
-    /// with its lower rim into a smaller circle that more spokes cross).
-    static func outermost(_ finds: [BallCircle]) -> BallCircle? {
-        guard let top = finds.map(\.support).max() else { return nil }
-        return finds.filter { Double($0.support) >= 0.8 * Double(top) }.max {
-            $0.radius != $1.radius ? $0.radius < $1.radius : $0.support < $1.support
+    /// One reading of a ball's outline: the circle, and which part of the outline it rests on.
+    struct Reading {
+        enum Mode { case full, lower, upper }
+        var circle: BallCircle
+        var mode: Mode
+        /// the standard error of the radius (pixels, local frame)
+        var radiusError: Double
+        /// the share of the upper and of the lower spokes on which the outline was found
+        var upperShare = 0.0, lowerShare = 0.0
+    }
+
+    /// Of several readings of one ball, the one that gives its outline. A ball's outline is the outermost circle its
+    /// edges form: reflections' edges, the near edge of a finger over it and the boundary of a part that blends into
+    /// what it reflects all lie inside it.
+    /// 1. Of the readings of the whole outline, those with at least 80% of the best support, the largest (a dark band
+    ///    reflected inside the top can pair up with the lower rim into a smaller circle that more spokes cross); if
+    ///    there are none, the same of the lower half's readings, else of the upper outline's.
+    /// 2. A reading of the lower half that encloses it (by more than the fits' scatter) and finds the outline on its
+    ///    half's spokes about as often is taken instead: then the upper half's points lie inside the outline (seen from
+    ///    above, the top of a polished ball blends into the floor it reflects at a grazing angle, and the edges of what
+    ///    it reflects and of the fingers lie just inside).
+    /// 3. The same for a reading of the upper outline alone (14 of the 24 upper spokes, the web app's partial find),
+    ///    but only where the lower half does not confirm the circle: where the lower half's reading is the same circle,
+    ///    or encloses it, the upper outline is either that circle too or the edges of reflections and fingers around
+    ///    the top. Where the lower half blends in, reflections in the upper half can make an inscribed circle that more
+    ///    spokes cross than the outline's visible half does.
+    /// The result is `partial` unless a reading of the whole outline is among those it rests on (it is, or encloses).
+    static func outermost(_ finds: [Reading]) -> Reading? {
+        func largestWellSupported(_ fs: [Reading]) -> Reading? {
+            guard let top = fs.map(\.circle.support).max() else { return nil }
+            return fs.filter { Double($0.circle.support) >= 0.8 * Double(top) }.max {
+                $0.circle.radius != $1.circle.radius ? $0.circle.radius < $1.circle.radius : $0.circle.support < $1.circle.support
+            }
         }
+        let fulls = finds.filter { $0.mode == .full }, lowers = finds.filter { $0.mode == .lower }, uppers = finds.filter { $0.mode == .upper }
+        guard var best = largestWellSupported(fulls) ?? largestWellSupported(lowers) ?? largestWellSupported(uppers) else { return nil }
+        let whole = best.mode == .full
+        func replace(from fs: [Reading]) {
+            while let f = fs.filter({ encloses($0, best) && accountsForItsHalf($0, as: best) }).max(by: { $0.circle.radius < $1.circle.radius }) { best = f }
+        }
+        replace(from: lowers)
+        if best.mode != .lower && !lowers.contains(where: { agrees($0, best) }) { replace(from: uppers) }
+        if whole { best.circle.partial = false }
+        return best
     }
 
-    /// Steps 2-4 from one start: the rim measured around the frame's centre.
+    /// Whether two readings give the same circle, within the fits' scatter.
+    static func agrees(_ a: Reading, _ b: Reading) -> Bool {
+        abs(a.circle.radius - b.circle.radius) < margin(a, b)
+            && a.circle.center.distance(to: b.circle.center) < max(1, 0.06 * max(a.circle.radius, b.circle.radius))
+    }
+
+    /// How much two readings' radii must differ to be told apart: three standard errors of the difference, and at
+    /// least half a pixel.
+    static func margin(_ a: Reading, _ b: Reading) -> Double {
+        max(0.5, 3 * (a.radiusError * a.radiusError + b.radiusError * b.radiusError).squareRoot())
+    }
+
+    /// Whether the half reading `a` finds the outline on its half of the spokes about as often as reading `b` does
+    /// there (one spoke fewer at most): only then is it the better account of that half.
+    static func accountsForItsHalf(_ a: Reading, as b: Reading) -> Bool {
+        a.mode == .lower ? a.lowerShare >= b.lowerShare - 0.05 : a.upperShare >= b.upperShare - 0.05
+    }
+
+    /// Whether reading `a` encloses reading `b`: larger by more than the fits' scatter (`margin`), and `b` lies inside
+    /// it give or take the rim measurement's tolerance (6% of the radius, at least a pixel).
+    static func encloses(_ a: Reading, _ b: Reading) -> Bool {
+        a.circle.radius >= b.circle.radius + margin(a, b)
+            && a.circle.center.distance(to: b.circle.center) + b.circle.radius <= a.circle.radius + max(1, 0.06 * a.circle.radius)
+    }
+
+    /// Steps 2-4 from one start: the rim measured around the frame's centre. Returns every reading of the outline that
+    /// passes: the whole outline, its lower half and its upper half; `outermost` chooses among them.
     static func examine(from F0: LocalFrame, sMin: Double, sMax: Double, intrinsics K: CameraIntrinsics?, up: Vec2,
-                        rim: inout RimMeasure, options o: Options, trace: ((String) -> Void)?) -> BallCircle? {
+                        rim: inout RimMeasure, options o: Options, modes: Set<Reading.Mode> = [.full, .lower, .upper],
+                        trace: ((String) -> Void)?) -> [Reading] {
         func fmt(_ c: (x: Double, y: Double, r: Double)?) -> String {
             c.map { String(format: "(%.2f, %.2f) s %.2f", $0.x, $0.y, $0.r) } ?? "nil"
         }
-        rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, upper: false)
+        var out: [Reading] = []
+        // the whole outline
+        if modes.contains(.full) { rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15) }
         // The first fit is rough (from an off-centre start the rim spreads over a range of radii, and a ring reflected
         // inside the ball can pull it in), so its size is checked loosely; the final circle's strictly.
-        if rim.count >= 26, let c = rim.robustFit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
+        if modes.contains(.full), rim.count >= 26, let c = rim.robustFit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
             let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
-            rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, upper: false)
+            rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06)
             rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
             let n2 = rim.count
             let c2 = rim.robustFit()
             trace?("full: fit \(fmt(c)) -> pass 2: \(n2) spokes, robust fit \(fmt(c2)) on \(rim.count), rms \(String(format: "%.2f", c2.map { rim.rms($0) } ?? -1)), widest gap \(rim.widestGap()) spokes")
-            if let c2, abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax {
-                // the outline shows on at least 80% of the rim: a clear ball
-                if rim.count >= o.minFullSupport {
-                    let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
-                    return BallCircle(center: p, radius: r, support: rim.count, partial: false)
-                }
-                // part of the outline, but a tight circle around at least half of it (here the top of a polished ball
-                // can blend into what it reflects, as its lower half can elsewhere), and it looks like a mirror
-                if rim.count >= o.minArcSupport, rim.widestGap() <= BallFinder.spokeCount / 2, rim.rms(c2) <= o.maxUpperRms,
-                   looksLikeMirror(F1, c2, rim.luma, o, trace: trace) {
-                    let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
-                    return BallCircle(center: p, radius: r, support: rim.count, partial: true)
-                }
+            // the outline shows on at least 80% of the rim: a clear ball
+            if let c2, abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax, rim.count >= o.minFullSupport {
+                let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
+                out.append(Reading(circle: BallCircle(center: p, radius: r, support: rim.count, partial: false), mode: .full,
+                                   radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare))
+            }
+        }
+        // The lower half alone (not in the web app): seen from above, the top of a polished ball reflects the floor
+        // beyond it at a grazing angle and can blend into it, and the fingers holding it cover the top. Nothing covers
+        // the lower half, so the share of it that must show is the whole outline's (80%).
+        if modes.contains(.lower) {
+            rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, half: .lower)
+            rim.keepLower()
+            trace?("lower: \(rim.count) of \(rim.lowerSpokes) spokes, fit \(fmt(rim.fit()))")
+        }
+        if modes.contains(.lower), Double(rim.count) >= o.minLowerShare * Double(rim.lowerSpokes), let c = rim.robustFit(),
+           c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
+            let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
+            rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, half: .lower, maxSkew: o.maxSkew)
+            rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
+            rim.keepLower()
+            let c2 = rim.robustFit(innerLimit: o.innerLimit)
+            trace?("lower pass 2: \(rim.count) of \(rim.lowerSpokes) spokes, robust fit \(fmt(c2)), rms \(String(format: "%.2f", c2.map { rim.rms($0) } ?? -1))")
+            if let c2, Double(rim.count) >= o.minLowerShare * Double(rim.lowerSpokes), abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax,
+               rim.rms(c2) <= o.maxUpperRms, looksLikeMirror(F1, c2, rim.luma, o, trace: trace) {
+                let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
+                out.append(Reading(circle: BallCircle(center: p, radius: r, support: rim.count, partial: true), mode: .lower,
+                                   radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare))
             }
         }
         // the upper outline only (the web app's partial find): held above the floor and seen from above, a mirror ball's
         // lower half reflects the very floor that lies behind it
-        rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, upper: true)
+        guard modes.contains(.upper) else { return out }
+        rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15, half: .upper)
         rim.keepUpper()
         trace?("upper: \(rim.count) spokes, fit \(fmt(rim.fit()))")
-        guard rim.count >= o.minUpperSeed, let c = rim.fit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 else { return nil }
+        guard rim.count >= o.minUpperSeed, let c = rim.fit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 else { return out }
         let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
-        rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, upper: true)
+        rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, half: .upper, maxSkew: o.maxSkew)
         rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
         let fit2 = rim.fit()
         trace?("upper pass 2: \(rim.count) spokes (\(rim.upperCount) upper), fit \(fmt(fit2)), rms \(String(format: "%.2f", fit2.map { rim.rms($0) } ?? -1))")
         // 14 of the 24 upper spokes (the fingers hide the top), on a tight circle
         guard rim.upperCount >= o.minUpperSupport, let c2 = fit2, abs(c2.r - c.r) <= c.r * 0.1,
-              rim.rms(c2) <= o.maxUpperRms, looksLikeMirror(F1, c2, rim.luma, o, trace: trace) else { return nil }
+              rim.rms(c2) <= o.maxUpperRms, looksLikeMirror(F1, c2, rim.luma, o, trace: trace) else { return out }
         let support = rim.count
-        let cr = rim.robustFit() ?? c2
-        guard cr.r >= sMin, cr.r <= sMax else { return nil }
+        let cr = rim.robustFit(innerLimit: o.innerLimit) ?? c2
+        guard cr.r >= sMin, cr.r <= sMax else { return out }
         let (p, r) = F1.imageCircle(cr.x, cr.y, cr.r)
-        return BallCircle(center: p, radius: r, support: support, partial: true)
+        out.append(Reading(circle: BallCircle(center: p, radius: r, support: support, partial: true), mode: .upper,
+                           radiusError: rim.radiusError(cr) * r / cr.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare))
+        return out
     }
 
     /// The mirror test: the upper half reflects the room above, so it holds a clear highlight well above the
@@ -507,6 +623,13 @@ struct LocalFrame {
         return Vec2(f * r.dot(e1) / k, f * r.dot(e2) / k)
     }
 
+    /// The luma at local (X, Y).
+    @inline(__always) func sample(_ luma: Plane, _ X: Double, _ Y: Double) -> Float {
+        if !camera { return luma.sample(ox + X, oy + Y) }
+        let dx = c.x + a.x * X + b.x * Y, dy = c.y + a.y * X + b.y * Y, dz = c.z + a.z * X + b.z * Y
+        return luma.sample(fx * dx / dz + cx, fy * dy / dz + cy)
+    }
+
     /// local -> image
     @inline(__always) func image(_ X: Double, _ Y: Double) -> Vec2 {
         if !camera { return Vec2(ox + X, oy + Y) }
@@ -528,6 +651,9 @@ struct LocalFrame {
 
 /// The rim measurement along the spokes, with its scratch space (allocated once per search).
 struct RimMeasure {
+    /// which spokes choose the rim's radius: all of them, those pointing up from the centre (in the world), or down
+    enum Half { case all, upper, lower }
+
     let luma: Plane
     var minContrast: Float
     /// radius histograms: bins this wide (pixels); a crossing counts in every bin within `window` of it
@@ -541,10 +667,12 @@ struct RimMeasure {
     var stamp: [Int]
     var gen = 0
     var spokeUp: [Bool]
+    var spokeLow: [Bool]
     // the chosen rim points, in the local frame
     var xs: [Double]
     var ys: [Double]
     var isUp: [Bool]
+    var isLow: [Bool]
     var spoke: [Int]
     var count = 0
 
@@ -558,19 +686,27 @@ struct RimMeasure {
         hist = [Int](repeating: 0, count: Int(Double(n + 16) / Self.binWidth) + 8)
         stamp = [Int](repeating: 0, count: hist.count)
         spokeUp = [Bool](repeating: false, count: BallFinder.spokeCount)
+        spokeLow = spokeUp
         xs = [Double](repeating: 0, count: BallFinder.spokeCount)
         ys = xs
         isUp = spokeUp
+        isLow = spokeUp
         spoke = [Int](repeating: 0, count: BallFinder.spokeCount)
     }
 
     var upperCount: Int { (0..<count).reduce(0) { $0 + (isUp[$1] ? 1 : 0) } }
+    /// the share of the upper (lower) spokes of the last frame measured that hold a point
+    var upperShare: Double { Double(upperCount) / Double(max(1, spokeUp.reduce(0) { $0 + ($1 ? 1 : 0) })) }
+    var lowerShare: Double { Double((0..<count).reduce(0) { $0 + (isLow[$1] ? 1 : 0) }) / Double(max(1, lowerSpokes)) }
+    /// how many spokes point down from the centre (in the last frame measured)
+    var lowerSpokes: Int { spokeLow.reduce(0) { $0 + ($1 ? 1 : 0) } }
+
 
     /// Along every spoke from the frame's centre, note each edge crossing between radii lo and hi (a local maximum of
     /// the luma difference across 2 px, at least `minContrast`, located to a fraction of a step). Find the radius most
-    /// spokes agree on (only the upper spokes if `upper`), take the outermost of the well-supported radii (a mirror
-    /// ball is full of reflected rings inside it) and keep each spoke's crossing nearest it, within `tol` of it.
-    mutating func measure(_ F: LocalFrame, lo loIn: Double, hi: Double, tol: Double, upper: Bool) {
+    /// spokes agree on (only the spokes of one `half` if given), take the outermost of the well-supported radii (a
+    /// mirror ball is full of reflected rings inside it) and keep each spoke's crossing nearest it, within `tol` of it.
+    mutating func measure(_ F: LocalFrame, lo loIn: Double, hi: Double, tol: Double, half: Half = .all, maxSkew: Float = 0) {
         count = 0
         let lo = max(1.5, loIn)
         guard hi > lo else { for k in 0..<BallFinder.spokeCount { peakCount[k] = 0 }; return }
@@ -581,6 +717,7 @@ struct RimMeasure {
         for k in 0..<BallFinder.spokeCount {
             let (ca, sa) = BallFinder.spokeDirections[k]
             spokeUp[k] = ca * F.up.x + sa * F.up.y > 0.01
+            spokeLow[k] = ca * F.up.x + sa * F.up.y < -0.01
             // luma along the spoke
             if F.camera {
                 let wx = F.a.x * ca + F.b.x * sa, wy = F.a.y * ca + F.b.y * sa, wz = F.a.z * ca + F.b.z * sa
@@ -604,18 +741,27 @@ struct RimMeasure {
                     // parabola through (g0, g1, g) for the sub-step position of the maximum
                     let den = g0 - 2 * g1 + g
                     let d = den < 0 ? Double(0.5 * (g0 - g) / den) : 0
-                    peaks[k * maxPeaks + np] = lo + step * (Double(j - 1) + clamp(d, -0.5, 0.5))
+                    let r = lo + step * (Double(j - 1) + clamp(d, -0.5, 0.5))
+                    // the edge must run across the spoke: an outline centred near the frame's centre does, while
+                    // texture and reflections cross it at any angle
+                    if maxSkew > 0 {
+                        let px = ca * r, py = sa * r
+                        let gt = abs(F.sample(luma, px - sa, py + ca) - F.sample(luma, px + sa, py - ca))
+                        if gt > maxSkew * g1 { g0 = g1; g1 = g; continue }
+                    }
+                    peaks[k * maxPeaks + np] = r
                     np += 1
                 }
                 g0 = g1; g1 = g
             }
             peakCount[k] = np
         }
-        let nb = histogram(x: 0, y: 0, upperOnly: upper, maxRadius: hi + 1)
+        let nb = histogram(x: 0, y: 0, half: half, maxRadius: hi + 1)
         var hm = 0
         for i in 0..<nb where hist[i] > hm { hm = hist[i] }
         guard hm > 0 else { return }
-        let need = Double(hm) * (upper ? 0.6 : 0.8)
+        // (the upper outline is often partly hidden by the fingers)
+        let need = Double(hm) * (half == .upper ? 0.6 : 0.8)
         var rb = 0
         for i in stride(from: nb - 1, through: 0, by: -1) where Double(hist[i]) >= need { rb = i; break }
         let rbD = (Double(rb) + 0.5) * Self.binWidth, win = max(1.5, rbD * tol)
@@ -627,7 +773,7 @@ struct RimMeasure {
             }
             if br > 0 {
                 let (ca, sa) = BallFinder.spokeDirections[k]
-                xs[count] = ca * br; ys[count] = sa * br; isUp[count] = spokeUp[k]; spoke[count] = k
+                xs[count] = ca * br; ys[count] = sa * br; isUp[count] = spokeUp[k]; isLow[count] = spokeLow[k]; spoke[count] = k
                 count += 1
             }
         }
@@ -635,11 +781,11 @@ struct RimMeasure {
 
     /// Histogram of the noted crossings' distances from (x, y): each spoke counts once in every bin within `window` of
     /// one of its crossings. Returns the number of bins filled.
-    mutating func histogram(x: Double, y: Double, upperOnly: Bool, maxRadius: Double, window win: Double = RimMeasure.window) -> Int {
+    mutating func histogram(x: Double, y: Double, half: Half = .all, maxRadius: Double, window win: Double = RimMeasure.window) -> Int {
         let w = Self.binWidth
         let nb = min(hist.count, Int(maxRadius / w) + 4)
         for i in 0..<nb { hist[i] = 0 }
-        for k in 0..<BallFinder.spokeCount where !upperOnly || spokeUp[k] {
+        for k in 0..<BallFinder.spokeCount where half == .all || (half == .upper ? spokeUp[k] : spokeLow[k]) {
             let (ca, sa) = BallFinder.spokeDirections[k]
             gen += 1
             for m in 0..<peakCount[k] {
@@ -661,14 +807,14 @@ struct RimMeasure {
     /// and a hand's edges pull it), and from an off-centre start the rim's crossings spread over a range of radii.
     /// Either start can be wrong: the most-crossed circle can pair the rim's lower half with a reflection's edge inside
     /// the top, and the largest can take in a ball's shadow; both are measured and the finds compared.
-    mutating func centerCandidates(reach: Int, maxRadius: Double, share: Double = 0.8) -> [(Double, Double)] {
+    mutating func centerCandidates(reach: Int, maxRadius: Double, share: Double = 0.8, half: Half = .all) -> [(Double, Double)] {
         let mr = maxRadius + Double(reach) + 2
         typealias Pick = (x: Double, y: Double, bin: Int, support: Int, d: Double)
         // most: the best-supported bin anywhere; outer: the outermost bin with `need` spokes
         func most(_ offsets: [(Double, Double)], window: Double) -> Pick {
             var best: Pick = (0, 0, -1, -1, .infinity)
             for (x, y) in offsets {
-                let d = x * x + y * y, nb = histogram(x: x, y: y, upperOnly: false, maxRadius: mr, window: window)
+                let d = x * x + y * y, nb = histogram(x: x, y: y, half: half, maxRadius: mr, window: window)
                 for i in 0..<nb where hist[i] > best.support || (hist[i] == best.support && d < best.d) { best = (x, y, i, hist[i], d) }
             }
             return best
@@ -676,7 +822,7 @@ struct RimMeasure {
         func outer(_ offsets: [(Double, Double)], window: Double, need: Int) -> Pick {
             var best: Pick = (0, 0, -1, 0, .infinity)
             for (x, y) in offsets {
-                let d = x * x + y * y, nb = histogram(x: x, y: y, upperOnly: false, maxRadius: mr, window: window)
+                let d = x * x + y * y, nb = histogram(x: x, y: y, half: half, maxRadius: mr, window: window)
                 var b = -1
                 for i in stride(from: nb - 1, through: 0, by: -1) where hist[i] >= need { b = i; break }
                 if b < 0 { continue }
@@ -709,7 +855,7 @@ struct RimMeasure {
                 // half a pixel around it: the most spokes within half a pixel of its radius
                 var fine = (x: o1.x, y: o1.y, support: -1)
                 for (x, y) in around(o1, step: 0.5) {
-                    let nb = histogram(x: x, y: y, upperOnly: false, maxRadius: mr)
+                    let nb = histogram(x: x, y: y, half: half, maxRadius: mr)
                     var s = 0
                     for i in max(0, o1.bin - 2)...max(0, min(nb - 1, o1.bin + 2)) where hist[i] > s { s = hist[i] }
                     if s > fine.support { fine = (x, y, s) }
@@ -737,23 +883,31 @@ struct RimMeasure {
         count = n
     }
 
+    /// Keep only the points on lower spokes.
+    mutating func keepLower() {
+        var n = 0
+        for i in 0..<count where isLow[i] { move(i, to: n); n += 1 }
+        count = n
+    }
+
     private mutating func move(_ i: Int, to n: Int) {
-        xs[n] = xs[i]; ys[n] = ys[i]; isUp[n] = isUp[i]; spoke[n] = spoke[i]
+        xs[n] = xs[i]; ys[n] = ys[i]; isUp[n] = isUp[i]; isLow[n] = isLow[i]; spoke[n] = spoke[i]
     }
 
     /// A circle fit that drops the points far off it (beyond 2.5 robust standard deviations, and at least 0.6 px),
     /// refitting until none is dropped: where a finger covers the rim, or the top of a mirror ball blends into what it
     /// reflects, the crossing nearest the radius is often a reflection or the finger's edge a pixel or two inside.
-    mutating func robustFit() -> (x: Double, y: Double, r: Double)? {
+    mutating func robustFit(innerLimit: Double? = nil) -> (x: Double, y: Double, r: Double)? {
         guard var c = fit() else { return nil }
         var e = [Double](repeating: 0, count: count)
-        for _ in 0..<4 {
+        for _ in 0..<(innerLimit == nil ? 4 : 8) {
             for i in 0..<count { e[i] = ((xs[i] - c.x) * (xs[i] - c.x) + (ys[i] - c.y) * (ys[i] - c.y)).squareRoot() - c.r }
             let med = Self.median(Array(e[0..<count]))
             let mad = Self.median(e[0..<count].map { abs($0 - med) })
             let lim = max(0.6, 2.5 * 1.4826 * mad)
+            let limIn = innerLimit.map { min(lim, $0) } ?? lim
             var n = 0
-            for i in 0..<count where abs(e[i]) <= lim { e[n] = e[i]; move(i, to: n); n += 1 }
+            for i in 0..<count where e[i] <= lim && e[i] >= -limIn { e[n] = e[i]; move(i, to: n); n += 1 }
             if n == count || n < 5 { break }
             count = n
             guard let c2 = fit() else { return nil }
@@ -782,6 +936,25 @@ struct RimMeasure {
 
     func fit() -> (x: Double, y: Double, r: Double)? {
         xs.withUnsafeBufferPointer { X in ys.withUnsafeBufferPointer { Y in BallFinder.circleFit(X, Y, count: count) } }
+    }
+
+    /// The standard error of a fitted circle's radius from the points' scatter about it (pixels).
+    func radiusError(_ c: (x: Double, y: Double, r: Double)) -> Double {
+        guard count > 3 else { return .infinity }
+        // J^T J for residuals |p_i - c| - r, whose gradient in (cx, cy, r) is (-dx/d, -dy/d, -1)
+        var a00 = 0.0, a01 = 0.0, a02 = 0.0, a11 = 0.0, a12 = 0.0, e2 = 0.0
+        for i in 0..<count {
+            let dx = xs[i] - c.x, dy = ys[i] - c.y, d = max(1e-9, (dx * dx + dy * dy).squareRoot())
+            let jx = -dx / d, jy = -dy / d
+            a00 += jx * jx; a01 += jx * jy; a02 -= jx; a11 += jy * jy; a12 -= jy
+            e2 += (d - c.r) * (d - c.r)
+        }
+        let a22 = Double(count)
+        let det = a00 * (a11 * a22 - a12 * a12) - a01 * (a01 * a22 - a12 * a02) + a02 * (a01 * a12 - a11 * a02)
+        guard det > 1e-12 else { return .infinity }
+        let inv22 = (a00 * a11 - a01 * a01) / det
+        // the points' scatter, but no less than a quarter pixel each: an edge's position is not known better than that
+        return (max(e2 / Double(count - 3), 0.0625) * inv22).squareRoot()
     }
 
     func rms(_ c: (x: Double, y: Double, r: Double)) -> Double {
@@ -822,7 +995,7 @@ public struct BallObservation: Equatable {
 
 /// Looks for the ball over the slab, frame after frame. Port of the web app's scanBall:
 /// - only a ball whose straight drop lands on the slab counts;
-/// - a ball found from its upper outline alone (`BallCircle.partial`) is reported only once it shows up on two scans in
+/// - a ball found from half its outline (`BallCircle.partial`) is reported only once it shows up on two scans in
 ///   a row, or where the ball already being followed is;
 /// - a ball being followed is looked for in a box around it (the costliest step of a frame otherwise);
 /// - its position and size are smoothed while it stays put, and a ball missed for a moment is held over for a few
@@ -840,9 +1013,15 @@ public struct BallObservation: Equatable {
 /// Keeps state between calls: use one locator per camera stream, from one queue at a time.
 public final class BallLocator {
     public struct Options {
-        /// how high over the slab (bottom of the ball over the top face, metres) a ball is looked for
+        /// how high over the slab (bottom of the ball over the top face, metres) a ball is looked for; one found lower
+        /// is not reported
         public var minHeight: Double = 0.05
         public var maxHeight: Double = 1.5
+        /// A ball found from half its outline is reported only this high over the slab or higher (metres). The owner
+        /// holds the ball 1-3 ft (0.3-0.9 m) over the slab; the weaker evidence of half an outline is taken only where
+        /// a held ball can be, with room for a ball held a little low (two thirds of a foot). A whole outline is taken
+        /// down to `minHeight`.
+        public var minPartialHeight: Double = 0.2
         /// a followed ball is looked for within this many radii of where it was
         public var followRadii: Double = 4
         /// updates a followed ball may go unseen before it is dropped (the web app allowed 5 scans at 15 a second)
@@ -994,11 +1173,12 @@ public final class BallLocator {
         for c in circles {
             guard let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
                   let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab,
-                  d.dropHeight <= options.maxHeight + 0.3 else { continue }
+                  d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3 else { continue }
             if c.partial {
                 // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
-                // (radius at least 0.9x that of a ball at the slab's depth), here as a distance
-                if B.length > slab.center.length / 0.9 { continue }
+                // (radius at least 0.9x that of a ball at the slab's depth), here as a distance; and a size that puts it
+                // where a held ball can be
+                if B.length > slab.center.length / 0.9 || d.dropHeight < options.minPartialHeight { continue }
                 // only part of the outline seen: report it only once the same ball turns up on two scans in a row
                 if part == nil { part = anchor(B, slab) }
                 let again = pending.map { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 } ?? false
