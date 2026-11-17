@@ -1,0 +1,18 @@
+{
+ "format": "bouncerec",
+ "version": 1,
+ "build": "web-testbed",
+ "device": "synthetic (three.js, web/tests d5_t15_h45_wood)",
+ "frameWidth": 270,
+ "frameHeight": 480,
+ "settings": {
+  "sideUInches": 7,
+  "sideVInches": 7,
+  "thicknessInches": 1,
+  "dishInches": 0.125,
+  "ballDiameterMm": 35,
+  "dropHeightFeet": 3,
+  "reboundPercent": 70
+ },
+ "notes": "frames at the web app's processing size; camera poses in metres, world y up"
+}

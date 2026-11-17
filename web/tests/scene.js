@@ -721,4 +721,17 @@ window.renderClipFrame = async (spec, i) => {
   return { jpeg, gt };
 };
 window.sensorSamples = async (spec, times) => { const ctx = await prepareClip(spec); return times.map((t) => sensorAt(ctx, t)); };
+// For the native app's tests (export_ios.js): the camera's pose and the scene's truth in world space, in metres, with
+// the world y up as in ARKit (gravity-aligned) and the three.js camera looking down -z as ARKit's camera does.
+// Each entry: worldFromCamera (4x4, column-major), slab corners / normal, ball centre, base centre, floor height (0).
+window.cameraPoses = async (spec, times) => {
+  const ctx = await prepareClip(spec), m = (v) => [v.x * M_PER_FT, v.y * M_PER_FT, v.z * M_PER_FT];
+  return times.map((t) => {
+    const cam = cameraAt(ctx, t), mat = new THREE.Matrix4().compose(cam.pos.clone().multiplyScalar(M_PER_FT), cam.q, new THREE.Vector3(1, 1, 1));
+    const out = { t, worldFromCamera: mat.elements.slice(), slabNormal: ctx.n ? [ctx.n.x, ctx.n.y, ctx.n.z] : null,
+      slabCorners: ctx.corners ? ctx.corners.map(m) : null, baseCentre: ctx.baseCentre ? m(ctx.baseCentre) : null, floorY: 0 };
+    if (spec.ball) { const b = ballAt(ctx, t); out.ball = { center: m(b.pos), held: b.held }; }
+    return out;
+  });
+};
 window.sceneReady = true;
