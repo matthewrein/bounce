@@ -196,7 +196,8 @@ final class TrackerTests: XCTestCase {
         let v = w.view(from: Vec3(0, 0.8, 0), at: w.slab.center)
         let dm = w.depthMap(v, spec: .standard)
         var o: TrackerOutput! = nil
-        for k in 0..<5 { o = step(tr, det, v, Double(k) * 0.11, depth: dm) }
+        var events: [String] = []
+        for k in 0..<5 { o = step(tr, det, v, Double(k) * 0.11, depth: dm); events += o.events }
         let d = try! XCTUnwrap(o.depth)
         XCTAssertGreaterThan(d.points, 100)
         XCTAssertLessThan(d.angleToImageDegrees, 0.3)   // the dish is symmetric: its best plane is parallel to the corners'
@@ -204,7 +205,10 @@ final class TrackerTests: XCTestCase {
         // the corner plane's centre sits above the best plane through the inner 70% of the dish by its mean depth there:
         // D (1 - 0.7^2 / 3) for a paraboloid (more or less, as the points are not spread evenly in perspective)
         XCTAssertEqual(d.centreOffset, SlabSpec.standard.dishDepth * (1 - 0.49 / 3), accuracy: 0.0006)
-        XCTAssertTrue(o.events.contains("depth-fused"))
+        // fused on this frame; the event marks only the frame fusion started (it used to repeat every frame)
+        XCTAssertTrue(o.depthFused)
+        XCTAssertEqual(events.filter { $0 == "depth-fused" }.count, 1)
+        XCTAssertGreaterThanOrEqual(tr.counts["depthFused"] ?? 0, 2)
         XCTAssertLessThan(Units.degrees(o.slab!.normal.angle(to: w.slab.normal)), 0.3)
     }
 

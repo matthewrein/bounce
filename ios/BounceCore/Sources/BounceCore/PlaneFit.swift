@@ -105,6 +105,12 @@ public struct DepthCheck: Equatable, Codable {
     public var centreOffset: Double
     /// the depth plane's tilt from level (degrees)
     public var tiltDegrees: Double
+    /// how many depth points lay inside the top's polygon (the fit's inliers are `points` of them); nil in old reports
+    public var candidates: Int? = nil
+
+    /// share of the points inside the top that lie on the fitted plane: about 1 for a clean top (the dish fits inside
+    /// the inlier band), lower when something else (a hand, the ground) shares the polygon with it
+    public var inlierFraction: Double? { candidates.flatMap { $0 > 0 ? Double(points) / Double($0) : nil } }
 }
 
 extension PlaneFit {
@@ -147,6 +153,7 @@ extension PlaneFit {
         if plane.normal.dot(down) > 0 { plane.normal = -plane.normal }
         let ang = Units.degrees(plane.normal.angle(to: slab.normal))
         return DepthCheck(plane: plane, points: fit.inliers, rms: fit.rms, angleToImageDegrees: ang,
-                          centreOffset: plane.distance(slab.center), tiltDegrees: Units.degrees(acos(clamp(-plane.normal.dot(down.normalized), -1, 1))))
+                          centreOffset: plane.distance(slab.center), tiltDegrees: Units.degrees(acos(clamp(-plane.normal.dot(down.normalized), -1, 1))),
+                          candidates: pts.count)
     }
 }

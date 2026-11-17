@@ -23,12 +23,23 @@ public struct PoseFit: Equatable {
     /// for corner noise of `PoseSolver.Options.uncertaintyCornerPixels`. A slab seen nearly face-on shows its tilt only
     /// through a few pixels of keystone, so this grows quickly toward a straight-down view. 0 when not computed.
     public var normalSigmaDegrees: Double = 0
+    /// The normal's covariance (camera axes, square radians) for the same corner noise: nothing along the normal itself,
+    /// and usually far more along one axis across it than the other (the tilt is pinned well in one direction and poorly
+    /// in the other). Its trace is normalSigmaDegrees^2 in radians. Zero when not computed.
+    public var normalCovariance: Mat3 = Mat3(rows: [0, 0, 0, 0, 0, 0, 0, 0, 0])
     /// covariance of `pose.center` (camera axes, square metres) for the same corner noise; mostly along the line of
     /// sight. Zero when not computed.
     public var centreCovariance: Mat3 = Mat3(rows: [0, 0, 0, 0, 0, 0, 0, 0, 0])
     /// rectangular slabs: the cost of the other side assignment (which outline side is the long one); nil for a square
     /// slab or when that fit failed. The cost difference is this frame's evidence for one assignment (see `longSide`).
     public var alternativeCost: Double? = nil
+    /// the cost of the other mirror-image solution (the normal reflected about the line of sight), when both were
+    /// fitted; with `previousNormal` the solver may keep the costlier one for continuity, so an assignment's own best
+    /// cost is min(cost, mirrorCost)
+    public var mirrorCost: Double? = nil
+
+    /// the lowest cost this side assignment reaches over its two mirror-image solutions
+    public var bestCost: Double { min(cost, mirrorCost ?? cost) }
 
     /// whether the outline runs the other way round from the pose's corners
     public var outlineReversed: Bool { cornerOrder == [3, 2, 1, 0] }
@@ -218,9 +229,10 @@ public enum PoseSolver {
 
     /// The fit's uncertainty from the corners alone (no prior): the covariance of (rotation vector, translation) is
     /// k^2 (J^T J)^-1 for the undamped Jacobian of the corner residuals at the solution, with k the assumed corner noise
-    /// over the residuals' own sigma. Returns the normal's angular sigma (radians, both axes) and the centre's covariance.
+    /// over the residuals' own sigma. Returns the normal's angular sigma (radians, both axes), its covariance and the
+    /// centre's covariance.
     static func uncertainty(_ s: Refined, normal n: Vec3, axisU u: Vec3, obs: [Vec2], hu: Double, hv: Double, sp: Double,
-                            k: Double) -> (normalSigma: Double, centre: Mat3)? {
+                            k: Double) -> (normalSigma: Double, normal: Mat3, centre: Mat3)? {
         guard let r0 = cornerResiduals(s.r1, s.r2, s.t, obs: obs, hu: hu, hv: hv, sp: sp) else { return nil }
         let ts = max(s.t.length * 1e-6, 1e-9)
         var J: [[Double]] = []
@@ -245,7 +257,9 @@ public enum PoseSolver {
         let varN = u.dot(Sw * u) + v.dot(Sw * v)
         let St = Mat3(rows: [inv[3][3], inv[3][4], inv[3][5], inv[4][3], inv[4][4], inv[4][5], inv[5][3], inv[5][4], inv[5][5]])
         guard varN.isFinite, varN >= 0 else { return nil }
-        return (varN.squareRoot(), St)
+        // a small turn w moves the normal by w x n = -[n]x w
+        let K = Mat3(rows: [0, -n.z, n.y, n.z, 0, -n.x, -n.y, n.x, 0])
+        return (varN.squareRoot(), K * Sw * K.transposed, St)
     }
 
     static func solveOne(corners q: [Vec2], K: CameraIntrinsics, hu: Double, hv: Double, down: Vec3?, prev: Vec3?, opt: Options) -> PoseFit? {
@@ -272,7 +286,7 @@ public enum PoseSolver {
         let n1 = half(v, n0), f1 = half(n1, half(v, r1)), f2 = half(n1, half(v, r2))
         let A = refine(r1, r2, c, obs: obs, hu: hu, hv: hv, sign: sg, up: up, sp: sp, st: st, iterations: opt.maxIterations)
         let B = refine(f1, f2, c, obs: obs, hu: hu, hv: hv, sign: sg, up: up, sp: sp, st: st, iterations: opt.maxIterations)
-        var best: Refined
+        var best: Refined, mirror: Refined? = nil
         switch (A, B) {
         case (nil, nil): return nil
         case (let a?, nil): best = a
@@ -280,11 +294,12 @@ public enum PoseSolver {
         case (let a?, let b?):
             let ca = a.cost + priorCost(a), cb = b.cost + priorCost(b)
             best = cb < ca ? b : a
+            var other = cb < ca ? a : b
             if let prev = prev {
-                let other = cb < ca ? a : b
                 let nb = best.r1.cross(best.r2).normalized * sg, no = other.r1.cross(other.r2).normalized * sg
-                if no.dot(prev) > nb.dot(prev) && other.cost < best.cost * 3 + 1 { best = other }
+                if no.dot(prev) > nb.dot(prev) && other.cost < best.cost * 3 + 1 { swap(&best, &other) }
             }
+            mirror = other
         }
         let n = best.r1.cross(best.r2).normalized * sg
         // the pose is right-handed (axisV = n x axisU), so with sg = -1 its v axis is -r2: pose corner i is outline
@@ -299,8 +314,10 @@ public enum PoseSolver {
         let pose = SlabPose(center: best.t, normal: n, axisU: u, axisV: vv, halfU: hu, halfV: hv)
         var fit = PoseFit(pose: pose, rmsPixels: (se / 4).squareRoot(), cost: best.cost, swappedSides: false)
         fit.cornerOrder = sg < 0 ? [3, 2, 1, 0] : [0, 1, 2, 3]
+        fit.mirrorCost = mirror?.cost
         if let un = uncertainty(best, normal: n, axisU: u, obs: obs, hu: hu, hv: hv, sp: sp, k: opt.uncertaintyCornerPixels / opt.cornerSigmaPixels) {
             fit.normalSigmaDegrees = Units.degrees(un.normalSigma)
+            fit.normalCovariance = un.normal
             fit.centreCovariance = un.centre
         }
         return fit

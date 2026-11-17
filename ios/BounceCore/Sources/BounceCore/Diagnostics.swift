@@ -21,9 +21,12 @@ public struct DiagnosticsReport: Codable, Equatable {
     }
     public struct Depth: Codable, Equatable {
         public var points: Int, rms: Double, angleToImageDegrees: Double, centreOffsetMm: Double, tiltDegrees: Double
+        /// share of the depth points inside the top that lie on its plane
+        public var inlierFraction: Double?
         public init(_ d: DepthCheck) {
             points = d.points; rms = DiagnosticsReport.r4(d.rms); angleToImageDegrees = DiagnosticsReport.r2(d.angleToImageDegrees)
             centreOffsetMm = DiagnosticsReport.r2(d.centreOffset * 1000); tiltDegrees = DiagnosticsReport.r2(d.tiltDegrees)
+            inlierFraction = d.inlierFraction.map(DiagnosticsReport.r2)
         }
     }
 
@@ -49,11 +52,19 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var counts: [String: Int]
     public var recentEvents: [String]
     public var recording: String?
+    /// the values behind the rejection counters (e.g. "misfit": fractions of the side, "tooTilted": degrees), per kind:
+    /// count, smallest, largest and last, rounded (SlabTracker.rejectionValues)
+    public var rejectionValues: [String: ValueSummary]?
+    /// the slab detector's corner noise (pixels of the processing frame) as the tracker measured it
+    /// (SlabTracker.cornerNoiseEstimate), and how well the lock pins the normal (degrees, TrackerOutput.lockSigmaDegrees)
+    public var cornerNoisePixels: Double?
+    public var lockSigmaDegrees: Double?
 
     public init(build: String, device: String, system: String, time: String, settings: RecordingSettings, state: String, tracking: String,
                 fps: Double, msProcess: Double, lens: CameraIntrinsics?, depthSupported: Bool, depth: DepthCheck?, captureLocked: Bool,
                 slab: SlabPose?, outline: [Vec2]?, sideModes: [String], ball: (center: Vec3, circle: Vec2, radius: Double)?, readouts: Readouts?,
-                counts: [String: Int], recentEvents: [String], recording: String?) {
+                counts: [String: Int], recentEvents: [String], recording: String?, rejectionValues: [String: ValueSummary]? = nil,
+                cornerNoisePixels: Double? = nil, lockSigmaDegrees: Double? = nil) {
         self.build = build; self.device = device; self.system = system; self.time = time; self.settings = settings
         self.state = state; self.tracking = tracking; self.fps = DiagnosticsReport.r2(fps); self.msProcess = DiagnosticsReport.r2(msProcess)
         self.lens = lens.map(Lens.init); self.depthSupported = depthSupported; self.depth = depth.map(Depth.init); self.captureLocked = captureLocked
@@ -64,6 +75,8 @@ public struct DiagnosticsReport: Codable, Equatable {
         self.ball = ball.map { [DiagnosticsReport.r4($0.center.x), DiagnosticsReport.r4($0.center.y), DiagnosticsReport.r4($0.center.z),
                                 DiagnosticsReport.r2($0.circle.x), DiagnosticsReport.r2($0.circle.y), DiagnosticsReport.r2($0.radius)] }
         self.readouts = readouts; self.counts = counts; self.recentEvents = recentEvents; self.recording = recording
+        self.rejectionValues = rejectionValues?.mapValues { $0.rounded }
+        self.cornerNoisePixels = cornerNoisePixels.map(DiagnosticsReport.r2); self.lockSigmaDegrees = lockSigmaDegrees.map(DiagnosticsReport.r2)
     }
 
     static func r2(_ v: Double) -> Double { (v * 100).rounded() / 100 }
