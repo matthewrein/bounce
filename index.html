@@ -137,7 +137,15 @@ function prepare(){
   const d=x.getImageData(0,0,pw,ph).data,N=pw*ph;
   let Y=new Float32Array(N),Cb=new Float32Array(N),Cr=new Float32Array(N);
   for(let i=0;i<N;i++){const r=d[i*4],g=d[i*4+1],b=d[i*4+2];const y=.299*r+.587*g+.114*b;Y[i]=y;Cb[i]=b-y;Cr[i]=r-y;}
-  S.proc={pw,ph,k,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
+  // texture: local standard deviation of luma, so smooth cement separates from busy surroundings of the same colour
+  const Tx=new Float32Array(N);
+  for(let y=0;y<ph;y++)for(let x=0;x<pw;x++){
+    let s=0,s2=0,c=0;
+    for(let dy=-2;dy<=2;dy++){const yy=y+dy;if(yy<0||yy>=ph)continue;
+      for(let dx=-2;dx<=2;dx++){const xx=x+dx;if(xx<0||xx>=pw)continue;const v=Y[yy*pw+xx];s+=v;s2+=v*v;c++;}}
+    const mu=s/c;Tx[y*pw+x]=Math.sqrt(Math.max(0,s2/c-mu*mu));
+  }
+  S.proc={pw,ph,k,Yr:Y,Tx,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
 }
 
 /* ---------- slab detection: colour region -> hull -> 4 fitted edges ---------- */
@@ -150,22 +158,35 @@ function hull(p){
   for(let i=p.length-2;i>=0;i--){const q=p[i];while(h.length>=lo&&cr2(h[h.length-2],h[h.length-1],q)<=0)h.pop();h.push(q);}
   h.pop();return h;
 }
-function detectAt(sx,sy,tol){
-  const {pw,ph,Y,Cb,Cr,k}=S.proc,N=pw*ph;
+function detectAt(sx,sy,tol,ref){
+  const {pw,ph,Y,Cb,Cr,Tx,Yr,k}=S.proc,N=pw*ph;
   sx=clamp(Math.round(sx),2,pw-3);sy=clamp(Math.round(sy),2,ph-3);
-  let y0=0,b0=0,r0=0;
-  for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const i=(sy+dy)*pw+sx+dx;y0+=Y[i];b0+=Cb[i];r0+=Cr[i];}
-  y0/=25;b0/=25;r0/=25;
+  let y0=0,b0=0,r0=0,x0=0;
+  for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const i=(sy+dy)*pw+sx+dx;y0+=Y[i];b0+=Cb[i];r0+=Cr[i];x0+=Tx[i];}
+  y0/=25;b0/=25;r0/=25;x0/=25;
+  const seen=[y0,b0,r0,x0];if(ref){y0=ref[0];b0=ref[1];r0=ref[2];x0=ref[3];}
   const t2=tol*tol,m=new Uint8Array(N),e=new Uint8Array(N);
-  for(let i=0;i<N;i++){const a=(Y[i]-y0)*.6,b=Cb[i]-b0,c=Cr[i]-r0;m[i]=(a*a+b*b+c*c)<t2?1:0;}
-  for(let y=1;y<ph-1;y++)for(let x=1;x<pw-1;x++){const i=y*pw+x;e[i]=m[i]&m[i-1]&m[i+1]&m[i-pw]&m[i+pw];}
+  for(let i=0;i<N;i++){const a=(Y[i]-y0)*.6,b=Cb[i]-b0,c=Cr[i]-r0,d=Math.max(0,Tx[i]-x0)*4;m[i]=(a*a+b*b+c*c+d*d)<t2?1:0;}
+  // distance to the nearest non-matching pixel (3-4 chamfer), so thin leaks into look-alike surroundings can be cut off
+  const D=new Int16Array(N);
+  for(let y=0;y<ph;y++)for(let x=0;x<pw;x++){const i=y*pw+x;
+    if(!m[i]||x===0||y===0||x===pw-1||y===ph-1){D[i]=0;continue;}
+    D[i]=Math.min(D[i-1]+3,D[i-pw]+3,D[i-pw-1]+4,D[i-pw+1]+4);}
+  for(let y=ph-2;y>0;y--)for(let x=pw-2;x>0;x--){const i=y*pw+x;
+    if(D[i])D[i]=Math.min(D[i],D[i+1]+3,D[i+pw]+3,D[i+pw+1]+4,D[i+pw-1]+4);}
   let s=-1;
   find:for(let r=0;r<=10;r++)for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
     if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;
     const x=sx+dx,y=sy+dy;if(x<1||y<1||x>=pw-1||y>=ph-1)continue;
-    if(e[y*pw+x]){s=y*pw+x;break find;}
+    if(D[y*pw+x]>3){s=y*pw+x;break find;}
   }
   if(s<0)return null;
+  // climb to the middle of the region the seed sits in, then keep only its thick core
+  for(let it=0;it<400;it++){let b=s;
+    for(const o of [-1,1,-pw,pw,-pw-1,-pw+1,pw-1,pw+1])if(D[s+o]>D[b])b=s+o;
+    if(b===s)break;s=b;}
+  const rad=Math.max(1,D[s]/3*.3),r3=rad*3;
+  for(let i=0;i<N;i++)e[i]=D[i]>r3?1:0;
   const st=new Int32Array(N);let sp=0;st[sp++]=s;e[s]=2;
   const rmin=new Int16Array(ph).fill(pw),rmax=new Int16Array(ph).fill(-1);
   const cmin=new Int16Array(pw).fill(ph),cmax=new Int16Array(pw).fill(-1);
@@ -204,7 +225,18 @@ function detectAt(sx,sy,tol){
       for(const p of sel){const a=p.x-mx,b=p.y-my;sxx+=a*a;sxy+=a*b;syy+=b*b;}
       const th=.5*Math.atan2(2*sxy,sxx-syy);dx=Math.cos(th);dy=Math.sin(th);px=mx;py=my;}
     let nx=-dy,ny=dx;if(nx*(px-cen.x)+ny*(py-cen.y)<0){nx=-nx;ny=-ny;}
-    lines.push({px:px+nx,py:py+ny,dx,dy});
+    // the core stops short of the true edge by the cut radius plus the texture window; then snap to a clear luma edge if one is close
+    px+=nx*(rad+1.5);py+=ny*(rad+1.5);
+    const sA=(A.x-px)*dx+(A.y-py)*dy,sB=(B.x-px)*dx+(B.y-py)*dy,gs=[];
+    const smp=(x,y)=>{x=clamp(x,0,pw-1.001);y=clamp(y,0,ph-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*pw+xi;
+      return (Yr[j]*(1-fx)+Yr[j+1]*fx)*(1-fy)+(Yr[j+pw]*(1-fx)+Yr[j+pw+1]*fx)*fy;};
+    let gmax=0;
+    for(let o=-3;o<=3;o+=.5){let g=0;
+      for(let j=0;j<14;j++){const t=sA+(sB-sA)*(.15+.7*j/13),qx=px+dx*t+nx*o,qy=py+dy*t+ny*o;
+        g+=smp(qx+nx,qy+ny)-smp(qx-nx,qy-ny);}
+      g=Math.abs(g/14);gs.push(g);if(g>gmax)gmax=g;}
+    if(gmax>=10)for(let j=0;j<gs.length;j++)if(gs[j]>=.6*gmax&&gs[j]>=(gs[j-1]||0)&&gs[j]>=(gs[j+1]||0)){const o=-3+j*.5;px+=nx*o;py+=ny*o;break;}
+    lines.push({px,py,dx,dy});
   }
   const q=[];
   for(let i=0;i<4;i++){
@@ -212,39 +244,59 @@ function detectAt(sx,sy,tol){
     let p={x:h[i].x,y:h[i].y};
     if(Math.abs(c)>1e-6){const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c;
       const r={x:a.px+t*a.dx,y:a.py+t*a.dy};
-      if(Math.hypot(r.x-p.x,r.y-p.y)<perim/4*.3)p=r;}
+      if(Math.hypot(r.x-p.x,r.y-p.y)<perim/4*.3+2*(rad+1.5))p=r;}
     q.push(p);
   }
+  for(const p of q)if(p.x<2||p.y<2||p.x>pw-3||p.y>ph-3)return null; // the whole slab must be in view
   let area=0,sign=0;
   for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];area+=a.x*b.y-b.x*a.y;
     const z=cr2(a,b,c);if(z===0)return null;if(sign&&Math.sign(z)!==sign)return null;sign=Math.sign(z);}
   area=Math.abs(area)/2;
-  const fill=(count+perim)/area;
+  const dd=rad+1.5,fill=(count+perim*dd+4*dd*dd)/area;
   if(fill<.8||fill>1.2)return null;
-  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill)};
+  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen};
 }
 function detect(seed){
-  const {pw,ph,k}=S.proc;let best=null;
+  const {pw,ph,k}=S.proc;let best=null;const all=[];
   const seeds=seed?[[seed.x*k,seed.y*k]]:
     [[0,0],[-.12,0],[.12,0],[0,-.12],[0,.12],[-.12,-.12],[.12,-.12],[-.12,.12],[.12,.12]].map(o=>[pw/2+o[0]*pw,ph/2+o[1]*ph]);
-  for(const s of seeds)for(const m of [1,.7,1.45]){
-    const r=detectAt(s[0],s[1],P.tol*m);
-    if(r&&(!best||r.score<best.score-1e-9))best=r;
+  // seeds are tried nearest the aim point first; the first one that yields a slab wins
+  for(const s of seeds){
+    const all=[];
+    for(const m of [.5,.7,1,1.45]){const r=detectAt(s[0],s[1],P.tol*m);if(r)all.push(r);}
+    if(!all.length)continue;
+    // a looser match can leak into look-alike surroundings, so take the tightest match that still covers most of the largest one
+    let amax=0;for(const r of all)if(r.area>amax)amax=r.area;
+    for(const r of all){if(r.area>=amax*.7){best=r;break;}}
+    break;
   }
-  return best?best.q:null;
+  return best;
 }
 /* live tracking: follow the slab from frame to frame and smooth its corners */
 function track(){
-  let seed=S.seed;
-  if(S.quad)seed={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
-  const q=detect(seed);
-  if(!q){if(S.quad&&++S.lost>10){S.quad=null;S.lost=0;}return;}
+  let r=null;
+  if(S.quad){
+    // once locked, keep the same colour reference and tolerance so the outline doesn't hop between matches
+    const c={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
+    r=detectAt(c.x*S.proc.k,c.y*S.proc.k,S.ltol,S.ref)||detect(c);
+  }else r=detect(S.seed);
+  if(!r){if(S.quad&&++S.lost>12){S.quad=null;S.nS=null;S.lost=0;}return;}
   S.lost=0;S.seed=null;
-  if(!S.quad){S.quad=q;return;}
+  const q=r.q;
+  if(!S.quad){S.quad=q;S.ltol=r.tol;S.ref=r.ref;S.far=0;S.nS=null;return;}
   let bk=0,bd=Infinity;
   for(let k=0;k<4;k++){let d=0;for(let i=0;i<4;i++)d+=Math.hypot(q[(i+k)%4].x-S.quad[i].x,q[(i+k)%4].y-S.quad[i].y);if(d<bd){bd=d;bk=k;}}
-  const side=Math.hypot(q[1].x-q[0].x,q[1].y-q[0].y),a=bd/4>side*.25?1:.35;
+  const d=bd/4,side=Math.hypot(S.quad[1].x-S.quad[0].x,S.quad[1].y-S.quad[0].y);
+  if(d>side*.15){
+    // debounce: a sudden different outline has to persist before it replaces the current one
+    if(++S.far<8)return;
+    S.quad=q.map((_,i)=>q[(i+bk)%4]);S.ltol=r.tol;S.ref=r.ref;S.far=0;S.nS=null;return;
+  }
+  S.far=0;
+  // heavy smoothing when nearly still, lighter when the slab or phone is really moving
+  const a=clamp(d/(side*.06),.06,.5);
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
+  S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.03);
 }
 
 /* ---------- pose of a square from its 4 image corners ---------- */
@@ -298,6 +350,11 @@ function update(){
   if(!S.msg){st.className=S.example?"chip":"chip good";st.textContent=S.example?"Example scene":S.live?"Slab locked":"Slab found";}
   $("hint").textContent="Tap the cement to re-pick it";
   const a=P.pitch*Math.PI/180,g=sensor?S.grav:[0,Math.cos(a),Math.sin(a)];
+  if(S.live){
+    // steady the estimated facing direction and position across frames
+    if(S.nS){pose.n=S.nS=norm(add(mul(S.nS,.88),mul(pose.n,.12)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
+    else{S.nS=pose.n;S.cS=pose.c;}
+  }
   const {c,n,r1,r2,hs}=pose,vup=-P.speed*dot(n,g);
   let hf=0;
   for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
@@ -405,7 +462,7 @@ async function startLive(){
       $("stage").appendChild(v);S.video=v;
     }
     S.video.srcObject=stream;await S.video.play();
-    S.stream=stream;S.src=S.video;S.live=true;S.example=false;S.quad=null;S.seed=null;S.lost=0;
+    S.stream=stream;S.src=S.video;S.live=true;S.example=false;S.quad=null;S.nS=null;S.seed=null;S.lost=0;
     $("live").textContent="Stop camera";
   }catch(err){
     S.msg=err&&err.message==="insecure"?"Camera needs an https:// address":"Camera blocked. Allow it in browser settings";
@@ -415,7 +472,7 @@ async function startLive(){
 function setSource(canvas,example){
   stopLive();S.msg="";
   S.src=canvas;S.sw=canvas.width;S.sh=canvas.height;S.example=example;S.seed=null;
-  prepare();S.quad=detect(null);update();
+  prepare();{const r=detect(null);S.quad=r&&r.q;}update();
 }
 function exampleScene(){
   const w=900,h=1200,c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d");
@@ -453,14 +510,14 @@ $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
 for(const key of ["speed","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
   P[key]=parseFloat(e.target.value);
-  if(key==="tol"&&!S.live)S.quad=detect(S.seed);
+  if(key==="tol"&&!S.live){const r=detect(S.seed);S.quad=r&&r.q;}
   update();
 });
 cv.addEventListener("click",e=>{
   if(!S.src)return;
   const r=cv.getBoundingClientRect(),v=view(),x=(e.clientX-r.left-v.ox)/v.s,y=(e.clientY-r.top-v.oy)/v.s;
   if(x<0||y<0||x>S.sw||y>S.sh)return;
-  S.seed={x,y};if(S.live){S.quad=null;S.lost=0;}else{S.quad=detect(S.seed);update();}
+  S.seed={x,y};if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;update();}
 });
 new ResizeObserver(resize).observe(cv);
 resize();
