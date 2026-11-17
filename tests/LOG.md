@@ -29,6 +29,7 @@ idle machine; other rows ran three clips at once and are only comparable with ea
 | b16 ball: upper outline accepted (kept; 61 clips) | 84.3 | 4 | 6 | 4.78 | 5.2 | 13.2 | - | 0.300 | 0.172 | **20.7** | **0** | - | - | 1.3 / 0.5 / 0.2 |
 | b18 (rotation rates shown with the engines' naming) | 84.7 | 4 | 6 | 4.78 | 5.22 | 13.3 | - | 0.359 | 0.218 | 21.9 | 0 | 12.8* | - | 1.3 / 0.5 / 0.2 |
 | **b19 gyro guard (kept; 64 clips, engines' naming)** | **85.1** | 4 | **5.5** | 4.74 | 5.17 | 13.4 | - | **0.215** | **0.152** | **22.7** | **0** | 11.8* | - | 1.3 / 0.5 / 0.2 |
+| b19 with "Correct for the slab's cut edge" on (64 clips) | 85.3 | 4 | 8 | **2.63** | **1.18** | 13.4 | 18/57 | 0.373 | 0.241 | 22.8 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 | b15 with "Correct for the slab's cut edge" on | 82.7 | 4 | 7 | **2.63** | **1.30** | 13.2 | 15/42 | 0.345 | 0.241 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
@@ -246,3 +247,17 @@ Results, 2 phases, 64 clips:
   3.5-5.2 deg for b18 alone; under the engines' naming b19 is better, 2.0-3.0 deg) and rect_slab_d4 wobble
   0.217 -> 0.264 deg (0.354 -> 0.136 deg under the engines' naming).
 - Photos unchanged. False ball detections 0. Tracking time 11.8 ms on the 4 ft ball clip alone.
+
+## Final state (b19) and checks outside the main comparison
+
+- **Cut-edge correction, re-measured on b19** (switch on vs off, 2 phases, 64 clips): median tilt error 5.17 -> 1.18 deg,
+  corner error 4.74 -> 2.63 px, drop-height error 1.50 -> 1.04 in; 42 of 57 slab clips more than 0.3 deg better, only
+  the strongly curved slab worse (0.6 -> 3.3 deg); clips under 1.5 deg 7 -> 39 of 57. Costs: wobble 0.215 -> 0.373 deg
+  (normal) / 0.152 -> 0.241 deg (tilt reading), false-lock events 5.5 -> 8. Still off by default (see b15).
+- **Clips rendered with the private photo textures** (8 core clips; `render.js --private`, results kept in
+  tests/private/): they behave like the procedural ones (median tilt error ~5.0 vs ~5.4 deg for the same 8 clips with
+  procedural textures; lock rates 92-96%), which suggests the procedural stand-ins are adequate for these metrics.
+- **Real-time mode** (`run.js --mode live`, the fake camera playing at 30 fps under the app's own animation loop) now
+  works (frames identified by the video's clock): on 5 clips lock rate, accuracy, wobble and ball detection match step
+  mode, but time to lock is 0.8-1.8 s instead of ~0.3 s, because searching costs 50-90 ms a frame on this machine and
+  the sweep sees fewer frames per second. Tracking ran at 11-17 ms a frame.
