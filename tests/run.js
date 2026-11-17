@@ -47,7 +47,7 @@ async function runStep(srv, clip, gt) {
     // the motion sensor runs before the camera starts
     for (let k = 0; k < 30; k++) await page.evaluate((s) => window.__harness.motion(s), gt.sensors[k]);
     await page.evaluate(() => document.getElementById("live").click());
-    await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000 });
+    await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000, polling: 50 });
     const ticks = [], nT = gt.frames.length * 2; let was = false;
     for (let k = 0; k < nT; k++) {
       const fi = Math.min(gt.frames.length - 1, Math.floor(k / 2)), s = gt.sensors[30 + k] || gt.sensors[gt.sensors.length - 1];
@@ -90,7 +90,7 @@ async function runLive(srv, clip, gt) {
       setInterval(() => { const tt = H.fi / 30 + (performance.now() - H.fiAt) / 1000, k = Math.max(0, Math.min(sensors.length - 1, Math.round((tt + 0.5) * 60))); H.motion(sensors[k]); }, 1000 / 60);
     }, gt.sensors);
     await page.evaluate(() => document.getElementById("live").click());
-    await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000 });
+    await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000, polling: 50 });
     await page.waitForTimeout(gt.frames.length / gt.fps * 1000 + 300);
     const rec = await page.evaluate(() => window.__harness.rec.map((r) => ({ fi: r.fi, at: r.at, d: r.d })));
     // keep the first pass through the file (it loops)
@@ -110,7 +110,7 @@ async function runStills(srv) {
       await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "photo", fov: FOV })) });
       const page = await context.newPage(); await page.goto(`${srv.url}/${APP}`);
       await page.setInputFiles("#pick", path.join(__dirname, "private", s.file));
-      await page.waitForFunction(() => window.slabDiagnostics().src[0] !== 900, null, { timeout: 15000 });
+      await page.waitForFunction(() => window.slabDiagnostics().src[0] !== 900, null, { timeout: 15000, polling: 50 });
       const d = await page.evaluate(() => window.slabDiagnostics());
       const k = d.src[0] / s.size[0], g = s.corners.map(([x, y]) => [x * k, y * k]);
       const side = [0, 1, 2, 3].reduce((a, i) => a + Math.hypot(g[(i + 1) % 4][0] - g[i][0], g[(i + 1) % 4][1] - g[i][1]), 0) / 4;

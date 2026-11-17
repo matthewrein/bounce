@@ -3,6 +3,8 @@
 // Exposes window.renderClipFrame(spec, i) -> {jpeg, gt} and window.sensorSamples(spec, times).
 import * as THREE from "./node_modules/three/build/three.module.js";
 
+// bump when a change alters how existing clips look (the renderer caches clips by spec + this version)
+export const SCENE_VERSION = "1";
 const W = 720, H = 1280, G_FT = 32.174, M_PER_FT = 0.3048, IN = 1 / 12;
 
 /* ---------------- small utilities ---------------- */
@@ -59,8 +61,8 @@ const TEX = {
     return c;
   },
   // floors: [canvas, tile size in ft]
-  mat(r) { // grey cutting mat: 1 in squares with a dotted sub-grid, heavier lines every 6 in, a few diagonals
-    const w = 1024, ppi = w / 12, { c, x } = speckleFill(w, w, [150, 152, 150], r, 0.02);
+  mat(r, tint) { // grey cutting mat: 1 in squares with a dotted sub-grid, heavier lines every 6 in, a few diagonals
+    const w = 1024, ppi = w / 12, { c, x } = speckleFill(w, w, tint || [150, 152, 150], r, 0.02);
     x.fillStyle = "rgba(40,42,44,0.85)";
     for (let i = 0; i < 12; i++) for (let j = 0; j < 12; j++) for (let a = 1; a < 4; a++) for (let b = 1; b < 4; b++) x.fillRect(i * ppi + a * ppi / 4 - 1.5, j * ppi + b * ppi / 4 - 1.5, 3, 3);
     for (let i = 0; i <= 12; i++) { const lw = i % 6 === 0 ? 4 : 2.2; x.fillStyle = "rgba(25,27,30,0.9)"; x.fillRect(i * ppi - lw / 2, 0, lw, w); x.fillRect(0, i * ppi - lw / 2, w, lw); }
@@ -78,8 +80,8 @@ const TEX = {
     mottle(x, w, w, r, [[8, 0.15]]);
     return [c, 2];
   },
-  concrete(r) {
-    const w = 1024, { c, x } = speckleFill(w, w, [146, 145, 140], r, 0.06);
+  concrete(r, tint) {
+    const w = 1024, { c, x } = speckleFill(w, w, tint || [146, 145, 140], r, 0.06);
     mottle(x, w, w, r, [[4, 0.3], [16, 0.25], [64, 0.2], [256, 0.1]]);
     dots(x, w, w, r, 4000, 0.5, 2, () => "rgba(60,60,60,0.35)");
     x.strokeStyle = "rgba(50,50,50,0.5)"; x.lineWidth = 1.5; x.beginPath(); let px = r() * w, py = 0; x.moveTo(px, py); while (py < w) { px += (r() - 0.5) * 40; py += 10 + r() * 30; x.lineTo(px, py); } x.stroke();
@@ -166,8 +168,9 @@ let R = null; // renderer, shared
 const cache = { key: null };
 async function build(spec) {
   if (!R) {
-    R = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    R.setPixelRatio(1); R.setSize(W, H, false); document.body.appendChild(R.domElement);
+    // everything is rendered into an off-screen target; the canvas itself is never shown (compositing it is slow)
+    R = new THREE.WebGLRenderer({ antialias: false });
+    R.setPixelRatio(1); R.setSize(W, H, false);
     R.outputColorSpace = THREE.SRGBColorSpace; R.toneMapping = THREE.LinearToneMapping;
     R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
   }
@@ -182,11 +185,12 @@ async function build(spec) {
     for (let i = 0; i < 6; i++) { x.fillStyle = `rgba(${40 + r() * 80 | 0},${40 + r() * 60 | 0},${40 + r() * 40 | 0},0.8)`; x.fillRect(r() * 512, 100 + r() * 40, 20 + r() * 60, 20 + r() * 40); }
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.mapping = THREE.EquirectangularReflectionMapping;
     const dome = new THREE.Mesh(new THREE.SphereGeometry(80, 32, 16), new THREE.MeshBasicMaterial({ map: t, side: THREE.BackSide }));
+    out.roomTex = t; // metal distractors reflect this
     dome.material.color.setScalar(L.domeGain || 1.0); scene.add(dome);
   }
   // floor
   let ft;
-  if (spec.floor === "plain") ft = TEX.plain(r, spec.floorTint); else ft = TEX[spec.floor](r);
+  ft = TEX[spec.floor](r, spec.floorTint);
   const floorMat = new THREE.MeshStandardMaterial({ map: canvasTex(ft[0], 60 / ft[1]), roughness: 0.85 });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), floorMat); floor.rotation.x = -Math.PI / 2;
   floor.rotation.z = rad(spec.floorRot || 0); floor.receiveShadow = true; scene.add(floor);
@@ -278,11 +282,11 @@ function addExtra(scene, e, ctx, r) {
   const std = (o) => new THREE.MeshStandardMaterial(o);
   let m;
   if (e.type === "tin") { // round tin with a lid: silver or black
-    m = new THREE.Mesh(new THREE.CylinderGeometry(e.r || 0.11, e.r || 0.11, e.h || 0.12, 48), std({ color: e.lid === "black" ? 0x111111 : 0xd8d8d8, metalness: e.lid === "black" ? 0.2 : 1, roughness: e.lid === "black" ? 0.4 : 0.18, envMapIntensity: 1 }));
+    m = new THREE.Mesh(new THREE.CylinderGeometry(e.r || 0.11, e.r || 0.11, e.h || 0.12, 48), std({ color: e.lid === "black" ? 0x111111 : 0xd8d8d8, metalness: e.lid === "black" ? 0.2 : 1, roughness: e.lid === "black" ? 0.4 : 0.18, envMap: ctx.roomTex, envMapIntensity: 1 }));
     m.position.copy(at(e.x, e.z)).setY((e.h || 0.12) / 2);
   } else if (e.type === "coin" || e.type === "sticker") {
     const col = e.type === "coin" ? 0xb87333 : 0xf4f4f0;
-    m = new THREE.Mesh(new THREE.CylinderGeometry(e.r || (e.type === "coin" ? 0.04 : 0.06), e.r || (e.type === "coin" ? 0.04 : 0.06), 0.006, 40), std({ color: col, metalness: e.type === "coin" ? 0.8 : 0, roughness: e.type === "coin" ? 0.35 : 0.7 }));
+    m = new THREE.Mesh(new THREE.CylinderGeometry(e.r || (e.type === "coin" ? 0.04 : 0.06), e.r || (e.type === "coin" ? 0.04 : 0.06), 0.006, 40), std({ color: col, metalness: e.type === "coin" ? 0.8 : 0, roughness: e.type === "coin" ? 0.35 : 0.7, envMap: e.type === "coin" ? ctx.roomTex : null }));
     if (e.onSlab) { const p = new THREE.Vector3(e.x, ctx.t + 0.003, e.z).applyQuaternion(ctx.q).add(ctx.P0); m.position.copy(p); m.quaternion.copy(ctx.q); }
     else m.position.copy(at(e.x, e.z)).setY(0.003);
   } else if (e.type === "floorball") {
@@ -387,8 +391,24 @@ function groundTruth(ctx, t) {
     const n = ctx.n, s = n.dot(b.pos.clone().sub(ctx.C)) / n.y, hit = b.pos.clone().sub(up.clone().multiplyScalar(s));
     const loc = hit.clone().sub(ctx.C).applyQuaternion(ctx.q.clone().invert());
     const on = Math.abs(loc.x) <= ctx.hx && Math.abs(loc.z) <= ctx.hz;
-    const vis = !!c && c[0] > rr && c[1] > rr && c[0] < W - rr && c[1] < H - rr;
-    gt.ball = { x: c ? +c[0].toFixed(2) : null, y: c ? +c[1].toFixed(2) : null, r: +rr.toFixed(2), visible: vis, held: b.held, onSlab: on, drop: +(s - RB).toFixed(4) };
+    let rim = 0;
+    if (c) {
+      if (ctx.hand) poseHand(ctx, ballAt(ctx, Math.min(t, spec.ball.drop ?? t)).pos, cam);
+      const hm = ctx.hand ? [...ctx.hand.fingers, ctx.hand.palm, ctx.hand.arm] : []; for (const m of hm) m.updateMatrixWorld(true);
+      const v = b.pos.clone().sub(cam.pos), d2 = v.lengthSq(), k = 1 - RB * RB / d2, a = v.clone().normalize();
+      const u1 = new THREE.Vector3().crossVectors(a, new THREE.Vector3(0, 1, 0)).normalize(), u2 = new THREE.Vector3().crossVectors(a, u1);
+      const rc = new THREE.Raycaster(); let ok = 0;
+      for (let j = 0; j < 48; j++) {
+        const th = j * Math.PI / 24, u = u1.clone().multiplyScalar(Math.cos(th)).add(u2.clone().multiplyScalar(Math.sin(th)));
+        const ps = cam.pos.clone().add(v.clone().multiplyScalar(k)).add(u.multiplyScalar(RB * Math.sqrt(k) * 0.97)); // just inside the silhouette
+        const pp = project(spec, toApp(cam, ps)); if (!pp || pp[0] < 1 || pp[1] < 1 || pp[0] > W - 1 || pp[1] > H - 1) continue;
+        rc.set(cam.pos, ps.clone().sub(cam.pos).normalize()); rc.far = ps.distanceTo(cam.pos) - 0.002;
+        if (!hm.length || !rc.intersectObjects(hm, false).length) ok++;
+      }
+      rim = ok / 48;
+    }
+    const vis = rim >= 0.8;
+    gt.ball = { x: c ? +c[0].toFixed(2) : null, y: c ? +c[1].toFixed(2) : null, r: +rr.toFixed(2), visible: vis, rim: +rim.toFixed(2), held: b.held, onSlab: on, drop: +(s - RB).toFixed(4) };
   }
   return gt;
 }
@@ -412,8 +432,8 @@ function sensorAt(ctx, t) {
 }
 
 /* ---------------- rendering with exposure, blur, distortion and noise ---------------- */
-let CTX = null;
-async function prepareClip(spec) { if (!CTX || CTX.spec !== spec) { if (CTX) disposeScene(CTX.scene); CTX = await build(spec); } return CTX; }
+let CTX = null, OUTC = null, OUTX = null, OUTI = null; // one software 2D canvas for encoding (a GPU canvas stalls WebGL)
+async function prepareClip(spec) { const key = JSON.stringify(spec); if (!CTX || CTX.key !== key) { if (CTX) disposeScene(CTX.scene); CTX = await build(spec); CTX.key = key; } window.__ctx = CTX; window.__R = R; window.__renderOnce = renderOnce; return CTX; }
 function disposeScene(s) { s.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { for (const k in o.material) { const v = o.material[k]; if (v && v.isTexture) v.dispose(); } o.material.dispose(); } }); }
 function place(ctx, t) {
   const cam = cameraAt(ctx, t); ctx.camera.position.copy(cam.pos); ctx.camera.quaternion.copy(cam.q); ctx.camera.updateMatrixWorld(true);
@@ -425,10 +445,16 @@ function place(ctx, t) {
 function poseHand(ctx, bp, cam) {
   const h = ctx.hand, up = new THREE.Vector3(0, 1, 0);
   let sh;
-  if (h.mode === "self") { const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.q); sh = cam.pos.clone().add(right.multiplyScalar(0.6)).add(new THREE.Vector3(0, -1.1, 0)); }
-  else { const away = bp.clone().sub(cam.pos).setY(0).normalize(); sh = bp.clone().add(away.multiplyScalar(1.2)).add(new THREE.Vector3(0, 1.6, 0)); }
+  let hd;
+  if (h.mode === "self") {
+    // the phone holder reaches out with the other hand: shoulder below and to the right of the phone, and the hand
+    // pinches the ball from the upper right so the forearm doesn't cross in front of it
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.q).setY(0).normalize();
+    sh = cam.pos.clone().add(right.clone().multiplyScalar(1.0)).add(new THREE.Vector3(0, -1.1, 0));
+    hd = up.clone().multiplyScalar(0.6).add(right.multiplyScalar(0.8)).normalize();
+  } else { const away = bp.clone().sub(cam.pos).setY(0).normalize(); sh = bp.clone().add(away.multiplyScalar(1.2)).add(new THREE.Vector3(0, 1.6, 0)); }
   // the hand pinches the ball from above; the forearm runs from the wrist to the shoulder
-  const toSh = sh.clone().sub(bp), hd = up.clone().add(toSh.clone().setY(0).normalize().multiplyScalar(0.3)).normalize();
+  const toSh = sh.clone().sub(bp); if (!hd) hd = up.clone().add(toSh.clone().setY(0).normalize().multiplyScalar(0.3)).normalize();
   const side = new THREE.Vector3().crossVectors(hd, toSh).normalize(); if (!isFinite(side.x)) side.set(1, 0, 0);
   const qh = new THREE.Quaternion().setFromUnitVectors(up, hd);
   h.fingers.forEach((f, k) => { const s = k ? -1 : 1; f.position.copy(bp).add(side.clone().multiplyScalar(s * RB * 1.2)).add(hd.clone().multiplyScalar(RB * 1.5)); f.quaternion.copy(qh); });
@@ -437,13 +463,23 @@ function poseHand(ctx, bp, cam) {
   const qd = new THREE.Quaternion().setFromUnitVectors(up, dir);
   h.arm.position.copy(wrist).add(dir.clone().multiplyScalar(len / 2)); h.arm.quaternion.copy(qd); h.arm.scale.set(1, len, 1);
 }
-const readBuf = new Uint8Array(W * H * 4);
+const readBuf = new Float32Array(W * H * 4);
+const PROF = (window.__prof = {});
+const tm = (k, t0) => { PROF[k] = (PROF[k] || 0) + performance.now() - t0; };
+let RT = null;
+// render off-screen in linear float (reading back the on-screen canvas is very slow in SwiftShader);
+// exposure, clipping and the sRGB curve are applied in software afterwards
 function renderOnce(ctx) {
-  R.render(ctx.scene, ctx.camera);
-  const gl = R.getContext(); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, readBuf);
+  if (!RT) RT = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType, samples: 4 });
+  let t0 = performance.now(); R.setRenderTarget(RT); R.render(ctx.scene, ctx.camera); tm("render", t0); t0 = performance.now();
+  R.readRenderTargetPixels(RT, 0, 0, W, H, readBuf); R.setRenderTarget(null); tm("read", t0);
   return readBuf;
 }
-function meanLuma(buf) { let s = 0, n = 0; for (let y = H * 0.2 | 0; y < H * 0.8; y += 4) for (let x = W * 0.15 | 0; x < W * 0.85; x += 4) { const i = (y * W + x) * 4; s += 0.299 * buf[i] + 0.587 * buf[i + 1] + 0.114 * buf[i + 2]; n++; } return s / n / 255; }
+// linear radiance * exposure -> display value 0..255 (sRGB curve with a soft shoulder)
+const encF = (v) => { v = v <= 0 ? 0 : v < 0.8 ? v : 0.8 + 0.2 * (1 - Math.exp(-(v - 0.8) / 0.2)); return 255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055); };
+const LUTN = 1024, LUTMAX = 6, LUT = new Float32Array(LUTN * LUTMAX + 2); for (let i = 0; i < LUT.length; i++) LUT[i] = encF(i / LUTN);
+const enc = (v) => { if (v <= 0) return 0; const x = v * LUTN; if (x >= LUTN * LUTMAX) return 255; const i = x | 0, f = x - i; return LUT[i] + (LUT[i + 1] - LUT[i]) * f; };
+function meanLuma(buf, e) { let s = 0, n = 0; for (let y = H * 0.2 | 0; y < H * 0.8; y += 4) for (let x = W * 0.15 | 0; x < W * 0.85; x += 4) { const i = (y * W + x) * 4; s += 0.299 * enc(buf[i] * e) + 0.587 * enc(buf[i + 1] * e) + 0.114 * enc(buf[i + 2] * e); n++; } return s / n / 255; }
 
 window.renderClipFrame = async (spec, i) => {
   const ctx = await prepareClip(spec), fps = spec.fps || 30, t = i / fps, L = spec.light, lev = L.level ?? 1;
@@ -453,20 +489,21 @@ window.renderClipFrame = async (spec, i) => {
   if (ctx.staticCubes) for (const [cc, m] of ctx.staticCubes) { m.visible = false; cc.update(R, ctx.scene); m.visible = true; }
   // auto exposure: settle on the first frame, then follow slowly (like a phone), plus optional deliberate drift
   const target = ex.target ?? 0.42;
-  if (ctx.ae == null) { ctx.ae = 1; for (let k = 0; k < 6; k++) { place(ctx, t); R.toneMappingExposure = ctx.ae; const m = meanLuma(renderOnce(ctx)); ctx.ae *= Math.pow(target / Math.max(0.02, m), 1.6); } }
+  if (ctx.ae == null) { ctx.ae = 1; place(ctx, t); const b0 = renderOnce(ctx); for (let k = 0; k < 12; k++) { const m = meanLuma(b0, ctx.ae); ctx.ae *= Math.pow(target / Math.max(0.02, m), 1.6); } }
   const drift = 1 + (ex.drift || 0) * Math.sin(2 * Math.PI * t / (ex.period || 2.5));
-  R.toneMappingExposure = ctx.ae * drift;
+  const expo = ctx.ae * drift;
   // motion blur: enough sub-frames that nothing moves more than ~1.5 px between them
   const span = (tt) => { const g = groundTruth(ctx, tt); const pts = []; if (g.corners) pts.push(...g.corners); if (g.ball && g.ball.x != null) pts.push([g.ball.x, g.ball.y]); return pts; };
   const a = span(t - expT / 2), b = span(t + expT / 2); let mv = 0; for (let k = 0; k < Math.min(a.length, b.length); k++) mv = Math.max(mv, Math.hypot(a[k][0] - b[k][0], a[k][1] - b[k][1]));
-  const K = Math.max(1, Math.min(8, Math.ceil(mv / 1.5)));
+  const K = Math.max(1, Math.min(8, Math.ceil(mv / 1.5))); let tq = performance.now();
   const acc = new Float32Array(W * H * 3);
   for (let s = 0; s < K; s++) {
     const ts = t + expT * ((s + 0.5) / K - 0.5); place(ctx, ts);
     if (ctx.cube && s === 0) { ctx.ball.visible = false; ctx.cube.position.copy(ctx.ball.position); ctx.cube.update(R, ctx.scene); ctx.ball.visible = true; }
     const buf = renderOnce(ctx);
-    for (let y = 0; y < H; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = 0; x < W; x++) { acc[dst + x * 3] += buf[src + x * 4]; acc[dst + x * 3 + 1] += buf[src + x * 4 + 1]; acc[dst + x * 3 + 2] += buf[src + x * 4 + 2]; } }
+    for (let y = 0; y < H; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = 0; x < W; x++) { acc[dst + x * 3] += enc(buf[src + x * 4] * expo); acc[dst + x * 3 + 1] += enc(buf[src + x * 4 + 1] * expo); acc[dst + x * 3 + 2] += enc(buf[src + x * 4 + 2] * expo); } }
   }
+  tm("subframes", tq); tq = performance.now();
   // AE follows this frame's brightness for the next one
   { let s = 0, n = 0; for (let y = H * 0.2 | 0; y < H * 0.8; y += 4) for (let x = W * 0.15 | 0; x < W * 0.85; x += 4) { const j = (y * W + x) * 3; s += (0.299 * acc[j] + 0.587 * acc[j + 1] + 0.114 * acc[j + 2]) / K; n++; }
     ctx.ae *= Math.pow(target / Math.max(0.02, s / n / 255 / drift), 0.12); }
@@ -487,7 +524,8 @@ window.renderClipFrame = async (spec, i) => {
   const rn = ctx.rn, nz = (spec.noise ?? 1) * 1.6 / Math.sqrt(Math.min(1, lev));
   const hw = W >> 1, hh = H >> 1, low = new Float32Array(hw * hh * 3);
   for (let j = 0; j < low.length; j++) low[j] = gauss(rn);
-  const c2 = cnv(W, H), x2 = c2.getContext("2d"), id = x2.createImageData(W, H), d = id.data;
+  if (!OUTC) { OUTC = cnv(W, H); OUTX = OUTC.getContext("2d", { willReadFrequently: true }); OUTI = OUTX.createImageData(W, H); }
+  const c2 = OUTC, x2 = OUTX, id = OUTI, d = id.data;
   const soft = lev < 0.3 ? 0.5 : 0; // heavy in-camera noise reduction smears fine detail in low light
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const j = (y * W + x) * 3, l = (((y >> 1) * hw) + (x >> 1)) * 3, Y = 0.299 * img[j] + 0.587 * img[j + 1] + 0.114 * img[j + 2];
@@ -499,9 +537,11 @@ window.renderClipFrame = async (spec, i) => {
     }
     d[(y * W + x) * 4 + 3] = 255;
   }
+  tm("post", tq); tq = performance.now();
   x2.putImageData(id, 0, 0);
   const jpeg = c2.toDataURL("image/jpeg", spec.jpegQ || 0.88);
-  const gt = groundTruth(ctx, t); gt.subframes = K; gt.exposure = +(R.toneMappingExposure).toFixed(4);
+  tm("jpeg", tq);
+  const gt = groundTruth(ctx, t); gt.subframes = K; gt.exposure = +expo.toFixed(4);
   return { jpeg, gt };
 };
 window.sensorSamples = async (spec, times) => { const ctx = await prepareClip(spec); return times.map((t) => sensorAt(ctx, t)); };

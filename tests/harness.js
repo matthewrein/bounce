@@ -7,6 +7,12 @@
 (function (cfg) {
   try { localStorage.setItem("slabFov", String(cfg.fov)); } catch (_) {}
   const H = (window.__harness = { mode: cfg.mode, frames: null, cur: -1 });
+  // A phone returns its camera's own portrait frames whatever size the page asks for; Chrome would instead crop the
+  // 720x1280 fake camera to the app's requested landscape shape, so ask it to leave the frames alone.
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = (c) => { if (c && c.video && typeof c.video === "object") c = { ...c, video: { ...c.video, resizeMode: "none" } }; return gum(c); };
+  }
   H.motion = (s) => window.dispatchEvent(new DeviceMotionEvent("devicemotion", {
     accelerationIncludingGravity: { x: s.aig[0], y: s.aig[1], z: s.aig[2] },
     acceleration: s.acc ? { x: s.acc[0], y: s.acc[1], z: s.acc[2] } : null,

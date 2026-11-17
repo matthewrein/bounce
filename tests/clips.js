@@ -52,7 +52,7 @@ const LIST = [
   // the ball
   ["ball_held_d4", "ball", { ball: { h: 2, dx: 0.05, dz: -0.05, arm: "other" }, cam: still(4, 50), slab: { tilt: 10, heading: 0 } }],
   ["ball_held_d3_low", "ball", { ball: { h: 1, dx: -0.08, dz: 0.05, arm: "self" }, cam: still(3, 55), slab: { tilt: 8, heading: 90 } }],
-  ["ball_held_d5_high", "ball", { ball: { h: 3, dx: 0.1, dz: 0.08, arm: "other" }, cam: still(5, 40), slab: { tilt: 12, heading: 200 } }],
+  ["ball_held_d5_high", "ball", { ball: { h: 3, dx: 0.1, dz: 0.08, arm: "other" }, cam: still(5, 40, 0, { pitch: 18 }), slab: { tilt: 12, heading: 200 } }],
   ["ball_drop_d4", "ball", { ball: { h: 1.5, dx: 0, dz: 0.05, drop: 2.2, arm: "self" }, cam: still(4, 50), slab: { tilt: 12, heading: 0 }, frames: 120 }],
   ["ball_held_dim", "ball light", { ball: { h: 2, dx: 0.05, dz: 0, arm: "other" }, light: { level: 0.07 }, cam: still(4, 50), slab: { tilt: 10, heading: 270 } }],
   ["ball_offslab_d4", "ball fp", { ball: { h: 1.5, dx: 0.75, dz: 0.2, arm: "other" }, cam: still(4, 50, 0, { yaw: -6 }), slab: { tilt: 10, heading: 0 } }],
@@ -70,6 +70,11 @@ const LIST = [
   ["thick_lowview_d4", "shape hard", { slab: { thick: 1.15, tilt: 8, heading: 180, yaw: 0 }, cam: still(4, 35) }],
   ["lens_off_d4", "shape", { cam: { ...still(4, 50), fov: 70, k1: -0.03 }, slab: { tilt: 10, heading: 100 } }],
   ["ios_sign_noacc_d4", "sensor", { sensor: { iosSign: true, noAcc: true, bias: 0.5 }, cam: still(4, 50), slab: { tilt: 10, heading: 10 } }],
+  // (new clips go at the end: a clip's random seed comes from its position in this list)
+  // floor about as dark as the slab top (as in the reference photos): the far edges have almost no brightness step
+  ["matchtone_mat_d4", "floor hard", { floor: "mat", floorTint: [92, 95, 90], cam: still(4, 50), slab: { tilt: 10, heading: 20 } }],
+  ["matchtone_mat_d5_dim", "floor hard light", { floor: "mat", floorTint: [96, 98, 92], light: { level: 0.08 }, cam: still(5, 45), slab: { tilt: 14, heading: 160 } }],
+  ["matchtone_concrete_d4", "floor hard", { floor: "concrete", floorTint: [98, 100, 94], cam: still(4, 55, 25), slab: { tilt: 7, heading: 290 } }],
 ];
 
 function clips(filter) {

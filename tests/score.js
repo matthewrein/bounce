@@ -55,7 +55,8 @@ function scoreClip(gt, ticks) {
       }
     }
     // the ball
-    const gb = g.ball;
+    // a held ball counts as in view when at least 60% of its rim shows (a pinch grip hides 20-25%)
+    const gb = g.ball && { ...g.ball, visible: g.ball.rim != null ? g.ball.rim >= 0.6 : g.ball.visible };
     const counts = gb && gb.visible && gb.held && gb.onSlab && correct;
     let hit = false;
     if (k.ball && gb && gb.visible && gb.x != null) hit = Math.hypot(k.ball.x - gb.x, k.ball.y - gb.y) < Math.max(4, 0.5 * gb.r) && Math.abs(k.ball.r - gb.r) < 0.3 * gb.r;

@@ -15,7 +15,7 @@ const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf("--
 const PRIVATE = !!opt("private", false);
 const OUT = path.join(__dirname, PRIVATE ? "private/clips" : "out/clips");
 const WORKERS = +opt("workers", 3), FRAMES = opt("frames", null), FORCE = !!opt("force", false), PREVIEW = !!opt("preview", false);
-const sceneHash = crypto.createHash("sha1").update(fs.readFileSync(path.join(__dirname, "scene.js"))).digest("hex").slice(0, 10);
+const sceneHash = "v" + (fs.readFileSync(path.join(__dirname, "scene.js"), "utf8").match(/SCENE_VERSION = "([^"]+)"/) || [0, "?"])[1];
 
 async function renderClip(page, spec) {
   const dir = path.join(OUT, spec.name); fs.mkdirSync(dir, { recursive: true });
