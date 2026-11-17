@@ -1,10 +1,17 @@
 # Slab Bounce for iPhone
 
+[![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
+
 The native version of Slab Bounce. It finds the cement slab on its black base, works out its tilt and draws the path a
 ball would take bouncing off it. It uses ARKit, so the lens is known exactly and the slab, once found, stays pinned in
 place as you move the phone. On iPhones with LiDAR (Pro models) it also measures the slab's top with depth.
 
 You build it on a Mac and install it on your iPhone from Xcode. You don't need to edit any code.
+
+**GitHub checks every change before you build it.** It runs the steps below on one of its Macs: installing XcodeGen,
+generating the project, picking up your signing settings, building for the iPhone with the newest Xcode as well as the
+default one, and opening the app in an iPhone Simulator. If the badge above is green, the latest version builds; you
+only need your Mac to put it on the phone. If it is red, wait for a fix before pulling.
 
 ## What you need
 
@@ -113,5 +120,7 @@ seconds.
   same code the replay tests run.
 - To replay one of your recordings: unzip it and run
   `BOUNCE_RECORDING=/path/to/slab-....bouncerec swift test --filter ReplayTests` in `ios/BounceCore`.
-- CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It also builds the app, without signing,
-  for the iOS Simulator and for iPhone.
+- CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It then repeats the owner's steps on a
+  Mac: it checks that `Config/Local.xcconfig` sets the team and bundle ID, and that Run uses the Release configuration. It
+  builds the app without signing for the Simulator and for iPhone, with the default and the newest Xcode. Finally it
+  launches the app in the Simulator and keeps a screenshot as an artifact.

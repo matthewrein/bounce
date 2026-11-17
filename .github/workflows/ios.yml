@@ -1,5 +1,10 @@
 name: iOS
 
+# Checks every change to the native app the way the owner will build it, so building on the Mac is only for deploying:
+# BounceCore's tests on Linux and macOS, then on a Mac exactly the README's steps (install XcodeGen, generate the
+# project), that signing settings from Config/Local.xcconfig are picked up, unsigned builds for the Simulator and for
+# iPhone with the runner's default and its newest Xcode, and a launch in the iOS Simulator (screenshot kept as an artifact).
+
 on:
   push:
     branches: [native-ios]
@@ -20,23 +25,87 @@ jobs:
         run: swift test --package-path ios/BounceCore
 
   app-macos:
-    name: App build (macOS, Simulator and device, unsigned)
+    name: App (${{ matrix.xcode }} Xcode)
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: [default, newest]
     steps:
       - uses: actions/checkout@v4
-      - name: Xcode
-        run: xcodebuild -version
-      - name: Install XcodeGen
+
+      - name: Choose Xcode
+        run: |
+          if [ "${{ matrix.xcode }}" = newest ]; then
+            X=$(ls -d /Applications/Xcode_*.app | grep -iv beta | sort -V | tail -1)
+            echo "Using $X"; sudo xcode-select -s "$X"
+          fi
+          xcodebuild -version
+
+      # --- the owner's steps from ios/README.md ---
+      - name: "README step 1: install XcodeGen"
         run: brew install xcodegen
-      - name: Generate the Xcode project
+      - name: "README step 3: generate the Xcode project"
         run: cd ios && xcodegen generate
+
+      - name: Signing settings from Config/Local.xcconfig are picked up (README step 5)
+        run: |
+          printf 'DEVELOPMENT_TEAM = ABCDE12345\nPRODUCT_BUNDLE_IDENTIFIER = io.github.example.SlabBounce\n' > ios/Config/Local.xcconfig
+          xcodebuild -project ios/SlabBounce.xcodeproj -scheme SlabBounce -configuration Release -showBuildSettings > with-local.txt
+          grep -E '^ *DEVELOPMENT_TEAM = ABCDE12345$' with-local.txt
+          grep -E '^ *PRODUCT_BUNDLE_IDENTIFIER = io.github.example.SlabBounce$' with-local.txt
+          rm ios/Config/Local.xcconfig
+          xcodebuild -project ios/SlabBounce.xcodeproj -scheme SlabBounce -configuration Release -showBuildSettings > without-local.txt
+          grep -E '^ *PRODUCT_BUNDLE_IDENTIFIER = io.github.matthewrein.SlabBounce$' without-local.txt
+
+      - name: Pressing Run in Xcode builds the optimised (Release) configuration
+        run: |
+          S=ios/SlabBounce.xcodeproj/xcshareddata/xcschemes/SlabBounce.xcscheme
+          python3 - "$S" <<'EOF'
+          import re, sys
+          s = open(sys.argv[1]).read()
+          m = re.search(r'<LaunchAction[^>]*buildConfiguration\s*=\s*"([^"]+)"', s)
+          print("LaunchAction configuration:", m and m.group(1))
+          sys.exit(0 if m and m.group(1) == "Release" else 1)
+          EOF
+
       - name: BounceCore tests (macOS)
+        if: matrix.xcode == 'default'
         run: swift test --package-path ios/BounceCore
+
       - name: Build for the iOS Simulator
         run: >
           xcodebuild -project ios/SlabBounce.xcodeproj -scheme SlabBounce -configuration Debug
-          -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO build
+
       - name: Build for iPhone (Release, unsigned)
         run: >
           xcodebuild -project ios/SlabBounce.xcodeproj -scheme SlabBounce -configuration Release
-          -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+          -destination 'generic/platform=iOS' -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO build
+
+      - name: Launch in the iOS Simulator
+        if: matrix.xcode == 'default'
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          ios = sorted((k for k in d if "iOS" in k), reverse=True)
+          print(next(x["udid"] for k in ios for x in d[k] if x["name"].startswith("iPhone")))')
+          echo "Simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build/sim -name 'SlabBounce.app' -path '*iphonesimulator*' | head -1)
+          xcrun simctl install "$UDID" "$APP"
+          BID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          xcrun simctl launch "$UDID" "$BID"
+          sleep 10
+          xcrun simctl spawn "$UDID" launchctl list | grep "$BID" || { echo "The app is not running 10 s after launch"; exit 1; }
+          xcrun simctl io "$UDID" screenshot simulator.png
+
+      - name: Keep the Simulator screenshot
+        if: matrix.xcode == 'default' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshot
+          path: simulator.png
+          if-no-files-found: ignore
