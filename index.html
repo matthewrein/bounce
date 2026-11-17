@@ -317,11 +317,18 @@ function refineQuad(q){
     return Math.hypot(x-p0.x,y-p0.y)<side*.08+3/k2?{x,y}:p0;
   });
 }
-// does this outline look like a square seen in perspective (for the assumed lens)?
-function squareish(q){
-  const h=homog(q,focal(),S.sw/2,S.sh/2,.5);if(!h)return false;
+// Could this outline really be the square slab? Fit a rigid square to it: an outline no square could
+// produce leaves a large misfit. Also rule out steep tilts (the slab is only softly angled) and absurd distances.
+const MISFIT=.01,MAXTILT=35;
+function plausible(q){
+  const f=focal(),h=homog(q,f,S.sw/2,S.sh/2,.5);if(!h)return false;
   const a=Math.hypot(...h.c0),b=Math.hypot(...h.c1);
-  return Math.abs(Math.log(a/b))<.3&&Math.abs(dot(h.c0,h.c1)/(a*b))<.25;
+  if(Math.abs(Math.log(a/b))>.3||Math.abs(dot(h.c0,h.c1)/(a*b))>.25)return false;
+  const ps=solvePose(q,f,S.sw/2,S.sh/2,P.size/24,null);if(!ps)return false;
+  let side=0;for(let i=0;i<4;i++)side+=Math.hypot(q[(i+1)%4].x-q[i].x,q[(i+1)%4].y-q[i].y)/4;
+  if(ps.err>side*MISFIT||ps.c[2]<.4||ps.c[2]>12)return false;
+  if(S.live&&S.grav&&-dot(ps.n,S.grav)<Math.cos(MAXTILT*Math.PI/180))return false;
+  return true;
 }
 // the cement always sits on its black base: how much of the strip just outside one side of the outline is black?
 function baseFrac(r){
@@ -347,7 +354,7 @@ function detectSeed(px,py,needBase,ref){
   for(const m of TOLS){
     const r=detectAt(px,py,P.tol*m,ref);
     // when searching unprompted, the patch must also be smooth like cement, not patterned
-    if(!r||!squareish(r.q)||(needBase&&(r.cv>.075||baseFrac(r)<.07)))continue;
+    if(!r||!plausible(r.q)||(needBase&&(r.cv>.075||baseFrac(r)<.07)))continue;
     r.edge=Math.min(...r.edges);
     if(r.edge>bs){bs=r.edge;best=r;}
   }
@@ -369,6 +376,7 @@ function track(){
     const c={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
     const px=c.x*S.proc.k,py=c.y*S.proc.k;
     r=detectAt(px,py,S.ltol,S.ref);
+    if(r&&!plausible(r.q))r=null; // an outline the slab couldn't make is ignored; the last good one is held
     // if a side has lost its edge (light shifted), retry other tolerances; failing that, re-read the colour from the middle of the slab
     if(!r||Math.min(...r.edges)<8){
       const r2=detectSeed(px,py,false,S.ref)||detectSeed(px,py,false);
@@ -390,7 +398,6 @@ function track(){
   const q=r.q;
   if(!S.quad){
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
-    if(S.grav&&!S.seed){const ps=solvePose(q,focal(),S.sw/2,S.sh/2,.5,null);if(!ps||-dot(ps.n,S.grav)<Math.cos(45*Math.PI/180))return;}
     S.seed=null;S.lost=0;
     S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.nS=null;return;
   }
@@ -555,7 +562,7 @@ function solvePose(q,f,cx,cy,hs,g,prev){
     const other=best===A?B:A,nb=mul(norm(cross(best.r1,best.r2)),sg),no=mul(norm(cross(other.r1,other.r2)),sg);
     if(dot(no,prev)>dot(nb,prev)&&other.cost<best.cost*3+1)best=other;
   }
-  return {c:best.t,n:mul(norm(cross(best.r1,best.r2)),sg),r1:norm(best.r1),r2:norm(best.r2),hs,f,cx,cy};
+  return {c:best.t,n:mul(norm(cross(best.r1,best.r2)),sg),r1:norm(best.r1),r2:norm(best.r2),hs,f,cx,cy,err:Math.sqrt(best.cost/8)*sp*f};
 }
 
 /* ---------- trajectory ---------- */
