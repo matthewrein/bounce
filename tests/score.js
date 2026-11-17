@@ -25,8 +25,8 @@ function scoreClip(gt, ticks) {
   const F = gt.frames, fps = gt.fps, out = { name: gt.spec.name, tags: gt.spec.tags, ticks: ticks.length };
   let firstVis = null, firstLock = null, lockedSince = null, lastVis = -1e9, inFalse = false;
   let vis = 0, good = 0, falseTicks = 0, falseEvents = 0;
-  const bErr = [], gErr = [], cErr = [], nErr = [], tErr = [], jitN = [], jitT = [], jitC = [], msS = [], msT = [];
-  let ballCount = 0, ballHit = 0, ballFP = 0, ballFPev = 0, inFP = false; const dropErr = [];
+  const bErr = [], hitErr = [], gErr = [], cErr = [], nErr = [], tErr = [], jitN = [], jitT = [], jitC = [], msS = [], msT = [];
+  let ballCount = 0, ballHit = 0, ballFP = 0, ballFPev = 0, inFP = false, ballStale = 0; const dropErr = [], recent = [];
   for (const k of ticks) {
     const g = F[k.fi], t = k.t;
     if (k.ms != null) (k.wasLocked ? msT : msS).push(k.ms);
@@ -58,19 +58,22 @@ function scoreClip(gt, ticks) {
     // the ball
     // a held ball counts as in view when at least 60% of its rim shows (a pinch grip hides 20-25%)
     const gb = g.ball && { ...g.ball, visible: g.ball.rim != null ? g.ball.rim >= 0.6 : g.ball.visible };
-    // bounce direction: the normal the app launches the ball along, against the dish's own normal where the ball lands
-    // (with no ball in the clip the app drops from the slab's middle, where the dish's normal is the plane's)
-    if (settled && (k.bounceNormal || k.normal)) {
-      const an = k.bounceNormal || k.normal;
-      if (!g.ball && !gt.spec.ball) bErr.push(angDeg(an, g.normal));
-      else if (gb && gb.visible && gb.held && gb.onSlab && gb.hitNormal && k.ball && Math.hypot(k.ball.x - gb.x, k.ball.y - gb.y) < Math.max(4, 0.5 * gb.r)) bErr.push(angDeg(an, gb.hitNormal));
+    // bounce direction (ball clips only; without a ball it is the plane normal, already scored as tilt): the normal the
+    // app launches the ball along, against the dish's own normal where the ball lands; and the landing point (in)
+    if (settled && (k.bounceNormal || k.normal) && gb && gb.visible && gb.held && gb.onSlab && gb.hitNormal && k.ball && Math.hypot(k.ball.x - gb.x, k.ball.y - gb.y) < Math.max(4, 0.5 * gb.r)) {
+      bErr.push(angDeg(k.bounceNormal || k.normal, gb.hitNormal));
+      if (k.bounceAt && gb.hitLocal) hitErr.push(Math.hypot(k.bounceAt[0] - gb.hitLocal[0], k.bounceAt[1] - gb.hitLocal[1]) * (gt.spec.slab.size || 7) / 2);
     }
     const counts = gb && gb.visible && gb.held && gb.onSlab && correct;
     let hit = false;
     if (k.ball && gb && gb.visible && gb.x != null) hit = Math.hypot(k.ball.x - gb.x, k.ball.y - gb.y) < Math.max(4, 0.5 * gb.r) && Math.abs(k.ball.r - gb.r) < 0.3 * gb.r;
     if (counts) { ballCount++; if (hit) { ballHit++; if (k.ball.dropFt != null) dropErr.push(Math.abs(k.ball.dropFt - gb.drop) * 12); } }
     const near = k.ball && gb && gb.visible && gb.x != null && Math.hypot(k.ball.x - gb.x, k.ball.y - gb.y) < 2 * gb.r + 6;
-    const fp = !!k.ball && !(near && (gb.held ? gb.onSlab : true));
+    // a ball shown where the real ball was moments ago (it was just let go and is falling) is stale, not false
+    if (gb && gb.x != null) { recent.push({ t, x: gb.x, y: gb.y, r: gb.r }); while (recent.length && recent[0].t < t - 0.3) recent.shift(); }
+    const stale = !near && k.ball && gb && !gb.held && recent.some((p) => Math.hypot(k.ball.x - p.x, k.ball.y - p.y) < 2 * p.r + 6);
+    if (stale) ballStale++;
+    const fp = !!k.ball && !stale && !(near && (gb.held ? gb.onSlab : true));
     if (fp) { ballFP++; if (!inFP) ballFPev++; }
     inFP = fp;
   }
@@ -84,11 +87,11 @@ function scoreClip(gt, ticks) {
     falseLockTicks: falseTicks, falseLocks: falseEvents,
     cornerErr: r2(mean(cErr)), cornerErrP90: r2(quantile(cErr, 0.9)),
     tiltErr: r2(quantile(nErr, 0.5)), tiltErrP90: r2(quantile(nErr, 0.9)), tiltErrMax: r2(nErr.length ? Math.max(...nErr) : null),
-    bounceErr: r2(quantile(bErr, 0.5)), bounceErrP90: r2(quantile(bErr, 0.9)),
+    bounceErr: r2(quantile(bErr, 0.5)), bounceErrP90: r2(quantile(bErr, 0.9)), hitErrIn: r2(quantile(hitErr, 0.5)),
     gravErr: r2(quantile(gErr, 0.5)), gravErrP90: r2(quantile(gErr, 0.9)),
     tiltReadErr: r2(quantile(tErr.map(Math.abs), 0.5)), tiltBias: r2(mean(tErr)),
     jitter: r2(spread(jitN), 3), tiltJitter: r2(sd(jitT), 3), cornerJitter: r2(cornerJit(jitC), 3),
-    ballTicks: ballCount, ballRate: ballCount ? r2(100 * ballHit / ballCount, 1) : null, ballFalseTicks: ballFP, ballFalse: ballFPev,
+    ballTicks: ballCount, ballRate: ballCount ? r2(100 * ballHit / ballCount, 1) : null, ballFalseTicks: ballFP, ballFalse: ballFPev, ballStaleTicks: ballStale,
     dropErrIn: r2(quantile(dropErr, 0.5)),
     msSearch: r2(mean(msS), 1), msSearchP95: r2(quantile(msS, 0.95), 1), msTrack: r2(mean(msT), 1), msTrackP95: r2(quantile(msT, 0.95), 1),
   });
@@ -107,7 +110,7 @@ function summarize(results) {
     timeToLock: r2(mean(pick("timeToLock")), 2),
     falseLocks: results.reduce((s, r) => s + r.falseLocks, 0), falseLockClips: results.filter((r) => r.falseLocks).map((r) => r.name),
     cornerErr: r2(mean(pick("cornerErr"))),
-    bounceErr: r2(quantile(pick("bounceErr"), 0.5)), bounceErrWorst: r2(Math.max(...pick("bounceErr"), 0)),
+    bounceErr: r2(quantile(pick("bounceErr"), 0.5)), bounceErrWorst: r2(Math.max(...pick("bounceErr"), 0)), hitErrIn: r2(quantile(pick("hitErrIn"), 0.5)),
     tiltErr: r2(quantile(pick("tiltErr"), 0.5)), tiltErrWorst: r2(Math.max(...pick("tiltErr"), 0)),
     tiltOver15: near.filter((r) => r.tiltErr != null && r.tiltErr >= 1.5).map((r) => `${r.name}:${r.tiltErr}`),
     jitter: r2(quantile(pick("jitter"), 0.5), 3), jitterWorst: r2(Math.max(...pick("jitter"), 0), 3),

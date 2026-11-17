@@ -285,3 +285,58 @@ titanium, not chrome. Changes to the scenario generator:
 - 16 new clips at the end of `clips.js` (dish range, thin slab, rolling shutter still and panning, hiccups, heavy
   tremor, warm lamp, cool window plus warm lamp, two lights, passing shadow, ball held / dropped off-centre, satin ball,
   ball at 3 ft held from the far side).
+- **Re-baseline of b19 on v2** (80 clips, two phases): see `out/results/v2_b19*.json`. The dropped-ball clip's "false
+  ball" was the app's marker staying where the ball was for a few frames after it was let go; the scorer now counts a
+  ball shown within the last 0.3 s of the real ball's track as stale (`ballStaleTicks`), not false. False ball
+  detections on v2: 0.
+
+## b20 - the dish in the bounce (lean rejected; drop to the dish kept as b20b)
+
+b20 modelled the dish in the app (Tune "Dish depth", default 1/8 in from the corners, localStorage `slabDish`): a held
+ball now drops to the dish surface rather than the plane through the corners, and the ball was launched along the
+dish's own normal where it lands (leaning toward the middle). Tracking is untouched (all 70 no-ball clips identical).
+Result vs b19 (two phases): drop-height error 1.14 -> 1.04 in, but bounce direction worse on 2 ball clips
+(`ball_held_d4` 4.85 -> 6.02 deg, `ball_held_satin_d4` 3.37 -> 4.19) and better on 2. Why: the lean is small (true
+0.5-1.5 deg; 0.585 deg per inch from the middle) and depends on the landing point, which comes from the ball's depth,
+which comes from its apparent size (about 14 px radius at 4 ft: 1 px is about 3 in of depth). On `ball_held_d4` the app
+put the landing point about 4x too far out (lean 2.1 deg vs 0.5 true). **Rejected** (made clips worse). Kept part as
+**b20b**: the drop to the dish and the start point on it, launched along the plane's normal as before.
+
+## Review of b20 and generator v2 (40-agent adversarial review: 13 findings confirmed, 2 refuted)
+
+App: nothing wrong in the dish maths (signs, units, convergence; dish 0 reproduces b19). Points kept for the owner:
+- **Bounce law**: the app launches the ball along the surface normal (as the original app did). A real hard ball
+  dropped onto a tilted face leaves at about 2x the tilt (mirror) or about 1.85x (a solid ball that starts rolling);
+  "along the normal" gives about half the real deflection. Not changed: it is the app's stated design. Question for
+  the owner.
+- **Dish depth reference**: "1/8 in deep in the middle" measured with a straightedge from edge to edge (not corner to
+  corner) would mean 1/4 in in this model. New clips with a 1/4 in dish and a flat top under a held ball (the app
+  keeps 1/8) test the sensitivity. Question for the owner.
+Test bed, fixed in generator v3:
+- colour temperature was applied as linear light (display values), so the warm/cool clips were almost neutral; the
+  warm clip's white balance re-picked to leave a real cast.
+- rolling shutter read rows top to bottom; a phone's sensor is mounted landscape and reads across the portrait frame,
+  and the effect was under half a pixel. Now read by columns, and the panning clip pans fast (35 deg/s) so the skew is
+  tens of pixels; a moving ball is re-timed too (latent ground-truth bug).
+- a coin placed on the slab floated above the dish.
+- bounceErr was scored on no-ball clips too, where it is just tilt error counted twice: now ball clips only, plus
+  `hitErrIn` (landing point the app uses vs true, in).
+- README out of date (thickness, chrome ball, drop height reference).
+Known, not changed: drop and landing use the point straight below the ball's centre, not the true contact
+(0.01-0.04 in; the same in the app and the ground truth); the dish shape is shared by the app and the generator, so the
+test bed cannot tell whether the real slab is a paraboloid.
+
+## Generator v3 - the slab rocks in a cradle on its base (SCENE_VERSION 3)
+
+The owner: the slab can be moved on the black base to change its angle; lined up with the base it is level; it rocks in
+any direction (a spherical cradle), about 3 in of slide gives about 10 deg, and the base is always flat and level.
+That makes the cradle radius about 17.2 in (3 in / 10 deg). Changes:
+- the slab's bottom is a spherical cap of that radius sitting in a matching cradle cut into the base (base walls rise
+  to the cradle's rim, chamfered corners, about the slab's footprint); the slab's normal always passes through the
+  cradle's sphere centre, which lies straight above the base's centre, so the slab's centre moves sideways by
+  (R - t) sin(tilt) = about 2.7 in at 10 deg. Tilt is capped at 10.5 deg (the slide's end), and the older clips'
+  tilts (mostly 10 deg, up to 18) are spread over 2-10.5 deg by a seeded factor, so no estimator can do well by
+  guessing the slide's end.
+- ground truth adds the sphere centre, the base centre and the base outline in pixels (floor and wall-top corners).
+- new clips: lined up (level), cradle radius 14 and 21 in, base turned 35 deg against the slab.
+- `frames.js` dumps still frames, the app's per-frame estimates and (separately) the truth, for offline prototypes.

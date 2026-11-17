@@ -51,7 +51,7 @@ function frameSchedule(gt) {
 async function launch(mjpeg) {
   return chromium.launch({ args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${mjpeg}`, "--autoplay-policy=no-user-gesture-required"] });
 }
-const PICK = (d) => ({ bounceNormal: d.bounce ? d.bounce.normal : null, grav: d.sensor.gravityClean || d.sensor.gravity, locked: d.locked, quad: d.quad, normal: d.normal, tilt: d.tilt, ball: d.ball, ms: d.ms, misfit: d.misfit, aspect: d.aspect, fov: d.set.fov, live: d.live, src: d.src, counts: d.counts, build: d.build });
+const PICK = (d) => ({ bounceNormal: d.bounce ? d.bounce.normal : null, bounceAt: d.bounce ? d.bounce.at : null, grav: d.sensor.gravityClean || d.sensor.gravity, locked: d.locked, quad: d.quad, normal: d.normal, tilt: d.tilt, ball: d.ball, ms: d.ms, misfit: d.misfit, aspect: d.aspect, fov: d.set.fov, live: d.live, src: d.src, counts: d.counts, build: d.build });
 
 async function runStep(srv, clip, gt) {
   gt = { ...gt, sensors: presentSensors(gt) };

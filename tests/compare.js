@@ -25,7 +25,7 @@ function load(spec) {
 // [metric, direction (+1 higher is better), absolute allowance, relative allowance]
 const RULES = [
   ["lockRate", +1, 1.0, 0], ["falseLocks", -1, 0, 0], ["falseLockTicks", -1, 0, 0],
-  ["cornerErr", -1, 0.1, 0.05], ["bounceErr", -1, 0.05, 0.03], ["tiltErr", -1, 0.05, 0.03], ["tiltErrP90", -1, 0.1, 0.05], ["tiltReadErr", -1, 0.05, 0.05],
+  ["cornerErr", -1, 0.1, 0.05], ["bounceErr", -1, 0.05, 0.03], ["hitErrIn", -1, 0.05, 0.1], ["tiltErr", -1, 0.05, 0.03], ["tiltErrP90", -1, 0.1, 0.05], ["tiltReadErr", -1, 0.05, 0.05],
   ["jitter", -1, 0.01, 0.05], ["tiltJitter", -1, 0.01, 0.05],
   ["ballRate", +1, 2.0, 0], ["ballFalse", -1, 0, 0], ["ballFalseTicks", -1, 0, 0], ["dropErrIn", -1, 0.1, 0.1],
   ["msTrack", -1, 0.6, 0.15], ["msSearch", -1, 2.0, 0.2],

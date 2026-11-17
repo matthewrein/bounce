@@ -90,9 +90,11 @@ details .row{margin-top:8px}
       <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
     <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
       <input id="size" type="range" min="4" max="24" step="0.25" value="7"></div>
+    <div class="row"><label for="dish">Dish depth (how far the middle of the top dips below its corners)</label><output id="oDish" for="dish"></output>
+      <input id="dish" type="range" min="0" max="0.5" step="0.03125" value="0.125"></div>
     <div class="row"><label for="cutEdge">Correct for the slab's cut edge (experimental)</label><input id="cutEdge" type="checkbox" style="grid-column:auto;width:22px;height:22px"></div>
     <div class="row"><label for="thick">Slab thickness (used by the correction above)</label><output id="oThick" for="thick"></output>
-      <input id="thick" type="range" min="0.25" max="2" step="0.05" value="0.9"></div>
+      <input id="thick" type="range" min="0.25" max="2" step="0.05" value="1"></div>
     <div class="row"><label for="tol">Color match looseness</label><output id="oTol" for="tol"></output>
       <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
     <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
@@ -100,7 +102,7 @@ details .row{margin-top:8px}
     <div class="btns" style="margin-top:12px"><button class="btn" id="diag" type="button">Copy diagnostics</button></div>
     <textarea id="diagOut" readonly hidden rows="5" style="width:100%;margin-top:8px;background:var(--ink-2);color:var(--chalk);border:1px solid var(--line);border-radius:8px;font:12px ui-monospace,monospace;padding:8px"></textarea>
     <p class="note" id="sens"></p>
-    <p class="note" id="gnote">The dashed line is perpendicular to the slab face. The arc's bend depends on which way is down: with the camera running that comes from the phone's tilt sensor, otherwise set how steeply the phone is aimed at the floor.</p>
+    <p class="note" id="gnote">The dashed line is perpendicular to the slab face. The ball drops to the dish (the top dips about 1/8 in in the middle; set under Tune). The arc's bend depends on which way is down: with the camera running that comes from the phone's tilt sensor, otherwise set how steeply the phone is aimed at the floor.</p>
   </details>
 </div>
 
@@ -110,11 +112,12 @@ details .row{margin-top:8px}
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
 const G=32.174; // ft/s^2
-const P={drop:3,reb:70,ball:35,size:7,thick:.9,cutEdge:false,tol:26,pitch:50,fov:65};
+const P={drop:3,reb:70,ball:35,size:7,dish:.125,thick:1,cutEdge:false,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-try{P.cutEdge=localStorage.getItem("slabCutEdge")==="1";const t=parseFloat(localStorage.getItem("slabThick"));if(t>=.25&&t<=2)P.thick=t;}catch(_){}
-const BUILD="b19";
+try{P.cutEdge=localStorage.getItem("slabCutEdge")==="1";const t=parseFloat(localStorage.getItem("slabThick"));if(t>=.25&&t<=2)P.thick=t;
+  const d=parseFloat(localStorage.getItem("slabDish"));if(d>=0&&d<=.5)P.dish=d;}catch(_){}
+const BUILD="b20b";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -713,12 +716,23 @@ function findBall(rExp,roi){
   return found.sort((a,b)=>b.n-a.n);
 }
 const downVec=()=>{if(S.live&&S.grav)return S.gravC||S.grav;const a=P.pitch*Math.PI/180;return [0,Math.cos(a),Math.sin(a)];};
-// where a ball seen at image position b (source pixels) is in space, and where it lands if dropped straight down
+// The top of the slab is a shallow dish: P.dish inches lower in the middle than at the corners (a paraboloid, so the
+// middles of the edges are half that low). How far below the plane through the corners it lies at (u,w) from the
+// middle (ft), and its own surface normal there: tilted toward the middle, so a ball landing off-centre bounces back
+// toward it.
+function dishAt(pose,u,w){
+  const D=P.dish/12,hs=pose.hs,cu=clamp(u,-hs,hs),cw=clamp(w,-hs,hs);
+  return {d:D*(1-(cu*cu+cw*cw)/(2*hs*hs)),n:norm(sub(pose.n,add(mul(pose.r1,D*cu/(hs*hs)),mul(pose.r2,D*cw/(hs*hs)))))};
+}
+// where a ball seen at image position b (source pixels) is in space, and where it lands if dropped straight down onto
+// the dish (H), how far it falls (drop), and the dish's normal where it lands (nl)
 function ballDrop(b,pose,g){
   const R=P.ball/609.6,z=pose.f*R/b.r,B=[(b.x-pose.cx)/pose.f*z,(b.y-pose.cy)/pose.f*z,z];
   const den=dot(g,pose.n),sd=den<-1e-3?dot(sub(pose.c,B),pose.n)/den:-1;if(sd<=0)return null;
-  const H=add(B,mul(g,sd)),u=dot(sub(H,pose.c),pose.r1),w=dot(sub(H,pose.c),pose.r2);
-  return {B,H,drop:Math.max(.02,sd-R),on:Math.abs(u)<=pose.hs*1.05&&Math.abs(w)<=pose.hs*1.05};
+  let H=add(B,mul(g,sd)),u=dot(sub(H,pose.c),pose.r1),w=dot(sub(H,pose.c),pose.r2),extra=0,dh=null;
+  for(let k=0;k<3;k++){dh=dishAt(pose,u,w);extra=dh.d/-den;const Hd=add(B,mul(g,sd+extra));u=dot(sub(Hd,pose.c),pose.r1);w=dot(sub(Hd,pose.c),pose.r2);}
+  H=add(B,mul(g,sd+extra));dh=dishAt(pose,u,w);
+  return {B,H,drop:Math.max(.02,sd+extra-R),nl:dh.n,u,w,on:Math.abs(u)<=pose.hs*1.05&&Math.abs(w)<=pose.hs*1.05};
 }
 // look for the ball; only a round thing of the right size that is actually above the cement counts
 function scanBall(){
@@ -827,6 +841,7 @@ function update(){
   $("oPitch").textContent=P.pitch+"°";
   $("oSize").textContent=P.size+" in";
   $("oThick").textContent=P.thick.toFixed(2)+" in";
+  $("oDish").textContent=P.dish?P.dish.toFixed(3).replace(/0+$/,"")+" in":"flat";
   $("oTol").textContent=P.tol;
   $("oFov").textContent=P.fov+"°"+(S.live?" (self-adjusting)":"");
   const st=$("status");
@@ -851,21 +866,22 @@ function update(){
     else{S.nS=pose.n;S.cS=pose.c;}
   }
   const {c,n,r1,r2,hs}=pose;
-  // if the ball is in view, drop it straight down from where it is: that gives the landing spot and the drop height
-  let start=c,drop=P.drop,from=null;
+  // if the ball is in view, drop it straight down from where it is: that gives the landing spot on the dish, the drop
+  // height and the dish's normal there; otherwise it lands in the middle of the dish (whose normal is the slab's)
+  let start=sub(c,mul(n,P.dish/12)),drop=P.drop,from=null,nb=n;
   if(S.ball){from=ballDrop(S.ball,pose,g);if(from&&from.on){start=from.H;drop=from.drop;}}
   $("oDrop").textContent=from&&from.on?drop.toFixed(2)+" ft, from the ball":P.drop.toFixed(2).replace(/0$/,"")+" ft";
-  const v0=Math.sqrt(2*G*drop*P.reb/100),vup=-v0*dot(n,g);
+  const v0=Math.sqrt(2*G*drop*P.reb/100),vup=-v0*dot(nb,g);
   let hf=0;
   for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
     const d=add(mul(r1,hs*s[0]),mul(r2,hs*s[1]));hf=Math.min(hf,-dot(d,g));
   }
   const h0=-dot(sub(start,c),g);
   const T=Math.min(4,(vup+Math.sqrt(vup*vup+2*G*Math.max(0,h0-hf)))/G);
-  const at=t=>add(add(start,mul(n,v0*t)),mul(g,.5*G*t*t));
+  const at=t=>add(add(start,mul(nb,v0*t)),mul(g,.5*G*t*t));
   const end=sub(at(T),start),hz=sub(end,mul(g,dot(end,g)));
   const apex=vup>0?vup*vup/(2*G):0;
-  S.tr={pose,T,at,from,start,ta:vup>0?Math.min(T,vup/G):0,apex};
+  S.tr={pose,T,at,from,start,nb,ta:vup>0?Math.min(T,vup/G):0,apex};
   S.tilt=Math.acos(clamp(-dot(n,g),-1,1))*180/Math.PI;S.dist=c[2];S.nrm=n;
   $("rTilt").textContent=Math.round(S.tilt)+"°";
   $("rApex").textContent=apex.toFixed(1)+" ft";
@@ -917,7 +933,7 @@ function frame(now){
       if(h){ctx.setLineDash([3,5]);ctx.lineWidth=2;ctx.strokeStyle="#ffb020";ctx.beginPath();ctx.moveTo(bx,by);ctx.lineTo(h[0],h[1]);ctx.stroke();ctx.setLineDash([]);}
     }
   }
-  const a=pr(tr.start),b=pr(add(tr.start,mul(n,1.2)));
+  const a=pr(tr.start),b=pr(add(tr.start,mul(tr.nb,1.2)));
   if(a&&b){ctx.setLineDash([5,5]);ctx.lineWidth=1.5;ctx.strokeStyle="rgba(236,231,220,.9)";
     ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.setLineDash([]);}
   // arc
@@ -1041,12 +1057,13 @@ function diag(){
   return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],liveSrc:S.liveSrc||null,view:[Math.round(S.W),Math.round(S.H)],
     screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
     sensor:{gravity:r(S.grav,4),gravityClean:r(S.gravC,4),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
-    set:{fov:P.fov,size:P.size,thick:P.thick,cutEdge:P.cutEdge,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
+    set:{fov:P.fov,size:P.size,dish:P.dish,thick:P.thick,cutEdge:P.cutEdge,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
     status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[r(p.x,1),r(p.y,1)]),ms:r(S.ms,1),msAvg:r(S.msAvg,1),
     tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),thicknessSeen:S.thkSeen==null?null:r(S.thkSeen*P.thick,2),
     gyro:S.gy?{sign:S.gy.sign,naming:S.gy.hyp?"2016 (alpha=z)":"engines (alpha=x)",gain:r(S.gy.xy/(S.gy.xx+1e-9),2),fit:r(S.gy.cr,2)}:null,
     tilt:r(S.tilt,2),distFt:r(S.dist,2),normal:r(S.nrm,4),jitterPx:r(S.jit,2),fps:r(S.fps,0),
     ball:S.ball&&{x:Math.round(S.ball.x),y:Math.round(S.ball.y),r:r(S.ball.r,1),dropFt:S.tr&&S.tr.from?r(S.tr.from.drop,2):null},
+    bounce:S.tr?{normal:r(S.tr.nb,4),at:S.tr.from&&S.tr.from.on?[r(S.tr.from.u/S.tr.pose.hs,2),r(S.tr.from.w/S.tr.pose.hs,2)]:[0,0]}:null,
     counts:K,histCols:"t,locked,tilt,misfit,fov,jitterPx,fps,ball,aspect,dist",hist:HIST};
 }
 window.slabDiagnostics=diag; // same JSON as the Copy diagnostics button; lets the test bed read it every frame
@@ -1059,9 +1076,10 @@ $("diag").addEventListener("click",()=>{
 /* ---------- wiring ---------- */
 $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
-for(const key of ["drop","reb","ball","pitch","size","thick","tol","fov"])$(key).addEventListener("input",e=>{
+for(const key of ["drop","reb","ball","pitch","size","dish","thick","tol","fov"])$(key).addEventListener("input",e=>{
   P[key]=parseFloat(e.target.value);
   if(key==="thick")try{localStorage.setItem("slabThick",String(P.thick));}catch(_){}
+  if(key==="dish")try{localStorage.setItem("slabDish",String(P.dish));}catch(_){}
   if(key==="tol"&&!S.live){const r=detect(S.seed);S.quad=r&&r.q;}
   update();
 });
@@ -1072,7 +1090,7 @@ cv.addEventListener("click",e=>{
   S.seed={x,y};S.seedAge=0;if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;scanBall();update();}
 });
 new ResizeObserver(resize).observe(cv);
-$("fov").value=P.fov;$("thick").value=P.thick;$("cutEdge").checked=P.cutEdge;
+$("fov").value=P.fov;$("thick").value=P.thick;$("dish").value=P.dish;$("cutEdge").checked=P.cutEdge;
 $("cutEdge").addEventListener("change",e=>{P.cutEdge=e.target.checked;S.cut=null;try{localStorage.setItem("slabCutEdge",P.cutEdge?"1":"0");}catch(_){}
   if(!S.live){const r=detect(S.seed);S.quad=r&&r.q;scanBall();}update();});
 resize();
