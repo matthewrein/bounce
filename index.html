@@ -110,7 +110,7 @@ const G=32.174; // ft/s^2
 const P={drop:3,reb:70,ball:35,size:7,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b13";
+const BUILD="b14";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -461,6 +461,7 @@ function sweep(){
 /* live tracking: follow the slab from frame to frame and smooth its corners */
 function track(){
   let r=null;
+  const turned=S.gyAcc||[0,0,0];S.gyAcc=[0,0,0]; // the camera's turn since the last frame (used only while tracking)
   if(S.quad){
     // once locked, keep the same colour reference and tolerance so the outline doesn't hop between matches
     const c={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
@@ -501,11 +502,18 @@ function track(){
   if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;bump('unlocks');}}return;}
   const q=squareUp(r.q);
   if(!S.quad){
+    S.gyPrev=null;
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
     S.seed=null;S.lost=0;
     S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.dis=0;S.nS=null;bump('locks');return;
   }
   S.lost=0;
+  let turn=gyroStep(q,turned);
+  // directions (the slab normal, the slab's position) can always be turned with the phone; the outline only in the small
+  // turns of a hand holding the phone still: in bigger, deliberate moves the phone also travels, and turning the
+  // outline alone would predict the wrong thing
+  if(turn){if(S.nS)S.nS=norm(turnV(S.nS,turn));if(S.cS)S.cS=turnV(S.cS,turn);
+    if(S.rot!=null&&S.rot<8){S.quad=S.quad.map(p=>turnP(p,turn));bump("gyroTurned");}else turn=null;}
   let bk=0,bd=Infinity;
   for(let k=0;k<4;k++){let d=0;for(let i=0;i<4;i++)d+=Math.hypot(q[(i+k)%4].x-S.quad[i].x,q[(i+k)%4].y-S.quad[i].y);if(d<bd){bd=d;bk=k;}}
   const d=bd/4,side=Math.hypot(S.quad[1].x-S.quad[0].x,S.quad[1].y-S.quad[0].y);
@@ -517,12 +525,34 @@ function track(){
   S.far=0;S.jit=S.jit==null?d:S.jit*.9+d*.1;if(r.edges){S.lastEdges=r.edges;S.lastArea=r.area;}
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
   // (the gyroscope says when the phone is being held still, which allows much heavier averaging)
-  const a=clamp(d/(side*.025),S.rot!=null&&S.rot<4?.08:.2,.8);
+  // (with the gyro following the hand's turns, the last outline is already where it should be, so average longer still)
+  const a=clamp(d/(side*.025),S.rot!=null&&S.rot<4?(turn?.05:.08):.2,.8);S.gyOn=!!turn;
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
   if(r.seen)S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
   if(S.fid%30===0)tuneFov();
 }
 
+/* ---------- following the phone's own rotation between frames ---------- */
+// The gyroscope says how far the camera turned since the last frame. Turning the last outline and the last slab
+// normal by that much before blending in the new measurement lets the smoothing be heavy without lagging behind the
+// hand's sway. Browsers may differ in the sign of the rotation rates, so the effect is calibrated on the fly: the
+// predicted image motion of the outline's middle is compared with the measured motion, and the gyro is only used once
+// they clearly agree (with the sign flipped if they clearly disagree).
+function turnV(v,w){return rotv(v,mul(w,-1));} // a fixed direction, seen from a camera that turned by w
+function turnP(p,w){const f=focal(),cx=S.sw/2,cy=S.sh/2,r=turnV([(p.x-cx)/f,(p.y-cy)/f,1],w);return r[2]>.01?{x:f*r[0]/r[2]+cx,y:f*r[1]/r[2]+cy}:p;}
+function gyroStep(meas,w){
+  const G=S.gy||(S.gy={xy:0,xx:0,yy:0,sign:0}),c=p=>({x:(p[0].x+p[1].x+p[2].x+p[3].x)/4,y:(p[0].y+p[1].y+p[2].y+p[3].y)/4});
+  if(meas&&S.gyPrev){
+    const a=c(S.gyPrev),pr=turnP(a,w),b=c(meas),px=pr.x-a.x,py=pr.y-a.y,ox=b.x-a.x,oy=b.y-a.y;
+    G.xy=G.xy*.99+px*ox+py*oy;G.xx=G.xx*.99+px*px+py*py;G.yy=G.yy*.99+ox*ox+oy*oy;
+    // regression of measured on predicted motion: about +1 if the signs match the camera axes, about -1 if they are
+    // all flipped. Once settled it is kept (it's a property of the phone and browser).
+    const gain=G.xy/(G.xx+1e-9);
+    if(G.xx>50){if(gain>.5&&gain<1.6)G.sign=1;else if(gain<-.5&&gain>-1.6)G.sign=-1;}
+  }
+  S.gyPrev=meas;
+  return G.sign?mul(w,G.sign):null;
+}
 /* ---------- ball: a round outline of the expected size anywhere in view ---------- */
 function circleFit(pts){
   // least-squares circle through points: x^2+y^2 = 2ax + 2by + c
@@ -697,7 +727,7 @@ function update(){
   const a=P.pitch*Math.PI/180,g=sensor?S.gravC||S.grav:[0,Math.cos(a),Math.sin(a)];
   if(S.live){
     // steady the estimated facing direction and position across frames
-    if(S.nS){pose.n=S.nS=norm(add(mul(S.nS,.88),mul(pose.n,.12)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
+    if(S.nS){const wn=S.gyOn?.08:.12;pose.n=S.nS=norm(add(mul(S.nS,1-wn),mul(pose.n,wn)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
     else{S.nS=pose.n;S.cS=pose.c;}
   }
   const {c,n,r1,r2,hs}=pose;
@@ -801,7 +831,13 @@ function stopLive(){
 function onMotion(e){
   bump('motion');
   const rr=e.rotationRate;
-  if(rr&&rr.alpha!=null){const m=Math.hypot(rr.alpha,rr.beta,rr.gamma);S.rot=S.rot==null?m:S.rot*.8+m*.2;}
+  if(rr&&rr.alpha!=null){const m=Math.hypot(rr.alpha,rr.beta,rr.gamma);S.rot=S.rot==null?m:S.rot*.8+m*.2;
+    // how far the camera has turned since the last processed frame (radians, camera axes: right, down, forward)
+    const dt=clamp((e.interval>0?e.interval:16.7)/1000,.001,.1),k=dt*Math.PI/180,w=[rr.beta*k,-rr.gamma*k,-rr.alpha*k];
+    S.gyAcc=add(S.gyAcc||[0,0,0],w);
+    // once the gyro's sign is known, the smoothed "down" is turned with the phone before the new sample is blended in,
+    // so it doesn't lag behind the hand's sway (and stays in step with the slab normal, which is turned the same way)
+    if(S.gravC&&S.gy&&S.gy.sign)S.gravC=norm(turnV(S.gravC,mul(w,S.gy.sign)));}
   const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
   // phones disagree on the sign; in use, down is toward the phone's bottom edge or its back
   const ang=((screen.orientation&&screen.orientation.angle)||window.orientation||0)*Math.PI/180;
@@ -811,8 +847,10 @@ function onMotion(e){
   // Where the browser also reports the hand's own acceleration (iOS does), take it out: what's left is gravity alone,
   // already steadied by the phone's motion processing, instead of gravity plus every jolt of the hand. This cleaner
   // "down" is used for the tilt reading, the drop and the bounce; the slab finder keeps the plain one above.
-  const u=e.acceleration;
-  if(u&&u.x!=null&&u.y!=null&&u.z!=null){const c=toCam([u.x-a.x,u.y-a.y,u.z-a.z]);S.gravC=S.gravC?norm(add(mul(S.gravC,.7),mul(c,.3))):c;}
+  // Only trusted with a gyroscope (without one, iOS reports zeros and Chrome a crude estimate) and when the
+  // difference really is about one g.
+  const u=e.acceleration,d=u&&u.x!=null&&u.y!=null&&u.z!=null&&rr&&rr.alpha!=null?[u.x-a.x,u.y-a.y,u.z-a.z]:null,m=d?Math.hypot(d[0],d[1],d[2]):0;
+  if(m>7&&m<12.5){const c=toCam(d);S.gravC=S.gravC?norm(add(mul(S.gravC,.7),mul(c,.3))):c;}
   else S.gravC=S.grav;
 }
 async function startLive(){
@@ -883,6 +921,7 @@ function diag(){
     set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
     status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[r(p.x,1),r(p.y,1)]),ms:r(S.ms,1),msAvg:r(S.msAvg,1),
     tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),
+    gyro:S.gy?{sign:S.gy.sign,gain:r(S.gy.xy/(S.gy.xx+1e-9),2)}:null,
     tilt:r(S.tilt,2),distFt:r(S.dist,2),normal:r(S.nrm,4),jitterPx:r(S.jit,2),fps:r(S.fps,0),
     ball:S.ball&&{x:Math.round(S.ball.x),y:Math.round(S.ball.y),r:r(S.ball.r,1),dropFt:S.tr&&S.tr.from?r(S.tr.from.drop,2):null},
     counts:K,histCols:"t,locked,tilt,misfit,fov,jitterPx,fps,ball,aspect,dist",hist:HIST};

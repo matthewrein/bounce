@@ -75,6 +75,10 @@ const LIST = [
   ["matchtone_mat_d4", "floor hard", { floor: "mat", floorTint: [92, 95, 90], cam: still(4, 50), slab: { tilt: 10, heading: 20 } }],
   ["matchtone_mat_d5_dim", "floor hard light", { floor: "mat", floorTint: [96, 98, 92], light: { level: 0.08 }, cam: still(5, 45), slab: { tilt: 14, heading: 160 } }],
   ["matchtone_concrete_d4", "floor hard", { floor: "concrete", floorTint: [98, 100, 94], cam: still(4, 55, 25), slab: { tilt: 7, heading: 290 } }],
+  // Chrome on Android (scene.js sensorQuirks): readings rounded to 0.1 m/s^2, a little wrist tremor; with a gyroscope,
+  // `acceleration` is a separate sensor read up to one event earlier; without one, Chrome derives it with a light low-pass
+  ["android_lag_d4", "sensor", { sensor: { trem: 0.08, accLag: 1 / 60, accLagRand: true, round: 0.1 }, cam: still(4, 50, 15), slab: { tilt: 12, heading: 250 } }],
+  ["android_nogyro_d4", "sensor", { sensor: { trem: 0.08, accLpf: 0.5, round: 0.1, noGyro: true }, cam: still(4, 50), slab: { tilt: 10, heading: 140 } }],
 ];
 
 function clips(filter) {

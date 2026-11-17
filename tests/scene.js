@@ -426,9 +426,47 @@ function sensorAt(ctx, t) {
   const aig = fWorld.applyQuaternion(inv);
   const noisy = (v, s) => [v.x + gauss(rn) * s, v.y + gauss(rn) * s, v.z + gauss(rn) * s];
   let A = noisy(aig, an), U = noisy(user, an);
+  let accNull = false;
+  if (sn.trem || sn.accLag || sn.round || sn.accLpf || sn.accZero || sn.accMissing) [A, U, accNull] = sensorQuirks(ctx, t, sn, A, U, user);
   if (sn.iosSign) { A = A.map((v) => -v); U = U.map((v) => -v); }
   const wd = [deg(w.x) + gauss(rn) * gn, deg(w.y) + gauss(rn) * gn, deg(w.z) + gauss(rn) * gn];
-  return { t: +t.toFixed(4), aig: A.map((v) => +v.toFixed(4)), acc: sn.noAcc ? null : U.map((v) => +v.toFixed(4)), rot: { alpha: +wd[2].toFixed(3), beta: +wd[0].toFixed(3), gamma: +wd[1].toFixed(3) } };
+  return { t: +t.toFixed(4), aig: A.map((v) => +v.toFixed(4)), acc: sn.noAcc || accNull ? null : U.map((v) => +v.toFixed(4)), rot: sn.noGyro ? null : { alpha: +wd[2].toFixed(3), beta: +wd[0].toFixed(3), gamma: +wd[1].toFixed(3) } };
+}
+// Optional platform quirks of `acceleration` vs `accelerationIncludingGravity` (all off by default, so clips without
+// them are unchanged; they draw on their own random streams, not ctx.rn):
+//   trem       rms (m/s^2 per device axis) of 6-11 Hz hand-tremor acceleration (the phone pivoting about the wrist);
+//              far too small to move the image, it shows only in the accelerometer
+//   accLag     `acceleration` is the hand's acceleration this many seconds earlier (Chrome on Android reads the
+//              ACCELEROMETER and LINEAR_ACCELERATION sensors separately and takes the latest of each);
+//              accLagRand: the lag is drawn uniformly from [0, accLag] on each event
+//   round      both readings rounded to this multiple (Chrome rounds both to 0.1 m/s^2)
+//   accLpf     `acceleration` = reading - EMA(reading) with this weight (Chrome's fallback where the phone has no
+//              linear-acceleration sensor: weight ~0.5 at 60 Hz)
+//   accZero    `acceleration` present but all zeros (WebKit's path for a device without device-motion)
+//   accMissing share of events with `acceleration` null
+//   noGyro     no rotationRate (a phone without a gyroscope: the case where Chrome uses the accLpf fallback)
+function sensorQuirks(ctx, t, sn, A, U, user) {
+  if (!ctx.quirk || t <= ctx.quirk.t) {
+    const s = ctx.spec.seed, tr = rng(s * 53 + 11);
+    ctx.quirk = { r: rng(s * 59 + 13), trem: [0, 1, 2].map(() => bandSignal(tr, 6, 11)), g: null, t: -Infinity };
+  }
+  const Q = ctx.quirk; Q.t = t;
+  const trem = (tt) => sn.trem ? Q.trem.map((f) => f(tt) * sn.trem) : [0, 0, 0];
+  const userAt = (tt) => {
+    const h = 1 / 240, c0 = cameraAt(ctx, tt - h), c1 = cameraAt(ctx, tt), c2 = cameraAt(ctx, tt + h);
+    const a = c2.pos.clone().add(c0.pos).sub(c1.pos.clone().multiplyScalar(2)).multiplyScalar(1 / (h * h) * M_PER_FT);
+    return a.applyQuaternion(c1.q.clone().invert());
+  };
+  const tA = trem(t);
+  A = A.map((v, i) => v + tA[i]);
+  if (sn.accLag) {
+    const lag = sn.accLagRand ? Q.r() * sn.accLag : sn.accLag, ul = userAt(t - lag), tl = trem(t - lag);
+    U = [U[0] - user.x + ul.x + tl[0], U[1] - user.y + ul.y + tl[1], U[2] - user.z + ul.z + tl[2]]; // keeps U's noise
+  } else U = U.map((v, i) => v + tA[i]);
+  if (sn.accLpf) { Q.g = Q.g ? Q.g.map((g, i) => g * (1 - sn.accLpf) + A[i] * sn.accLpf) : A.slice(); U = A.map((v, i) => v - Q.g[i]); }
+  if (sn.accZero) U = [0, 0, 0];
+  if (sn.round) { const r = (v) => Math.round(v / sn.round) * sn.round; A = A.map(r); U = U.map(r); }
+  return [A, U, !!(sn.accMissing && Q.r() < sn.accMissing)];
 }
 
 /* ---------------- rendering with exposure, blur, distortion and noise ---------------- */

@@ -3,7 +3,7 @@
 Every attempt is scored on all synthetic clips in step mode (frame-exact, repeatable) and compared clip by
 clip with the previous accepted build (`node compare.js <before> <after>`). A change is kept only if no clip
 gets worse beyond the noise allowances in `compare.js`; otherwise it is reverted or reworked. Frame times are
-measured inside the app on this test machine's CPU (an x86 server core under SwiftShader-free 2D canvas),
+measured inside the app on this test machine's CPU (a 2.1 GHz x86 server core; the app's 2D canvas work runs on the CPU),
 so they are only comparable between runs here, not with the phone.
 
 The three reference photos are also run as stills; only their aggregate corner error (as % of the slab side)
@@ -23,6 +23,7 @@ frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking
 | b12 baseline (phase 0 only) | 81.3 | 4 | 6 | 4.72 | 5.13 | 13.37 | 34/43 | 0.366 | 0.562 | 3.7 | 0 | 23.2 | 72 | 1.3 / 0.5 / 0.2 |
 | b12 baseline (2 phases) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | 0.579 | 2.3 | 0 | 21.8 | 68 | 1.3 / 0.5 / 0.2 |
 | b13 clean gravity (kept) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | **0.219** | 2.3 | 0 | 23.5 | 74 | 1.3 / 0.5 / 0.2 |
+| b14 gyro-steadied smoothing (kept; 49 clips) | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | **0.276** | **0.178** | 2.3 | 0 | 22.7 | 72 | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
 
@@ -96,3 +97,53 @@ Result (2 phases vs b12): tilt-reading wobble while still 0.579 -> 0.219 deg (me
 the one flagged regression is pan_out_back's tilt reading, 4.89 -> 5.28 deg. Checked directly: that clip's gravity
 error drops 1.26 -> 0.36 deg (p90 4.06 -> 1.50); the old gravity's error happened to offset part of the vision
 error (5.4 deg there). Kept. The clip with no `acceleration` (ios_sign_noacc_d4) is unchanged, as expected.
+
+## Review of b13 (separate reviewer agent)
+
+Checked WebKit and Chromium sources: on iOS, `acceleration` and `accelerationIncludingGravity` come from the same
+CoreMotion sample, in the same units and sign, so their difference is CoreMotion's own gravity - the test bed models
+iOS faithfully there. Risks found: on phones without a gyroscope WebKit sends `acceleration` as zeros and Chrome
+synthesises it from a lightly smoothed accelerometer, which makes the "clean" gravity slightly worse than b12's; and
+on Android the two readings can arrive up to a frame apart. The reviewer added two clips at the end of `clips.js`
+(new options in `scene.js` `sensorQuirks()`; existing clips render identically): `android_lag_d4` (acceleration up
+to 16 ms late, readings rounded to 0.1, stronger tremor) and `android_nogyro_d4` (Chrome's no-sensor fallback, no
+gyro), and proposed a guard - use the clean gravity only with a gyroscope present and when the difference is about
+one g (7-12.5 m/s^2). Adopted in b14: `android_nogyro_d4` then behaves exactly as b12, `android_lag_d4` keeps b13's
+gain (gravity error 0.72 -> 0.33 deg).
+
+## Attempt 4 (parked): slab thickness model for the top edge
+
+After attempt 1, a model-based version: for each side whose cut face the camera can see, predict the band's width from
+the pose and a thickness setting (new Tune slider, default 0.9 in); if it is dark just outside the side's edge (the
+black base) and a faint parallel edge shows about one band-width inside, the side is moved in by the band (with a
+per-side confidence and a learned width ratio while tracking). Best version: median tilt error 5.17 -> 1.33 deg
+(e.g. 5.4 -> 0.5 deg at 4 ft, a 1.15 in slab 9.3 -> 2.9 deg), corner error 4.8 -> 2.7 px, photos unchanged. Not
+accepted yet: wobble rose 0.36 -> 0.51 deg (the edge used as anchor alternates between the top edge and the cut
+face's bottom) and the strongly curved slab got worse (0.7 -> 3.2 deg). Variants that went wrong on the way:
+learning the thickness online (it drifted to 1.26x from spurious inner edges and over-corrected), anchoring on the
+strongest edge (lost the photos: photo 3 not found), a hard dark/not-dark cut-off (sides flipped between two places).
+Parked to be rebuilt on top of the gyro-steadied smoothing below.
+
+## b14 - gyro-steadied smoothing (kept)
+
+The outline and the slab normal are smoothed over frames in camera coordinates, so while the hand sways the
+smoothed values lag behind the camera's turning: heavy smoothing lags, light smoothing passes noise. b14 turns the
+previous outline, slab normal and slab position by the rotation the gyroscope measured since the last frame before
+blending in the new measurement, then smooths a little more (0.05 instead of 0.08 per frame for corners, 0.08 instead
+of 0.12 for the normal); the clean "down" is turned the same way before each new sample. The outline is only turned
+for small turns (gyro under 8 deg/s, a hand holding the phone): in bigger, deliberate moves the phone also travels and
+rotation alone predicts the wrong image motion. Directions are always turned.
+
+Browsers may disagree on the sign of the rotation rates, so the app calibrates: it regresses the measured motion of the
+outline's middle on the gyro-predicted motion and uses the gyro only once the gain settles near +1 (or near -1, in
+which case the sign is flipped); otherwise it smooths as before. Diagnostics show `gyro: {sign, gain}`. The reviewer's
+gravity guard is also in b14.
+
+Bugs found while testing: rotation that accumulated while the slab wasn't tracked was applied in one go on relocking
+(lost lock in pan_out_back); the outline was turned during an orbit (rotation plus travel) - both fixed above.
+Turning only the normal but not gravity (or the reverse) made the tilt reading wobble more in two clips; fixed by
+turning both consistently.
+
+Result (2 phases vs b13, 49 clips): no clip worse, 53 metrics better. Median wobble while still 0.361 -> 0.276 deg
+(normal) and 0.223 -> 0.178 deg (tilt reading), e.g. 4 ft mat clip 0.22 -> 0.13 deg. Tilt accuracy unchanged (still
+biased by the cut edge; see attempt 4).
