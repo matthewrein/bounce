@@ -8,7 +8,8 @@ const base = () => ({
   fps: 30, frames: 120,
   // the real slab (owner's description): ~7 in square, ~1 in thick at the edge, top a shallow dish ~1/8 in deep
   slab: { size: 7, aspect: 1, thick: 1.0, dish: 0.125, bevel: 0.05, tilt: 10, heading: 0, yaw: 20 },
-  base: { sx: 1.12, sz: 1.06, yawOff: 12, chamfer: 1.0, minH: 1.3, rough: 0.45 },
+  // the black base: a block with a spherical cradle on top (radius ~17 in: 3 in of slide gives 10 deg of tilt)
+  base: { sx: 1.05, sz: 1.03, yawOff: 0, chamfer: 1.0, minH: 1.3, rough: 0.45, cradleR: 17.2 },
   floor: "mat",
   light: { type: "indoor", level: 1, amb: 0.8, sun: 2.2, el: 50, az: 30 },
   cam: { fov: 72.5, keys: [{ t: 0, D: 4, el: 50, az: 0, yaw: 0, pitch: 0, roll: 0 }], shake: 1, k1: 0 },
@@ -113,11 +114,11 @@ const LIST = [
   ["thin_slab_d4", "shape", { slab: { thick: 0.75, tilt: 10, heading: 20 }, cam: still(4, 48) }],
   // camera: rolling shutter (rows read out over ~25 ms), frame hiccups, heavier tremor
   ["rs_shake_d4", "motion jitter", { cam: { ...still(4, 50), shake: 2, rs: 0.025 }, slab: { tilt: 11, heading: 300 } }],
-  ["rs_pan_d4", "motion jitter", { cam: { keys: [{ t: 0, D: 4, el: 50, az: 0, yaw: 0 }, { t: 1.6, D: 4, el: 50, az: 0 }, { t: 2.6, D: 4, el: 50, az: 0, yaw: 8 }, { t: 3.6, D: 4, el: 50, az: 0, yaw: 0 }], rs: 0.03 }, slab: { tilt: 10, heading: 80 } }],
+  ["rs_pan_d4", "motion jitter", { cam: { keys: [{ t: 0, D: 4, el: 50, az: 0, yaw: 0 }, { t: 1.6, D: 4, el: 50, az: 0 }, { t: 2.0, D: 4, el: 50, az: 0, yaw: 14 }, { t: 2.4, D: 4, el: 50, az: 0, yaw: 0 }], rs: 0.03 }, slab: { tilt: 10, heading: 80 } }],
   ["hiccup_d4", "motion jitter", { cam: { ...still(4, 50), hiccup: 0.12 }, slab: { tilt: 10, heading: 160 } }],
   ["tremor_heavy_d4", "motion jitter", { cam: { ...still(4, 50), tremor: 3.5, swayK: 0.6 }, slab: { tilt: 12, heading: 210 } }],
   // light: colour temperature and white balance, two lights, a shadow passing over the slab
-  ["warm_lamp_d4", "light", { light: { kelvin: 2700, level: 0.25, el: 60, az: -40 }, wb: [0.75, 1, 1.5], cam: still(4, 50), slab: { tilt: 9, heading: 40 } }],
+  ["warm_lamp_d4", "light", { light: { kelvin: 2700, level: 0.25, el: 60, az: -40 }, wb: [0.52, 1, 2.6], cam: still(4, 50), slab: { tilt: 9, heading: 40 } }],
   ["cool_window_d5", "light", { light: { kelvin: 6800, el: 25, az: 100, sun: 2.8, second: { kelvin: 2900, el: 70, az: -60, sun: 1.0 } }, cam: still(5, 45), slab: { tilt: 13, heading: 190 } }],
   ["two_lights_d4", "light", { light: { el: 45, az: 40, sun: 1.8, second: { el: 45, az: 220, sun: 1.6 } }, cam: still(4, 50), slab: { tilt: 10, heading: 330 } }],
   ["passing_shadow_d4", "light hard", { light: { el: 55, az: 20, sun: 2.6, passing: { t0: 1.0, t1: 3.2, w: 0.6, h: 2.5, dist: 2.2 } }, cam: still(4, 50), slab: { tilt: 11, heading: 60 } }],
@@ -126,11 +127,24 @@ const LIST = [
   ["ball_drop_offcenter_d4", "ball", { ball: { h: 1.4, dx: -0.16, dz: 0.1, drop: 2.0, arm: "other" }, cam: still(4, 50, 0, { pitch: 5 }), slab: { tilt: 12, heading: 90 } }],
   ["ball_held_satin_d4", "ball", { ball: { h: 1.8, dx: 0.05, dz: -0.08, rough: 0.3, arm: "other" }, cam: still(4, 50, 0, { pitch: 6 }), slab: { tilt: 10, heading: 220 } }],
   ["ball_held_d3_other", "ball", { ball: { h: 1.2, dx: 0.0, dz: 0.06, arm: "other" }, cam: still(3, 55, 0, { pitch: 8 }), slab: { tilt: 8, heading: 300 } }],
-];
+  // ---- generator v3: the slab rocks in a spherical cradle on the base (lined up = level, ~10 deg at the end of its slide)
+  ["level_lined_up_d4", "shape cradle", { slab: { tilt: 0, yaw: 25 }, cam: still(4, 50) }],
+  ["cradle_r14_d4", "shape cradle", { base: { cradleR: 14 }, slab: { tilt: 9, heading: 140 }, cam: still(4, 50) }],
+  ["cradle_r21_d5", "shape cradle", { base: { cradleR: 21, yawOff: 15 }, slab: { tilt: 8, heading: 30 }, cam: still(5, 45) }],
+  ["base_turned_d4", "shape cradle", { base: { yawOff: 35, sx: 1.25, sz: 1.2 }, slab: { tilt: 7, heading: 250 }, cam: still(4, 52) }],
+  // the real dish depth is uncertain (1/8 in from the corners, or from the edges = 1/4 in): the app keeps its 1/8 default
+  ["ball_offcenter_deepdish_d4", "ball shape", { ball: { h: 1.5, dx: 0.16, dz: -0.12, arm: "other" }, cam: still(4, 50, 0, { pitch: 6 }), slab: { tilt: 8, heading: 60, dish: 0.25 } }],
+  ["ball_offcenter_flat_d4", "ball shape", { ball: { h: 1.5, dx: -0.15, dz: 0.13, arm: "other" }, cam: still(4, 50, 0, { pitch: 6 }), slab: { tilt: 9, heading: 160, dish: 0 } }],
+];const V3 = LIST.findIndex(([n]) => n === "level_lined_up_d4");
 function clips(filter) {
   const out = LIST.map(([name, tags, o], i) => {
     const s = merge(base(), JSON.parse(JSON.stringify(o)));
     s.name = name; s.tags = tags.split(" "); s.seed = 1000 + i * 17;
+    // the slab rocks in its cradle: sliding it as far as it goes (about 3 in) tilts it about 10 deg (owner's numbers).
+    // Clips designed before that (v1/v2, up to 18 deg, mostly 10) are spread over 0-10.5 deg (scaled by a seeded
+    // 0.45-0.95, so names like d4_t18 keep their old tilt only as a label); clips from v3 on are used as written.
+    if (i < V3 && s.slab.tilt > 0) { const u = (s.seed * 0.6180339887) % 1; s.slab.tilt = +(s.slab.tilt * (0.45 + 0.5 * u)).toFixed(1); }
+    if (s.slab.tilt > 10.5) s.slab.tilt = 10.5;
     if (o.cam && !o.cam.keys) s.cam.keys = base().cam.keys;
     return s;
   });

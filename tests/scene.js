@@ -4,7 +4,7 @@
 import * as THREE from "./node_modules/three/build/three.module.js";
 
 // bump when a change alters how existing clips look (the renderer caches clips by spec + this version)
-export const SCENE_VERSION = "2";
+export const SCENE_VERSION = "3";
 const W = 720, H = 1280, G_FT = 32.174, M_PER_FT = 0.3048, IN = 1 / 12;
 
 /* ---------------- small utilities ---------------- */
@@ -126,8 +126,10 @@ function kelvinRGB(K) {
 // middle by `dish` (corners highest, edge midpoints dish/2 down), so a ball bounces back toward the middle,
 // with an optional small chamfer around the top edge. Returns meshes plus the four top corners (virtual sharp corners).
 function slabMeshes(o, matTop, matSide) {
-  const hx = o.hx, hz = o.hz, t = o.t, c = o.bevel;
+  const hx = o.hx, hz = o.hz, t = o.t, c = o.bevel, R = o.R;
   const ht = (u, v) => t - dishDepth(o.dish, hx, hz, u, v);
+  // the bottom is a spherical cap of radius R (it rocks in the base's matching cradle); local origin at its lowest point
+  const hb = (u, v) => R - Math.sqrt(Math.max(0, R * R - u * u - v * v));
   const N = 28, us = [-hx], vs = [-hz];
   for (let i = 0; i <= N; i++) { us.push(-hx + c + (2 * hx - 2 * c) * i / N); vs.push(-hz + c + (2 * hz - 2 * c) * i / N); }
   us.push(hx); vs.push(hz);
@@ -144,9 +146,16 @@ function slabMeshes(o, matTop, matSide) {
   for (const [A, B] of sides) {
     const p = [], q = [], id = [], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
     for (let k = 0; k <= N; k++) { const s = k / N, x = A[0] + (B[0] - A[0]) * s, z = A[1] + (B[1] - A[1]) * s, top = ht(x, z) - c;
-      p.push(x, 0, z, x, top, z); q.push(s * L / (7 * IN), 0, s * L / (7 * IN), top / (1.1 * IN)); }
+      const bot = hb(x, z); p.push(x, bot, z, x, top, z); q.push(s * L / (7 * IN), bot / (1.1 * IN), s * L / (7 * IN), top / (1.1 * IN)); }
     for (let k = 0; k < N; k++) { const a = 2 * k; id.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(p, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(q, 2)); g.setIndex(id); g.computeVertexNormals();
+    meshes.push(new THREE.Mesh(g, matSide));
+  }
+  { // bottom face (seen only where the slab overhangs the base)
+    const bp = [], bu = [], bi = [], NB = 16;
+    for (let j = 0; j <= NB; j++) for (let i = 0; i <= NB; i++) { const u = -hx + 2 * hx * i / NB, v = -hz + 2 * hz * j / NB; bp.push(u, hb(u, v), v); bu.push(i / NB, j / NB); }
+    for (let j = 0; j < NB; j++) for (let i = 0; i < NB; i++) { const a = j * (NB + 1) + i, b = a + 1, d = a + NB + 1, e = d + 1; bi.push(a, b, d, b, e, d); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(bp, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(bu, 2)); g.setIndex(bi); g.computeVertexNormals();
     meshes.push(new THREE.Mesh(g, matSide));
   }
   for (const m of meshes) { m.castShadow = true; m.receiveShadow = true; }
@@ -167,6 +176,32 @@ function prism(foot, topY, mat) {
   ng.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
   // make every face point outward (footprint winding may vary)
   const m = new THREE.Mesh(ng, mat); m.castShadow = true; m.receiveShadow = true; return m;
+}
+// The black base: a block on the floor (footprint polygon, x,z) whose top is a concave spherical cradle of radius R,
+// lowest (height minH) at (cx,cz). Walls follow the footprint (each edge split so the rim follows the curve).
+function cradleBase(foot, cx, cz, R, minH, mat) {
+  const topY = (x, z) => minH + R - Math.sqrt(Math.max(0, R * R - (x - cx) ** 2 - (z - cz) ** 2));
+  const ring = []; const n = foot.length, SUB = 10;
+  for (let i = 0; i < n; i++) { const [x0, z0] = foot[i], [x1, z1] = foot[(i + 1) % n]; for (let k = 0; k < SUB; k++) ring.push([x0 + (x1 - x0) * k / SUB, z0 + (z1 - z0) * k / SUB]); }
+  const p = [], id = [], m = ring.length, J = 6;
+  // walls
+  for (let i = 0; i < m; i++) { const [x0, z0] = ring[i], [x1, z1] = ring[(i + 1) % m], b = p.length / 3;
+    p.push(x0, 0, z0, x1, 0, z1, x0, topY(x0, z0), z0, x1, topY(x1, z1), z1); id.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
+  const wall = new THREE.BufferGeometry(); wall.setAttribute("position", new THREE.Float32BufferAttribute(p, 3)); wall.setIndex(id);
+  const wg = wall.toNonIndexed(); wg.computeVertexNormals();
+  // cradle surface: rings from the lowest point out to the rim
+  const tp = [], ti = [];
+  for (let i = 0; i < m; i++) for (let j = 0; j <= J; j++) { const f = j / J, x = cx + (ring[i][0] - cx) * f, z = cz + (ring[i][1] - cz) * f; tp.push(x, topY(x, z), z); }
+  for (let i = 0; i < m; i++) { const a = i * (J + 1), b = ((i + 1) % m) * (J + 1);
+    for (let j = 0; j < J; j++) { ti.push(a + j, b + j + 1, a + j + 1, a + j, b + j, b + j + 1); } }
+  const top = new THREE.BufferGeometry(); top.setAttribute("position", new THREE.Float32BufferAttribute(tp, 3)); top.setIndex(ti); top.computeVertexNormals();
+  const grp = new THREE.Group();
+  for (const g of [wg, top]) {
+    const pa = g.getAttribute("position"), uv = []; for (let i = 0; i < pa.count; i++) uv.push(pa.getX(i) * 3 + pa.getY(i) * 3, pa.getZ(i) * 3 + pa.getY(i) * 2);
+    g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    const me = new THREE.Mesh(g, mat); me.castShadow = true; me.receiveShadow = true; grp.add(me);
+  }
+  return grp;
 }
 function chamferRect(hw, hd, ch, rot, cx, cz) {
   const pts = [[-hw + ch, -hd], [hw - ch, -hd], [hw, -hd + ch], [hw, hd - ch], [hw - ch, hd], [-hw + ch, hd], [-hw, hd - ch], [-hw, -hd + ch]];
@@ -206,22 +241,22 @@ async function build(spec) {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), floorMat); floor.rotation.x = -Math.PI / 2;
   floor.rotation.z = rad(spec.floorRot || 0); floor.receiveShadow = true; scene.add(floor);
 
-  // slab orientation: yaw about up, then tilt by `tilt` toward compass heading `heading` (0 = toward +z)
+  // The slab rocks in a spherical cradle on top of the black base (radius R, sphere centre O above the base's middle).
+  // Sliding it off the middle by s tilts it by s/R, its normal always pointing at O; lined up, it is level.
+  // `tilt` and `heading` give the tilt (heading 0 = normal leaning toward +z) and `yaw` its turn about its own normal.
   const S = spec.slab || {}, hx = (S.size || 7) * (S.aspect || 1) / 24, hz = (S.size || 7) / 24;
   const tl = rad(S.tilt || 0), hd = rad(S.heading || 0);
   const n = new THREE.Vector3(Math.sin(tl) * Math.sin(hd), Math.cos(tl), Math.sin(tl) * Math.cos(hd)).normalize();
   const qT = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), n), qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rad(S.yaw || 0));
   const q = qT.clone().multiply(qY);
-  const B = spec.base || {};
-  const foot = chamferRect(hx * (B.sx || 1.1), hz * (B.sz || 1.05), (B.chamfer || 1.0) * IN, rad((S.yaw || 0) + (B.yawOff || 0)), (B.ox || 0) * IN, (B.oz || 0) * IN);
-  // the slab's bottom plane passes through P0 with normal n; lift P0 so the base is at least `minH` tall and the slab clears the ground
-  const t = (S.thick || 1.0) * IN, minH = (B.minH || 1.3) * IN;
-  const below = (x, z) => -(n.x * x + n.z * z) / n.y; // plane height offset relative to P0.y at (x,z)
-  let P0y = 0; for (const [x, z] of foot) P0y = Math.max(P0y, minH - below(x, z));
-  const slabFoot = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]].map(([x, z]) => new THREE.Vector3(x, 0, z).applyQuaternion(q));
-  for (const v of slabFoot) P0y = Math.max(P0y, 0.25 * IN - v.y);
-  const P0 = new THREE.Vector3(0, P0y, 0);
-  out.n = n; out.q = q; out.P0 = P0; out.hx = hx; out.hz = hz; out.t = t; out.dish = (S.dish ?? 0.125) * IN;
+  const B = spec.base || {}, Rc = (B.cradleR ?? 17.2) * IN, minH = (B.minH || 1.3) * IN, bcx = (B.ox || 0) * IN, bcz = (B.oz || 0) * IN;
+  const foot = chamferRect(hx * (B.sx || 1.15), hz * (B.sz || 1.1), (B.chamfer || 1.0) * IN, rad((B.yaw ?? (S.yaw || 0)) + (B.yawOff || 0)), bcx, bcz);
+  const O = new THREE.Vector3(bcx, minH + Rc, bcz);
+  // edge thickness `thick` is at the middles of the edges; the top corners sit Tc above the bottom's lowest point
+  const dish = (S.dish ?? 0.125) * IN, hm = (hx + hz) / 2, t = (S.thick || 1.0) * IN + dish / 2 + (Rc - Math.sqrt(Rc * Rc - hm * hm));
+  const P0 = O.clone().add(new THREE.Vector3(0, -Rc, 0).applyQuaternion(qT)); // the bottom's lowest point
+  out.n = n; out.q = q; out.P0 = P0; out.hx = hx; out.hz = hz; out.t = t; out.dish = dish; out.O = O; out.Rc = Rc;
+  out.baseCentre = new THREE.Vector3(bcx, minH, bcz);
   // material set-up (procedural by default, photo crops when asked and available)
   const tex = { top: canvasTex(TEX.cementTop(r)), side: canvasTex(TEX.cementSide(r)), base: canvasTex(TEX.baseBlack(r)) };
   if (spec.photoTextures) {
@@ -239,21 +274,22 @@ async function build(spec) {
   const matTop = mk("top", 0.92), matSide = mk("side", 0.95), matBase = mk("base", B.rough || 0.45);
   matTop.color.multiply(new THREE.Color(...tint)); matSide.color.multiply(new THREE.Color(...(S.sideTint || tint)));
   if (spec.slabPresent !== false) {
-    const sl = slabMeshes({ hx, hz, t, dish: (S.dish ?? 0.125) * IN, bevel: (S.bevel ?? 0.05) * IN }, matTop, matSide);
+    const sl = slabMeshes({ hx, hz, t, dish, R: Rc, bevel: (S.bevel ?? 0.05) * IN }, matTop, matSide);
     const grp = new THREE.Group(); for (const m of sl.meshes) grp.add(m); grp.position.copy(P0); grp.quaternion.copy(q); scene.add(grp);
     grp.updateMatrixWorld(true); out.corners = sl.corners.map((c) => c.clone().applyMatrix4(grp.matrixWorld));
     out.slabGroup = grp;
   } else out.corners = null;
-  if (spec.slabPresent !== false || spec.baseOnly) scene.add(prism(foot, (x, z) => P0.y + below(x, z), matBase));
+  if (spec.slabPresent !== false || spec.baseOnly) scene.add(cradleBase(foot, bcx, bcz, Rc, minH, matBase));
+  if (spec.slabPresent !== false || spec.baseOnly) out.baseFoot = foot.map(([x, z]) => new THREE.Vector3(x, 0, z)); if (out.baseFoot) out.baseRim = foot.map(([x, z]) => new THREE.Vector3(x, minH + Rc - Math.sqrt(Math.max(0, Rc * Rc - (x - bcx) ** 2 - (z - bcz) ** 2)), z));
   // top-centre of the slab plane through its corners (world)
   out.C = new THREE.Vector3(0, t, 0).applyQuaternion(q).add(P0);
 
   // lights
   const amb = L.amb ?? 0.8, sun = L.sun ?? 2.2;
   // optional colour temperature (kelvin) for the main light and the sky fill; the camera's white balance is set in post
-  const kc = L.kelvin ? kelvinRGB(L.kelvin) : null;
-  scene.add(new THREE.HemisphereLight(kc ? new THREE.Color(...kc) : (L.type === "outdoor" ? 0xbfd8ff : 0xfff4e6), 0x5a5048, amb * Math.PI * 0.35));
-  const dl = new THREE.DirectionalLight(kc ? new THREE.Color(...kc) : (L.type === "outdoor" ? 0xfff2dc : 0xfff6ea), sun * Math.PI * 0.35);
+  const kc = L.kelvin ? new THREE.Color().setRGB(...kelvinRGB(L.kelvin), THREE.SRGBColorSpace) : null; // display values, not linear
+  scene.add(new THREE.HemisphereLight(kc ? kc.clone() : (L.type === "outdoor" ? 0xbfd8ff : 0xfff4e6), 0x5a5048, amb * Math.PI * 0.35));
+  const dl = new THREE.DirectionalLight(kc ? kc.clone() : (L.type === "outdoor" ? 0xfff2dc : 0xfff6ea), sun * Math.PI * 0.35);
   const lel = rad(L.el ?? 50), laz = rad(L.az ?? 30);
   dl.position.set(Math.cos(lel) * Math.sin(laz) * 10, Math.sin(lel) * 10, Math.cos(lel) * Math.cos(laz) * 10).add(out.C);
   dl.target.position.copy(out.C); scene.add(dl.target);
@@ -261,7 +297,7 @@ async function build(spec) {
   dl.shadow.bias = -0.0004; dl.shadow.normalBias = 0.01; dl.shadow.radius = L.softShadow ?? 3; scene.add(dl);
   if (L.fill) { const f2 = new THREE.PointLight(0xffffff, L.fill * 4, 0, 2); f2.position.set(-2, 4, 2).add(out.C); scene.add(f2); }
   if (L.second) { // a second lamp or window: a second set of shadows
-    const L2 = L.second, d2 = new THREE.DirectionalLight(L2.kelvin ? new THREE.Color(...kelvinRGB(L2.kelvin)) : 0xffffff, (L2.sun ?? 1.5) * Math.PI * 0.35);
+    const L2 = L.second, d2 = new THREE.DirectionalLight(L2.kelvin ? new THREE.Color().setRGB(...kelvinRGB(L2.kelvin), THREE.SRGBColorSpace) : 0xffffff, (L2.sun ?? 1.5) * Math.PI * 0.35);
     const e2 = rad(L2.el ?? 40), a2 = rad(L2.az ?? 200);
     d2.position.set(Math.cos(e2) * Math.sin(a2) * 10, Math.sin(e2) * 10, Math.cos(e2) * Math.cos(a2) * 10).add(out.C);
     d2.target.position.copy(out.C); scene.add(d2.target);
@@ -319,7 +355,7 @@ function addExtra(scene, e, ctx, r) {
   } else if (e.type === "coin" || e.type === "sticker") {
     const col = e.type === "coin" ? 0xb87333 : 0xf4f4f0;
     m = new THREE.Mesh(new THREE.CylinderGeometry(e.r || (e.type === "coin" ? 0.04 : 0.06), e.r || (e.type === "coin" ? 0.04 : 0.06), 0.006, 40), std({ color: col, metalness: e.type === "coin" ? 0.8 : 0, roughness: e.type === "coin" ? 0.35 : 0.7, envMap: e.type === "coin" ? ctx.roomTex : null }));
-    if (e.onSlab) { const p = new THREE.Vector3(e.x, ctx.t + 0.003, e.z).applyQuaternion(ctx.q).add(ctx.P0); m.position.copy(p); m.quaternion.copy(ctx.q); }
+    if (e.onSlab) { const p = new THREE.Vector3(e.x, ctx.t - dishDepth(ctx.dish, ctx.hx, ctx.hz, e.x, e.z) + 0.003, e.z).applyQuaternion(ctx.q).add(ctx.P0); m.position.copy(p); m.quaternion.copy(ctx.q); }
     else m.position.copy(at(e.x, e.z)).setY(0.003);
   } else if (e.type === "floorball") {
     const Rb = 35 / 1000 / M_PER_FT / 2;
@@ -429,11 +465,13 @@ function project(spec, P) {
   const k1 = spec.cam.k1 || 0; if (k1) { const r2 = (x * x + y * y) / (f * f), s = 1 + k1 * r2; x *= s; y *= s; }
   return [W / 2 + x, H / 2 + y];
 }
-// Project a world point as the camera saw it. With a rolling shutter (spec.cam.rs: readout time, s) each image row is
-// read at its own time, so the point is projected with the camera pose of the row it lands on.
+// Project a world point as the camera saw it. With a rolling shutter (spec.cam.rs: readout time, s) each image column
+// is read at its own time (a phone's sensor is mounted landscape, so it reads across the portrait frame, left to
+// right), so the point is projected with the camera pose of the column it lands on. P may be a function of time
+// (a moving ball).
 function projectAt(ctx, t, P) {
-  const rs = ctx.spec.cam.rs || 0; let tt = t, p = null;
-  for (let k = 0; k < (rs ? 3 : 1); k++) { p = project(ctx.spec, toApp(cameraAt(ctx, tt), P)); if (!p) return null; tt = t + rs * (p[1] / H - 0.5); }
+  const rs = ctx.spec.cam.rs || 0, at = typeof P === "function" ? P : () => P; let tt = t, p = null;
+  for (let k = 0; k < (rs ? 3 : 1); k++) { p = project(ctx.spec, toApp(cameraAt(ctx, tt), at(tt))); if (!p) return null; tt = t + rs * (p[0] / W - 0.5); }
   return p;
 }
 function groundTruth(ctx, t) {
@@ -446,11 +484,15 @@ function groundTruth(ctx, t) {
     gt.slabVisible = !!gt.corners && gt.corners.every(([x, y]) => x >= 3 && y >= 3 && x <= W - 3 && y <= H - 3);
     gt.normal = dirToApp(cam, ctx.n).map((v) => +v.toFixed(5));
     gt.tilt = +deg(Math.acos(ctx.n.y)).toFixed(3);
+    // the cradle: its sphere centre (the slab's normal points at it) and the middle of the base's floor footprint
+    gt.cradleCentre = toApp(cam, ctx.O).map((v) => +v.toFixed(4)); gt.baseCentre = toApp(cam, ctx.baseCentre).map((v) => +v.toFixed(4));
+    // the base's outline (pixels): footprint corners on the floor and the same corners at the top of its walls
+    if (ctx.baseFoot) { const px = (v) => { const q = projectAt(ctx, t, v); return q ? [+q[0].toFixed(1), +q[1].toFixed(1)] : null; }; gt.baseFloorPx = ctx.baseFoot.map(px); gt.baseRimPx = ctx.baseRim.map(px); }
     gt.dist = +toApp(cam, ctx.C)[2].toFixed(3);
     gt.side = +(gt.corners ? [0, 1, 2, 3].reduce((s, i) => s + Math.hypot(gt.corners[(i + 1) % 4][0] - gt.corners[i][0], gt.corners[(i + 1) % 4][1] - gt.corners[i][1]), 0) / 4 : 0).toFixed(1);
   } else { gt.slabVisible = false; gt.corners = null; }
   if (ctx.ball) {
-    const b = ballAt(ctx, t), P = toApp(cam, b.pos), c = projectAt(ctx, t, b.pos), dist = Math.hypot(...P);
+    const b = ballAt(ctx, t), P = toApp(cam, b.pos), c = projectAt(ctx, t, (tt) => ballAt(ctx, tt).pos), dist = Math.hypot(...P);
     const rr = f * RB / Math.sqrt(Math.max(1e-6, dist * dist - RB * RB));
     // drop height: straight down from the ball's centre to the dish top, minus the radius (dropPlane: to the plane
     // through the corners instead); hitNormal: the dish's own normal where it lands (what it bounces off)
@@ -625,16 +667,16 @@ window.renderClipFrame = async (spec, i) => {
   const a = span(t - expT / 2), b = span(t + expT / 2); let mv = 0; for (let k = 0; k < Math.min(a.length, b.length); k++) mv = Math.max(mv, Math.hypot(a[k][0] - b[k][0], a[k][1] - b[k][1]));
   const K = Math.max(1, Math.min(8, Math.ceil(mv / 1.5))); let tq = performance.now();
   const acc = new Float32Array(W * H * 3), wb = spec.wb || [1, 1, 1];
-  // rolling shutter: the frame is read out top to bottom over spec.cam.rs seconds, so each band of rows is rendered
-  // with the camera (and ball) where they were when that band was read
+  // rolling shutter: the frame is read out across the portrait frame (left to right) over spec.cam.rs seconds, so each
+  // band of columns is rendered with the camera (and ball) where they were when that band was read
   const rs = spec.cam.rs || 0, NB = rs ? 8 : 1;
   for (let band = 0; band < NB; band++) {
-    const y0 = Math.round(band * H / NB), y1 = Math.round((band + 1) * H / NB), tb = rs * (((y0 + y1) / 2) / H - 0.5);
+    const x0 = Math.round(band * W / NB), x1 = Math.round((band + 1) * W / NB), tb = rs * (((x0 + x1) / 2) / W - 0.5);
     for (let s = 0; s < K; s++) {
       const ts = t + tb + expT * ((s + 0.5) / K - 0.5); place(ctx, ts);
       if (ctx.cube && s === 0 && band === 0) { ctx.ball.visible = false; ctx.cube.position.copy(ctx.ball.position); ctx.cube.update(R, ctx.scene); ctx.ball.visible = true; }
       const buf = renderOnce(ctx);
-      for (let y = y0; y < y1; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = 0; x < W; x++) { acc[dst + x * 3] += enc(buf[src + x * 4] * expo * wb[0]); acc[dst + x * 3 + 1] += enc(buf[src + x * 4 + 1] * expo * wb[1]); acc[dst + x * 3 + 2] += enc(buf[src + x * 4 + 2] * expo * wb[2]); } }
+      for (let y = 0; y < H; y++) { const src = (H - 1 - y) * W * 4, dst = y * W * 3; for (let x = x0; x < x1; x++) { acc[dst + x * 3] += enc(buf[src + x * 4] * expo * wb[0]); acc[dst + x * 3 + 1] += enc(buf[src + x * 4 + 1] * expo * wb[1]); acc[dst + x * 3 + 2] += enc(buf[src + x * 4 + 2] * expo * wb[2]); } }
     }
   }
   tm("subframes", tq); tq = performance.now();

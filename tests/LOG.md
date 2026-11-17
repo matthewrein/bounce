@@ -302,6 +302,18 @@ which comes from its apparent size (about 14 px radius at 4 ft: 1 px is about 3 
 put the landing point about 4x too far out (lean 2.1 deg vs 0.5 true). **Rejected** (made clips worse). Kept part as
 **b20b**: the drop to the dish and the start point on it, launched along the plane's normal as before.
 
+## b21 - straighten the sagging top edges (rejected)
+
+The dish makes each top edge sag between its corners (1/16 in at the middle for a 1/8 in dish), so the straight line
+fitted to an edge sits about 0.77 of that sag inside the chord between the true corners: about 1 px at 4 ft. b21 moved
+each fitted line back out by that amount (pose from the current outline). The first version did nothing at all: inside
+`refineQuad` a local array of points named `P` hides the settings object `P`, so `P.dish`, `P.cutEdge` and `P.size`
+read as undefined there (fixed by renaming the local; the same mistake would also have switched off the cut-edge
+option). The fixed version (b21b) vs b19, two phases on v2: corner error better on 9 clips (e.g. 4.67 -> 2.85 px), tilt
+error unchanged (the shift is nearly the same on all four sides, so it changes the distance, not the angle), but about
+20 metrics worse across 12 clips through the tracker's chaotic path, among them `walk_d4` wobble 0.30 -> 1.34 deg.
+**Rejected**: no tilt gain, clips worse.
+
 ## Review of b20 and generator v2 (40-agent adversarial review: 13 findings confirmed, 2 refuted)
 
 App: nothing wrong in the dish maths (signs, units, convergence; dish 0 reproduces b19). Points kept for the owner:

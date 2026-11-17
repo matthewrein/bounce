@@ -27,25 +27,32 @@ are remapped at run time), `--mode live`, `--stills`, `--private`.
 
 ## What gets rendered (`scene.js`, `clips.js`)
 
-A three.js scene in headless Chrome (SwiftShader WebGL): a 7 in cement slab, 0.9 in thick, top gently
-curved and edge slightly chamfered, sitting tilted on a faceted black base, on a floor, plus an optional
-35 mm chrome ball (it reflects the actual scene through a cube camera) held in a pinch grip or dropped.
+A three.js scene in headless Chrome (SwiftShader WebGL): a 7 in cement slab about 1 in thick at the edges, its top a
+shallow dish (default 1/8 in below the corners in the middle, so 1/16 in at the edge midpoints) with a small
+chamfer, rocking in a spherical cradle on a flat black base (default cradle radius 17.2 in: sliding the slab about
+3 in tilts it about 10 deg, so tilt is capped at 10.5 deg; lined up with the base it is level), on a floor, plus an
+optional 35 mm polished titanium ball (it reflects the actual scene through a cube camera) held in a pinch grip or
+dropped. The dropped ball bounces off the dish like a mirror at 0.7 of its speed (the app instead launches it along
+the local normal; see LOG.md).
 
 Clips are 720x1280 portrait at 30 fps with a 72.5 deg vertical lens (what the real phone's lens setting
-self-calibrated to). Each clip varies some of: distance 3-5 ft, slab tilt 0-18 deg and its heading,
-camera height and pitch, aim off-centre, roll, floor (gridded mat, wood, concrete, plain, carpet, near
-black), light level and direction (including raking light that leaves one slab side with almost no
-contrast), hand shake (slow sway plus tremor), motion blur (sub-frame rendering over the exposure time),
-auto-exposure lag and deliberate drift, sensor noise with in-camera denoise smear in low light, JPEG
-compression, radial lens distortion and a lens-angle mismatch, slab aspect 1.03 and stronger curvature,
-a ball held at 1-3 ft or dropped, a ball held off the slab, round distractors (tins, coins, stickers, a
-chrome ball on the floor), and clips with no slab (clutter, a grey rectangle on a black pad, the black
-base alone).
+self-calibrated to). Each clip varies some of: distance 3-5 ft, slab tilt and heading, camera height and pitch, aim
+off-centre, roll, floor (gridded mat, wood, concrete, plain, carpet, near black), light level and direction
+(including raking light that leaves one slab side with almost no contrast), colour temperature with the camera's
+partial white balance, a second light, a shadow passing over the slab, hand shake (slow sway plus tremor), motion
+blur (sub-frame rendering over the exposure time), rolling shutter (read across the portrait frame, as a
+landscape-mounted sensor does), dropped and repeated frames, auto-exposure lag and deliberate drift, sensor noise
+with in-camera denoise smear in low light, JPEG compression, radial lens distortion and a lens-angle mismatch, slab
+aspect 1.03, dish depth (flat to 1/4 in), cradle radius and the base turned against the slab, a ball held at 1-3 ft
+or dropped, a ball held off the slab, round distractors (tins, coins, stickers, a ball on the floor), and clips with
+no slab (clutter, a grey rectangle on a black pad, the black base alone).
 
 Ground truth per frame (`gt.json`): slab corner pixels (the virtual sharp top corners; the plane through
-them defines the true normal), slab normal and gravity in camera coordinates, true tilt, distance, ball
-centre and radius in pixels, whether it is held and over the slab, and its drop height (straight down
-from the ball to the plane through the corners, minus its radius). Motion-sensor samples at 60 Hz
+them defines the true normal), slab normal and gravity in camera coordinates, true tilt, distance, the cradle's
+sphere centre and the base centre, ball centre and radius in pixels, whether it is held and over the slab, its drop
+height (`drop`: straight down from the ball to the dish surface, minus its radius; `dropPlane`: to the plane through
+the corners), and where it lands (`hitLocal`, as fractions of the half-side) and the dish's normal there
+(`hitNormal`). Motion-sensor samples at 60 Hz
 (device axes = camera axes): accelerationIncludingGravity (including the hand's own acceleration and a small
 fixed calibration error), acceleration, rotationRate. Clips at the end of `clips.js` model platform quirks found
 by reviewing the WebKit and Chromium sources: opposite sign convention, no `acceleration`, `acceleration` lagging
@@ -85,8 +92,11 @@ Per clip and overall:
   the tilt reading itself (angle from level, which also carries the motion sensor's error).
 - **jit**: wobble of the normal while the phone is held still - the spread of (app normal - true normal),
   so real hand motion doesn't count; **tJit**: spread of the tilt reading while still.
+- **bounce**: (ball clips only) angle between the normal the app launches the ball along and the dish's normal where
+  the ball lands; **hitErrIn**: error of the landing point the app uses (in).
 - **ball%**: share of frames with the ball held over the slab (and the slab locked) where the app's ball
-  is on the true ball; **bFP**: false ball detections (events); **drop**: median drop-height error (in).
+  is on the true ball; **bFP**: false ball detections (events); **drop**: median drop-height error (in), to the dish surface. A ball
+  shown where the real one was in the last 0.3 s after it was let go counts as stale, not false.
 - **msS / msT**: app processing time per frame while searching / tracking (measured inside the app, on
   this machine's CPU - compare runs with each other, not with the phone, and only between runs made while nothing
   else was running).
