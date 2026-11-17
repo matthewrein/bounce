@@ -73,8 +73,8 @@ details .row{margin-top:8px}
     <div class="read"><span>Air time</span><b id="rAir">–</b></div>
   </div>
   <div class="row">
-    <label for="speed">Bounce speed</label><output id="oSpeed" for="speed"></output>
-    <input id="speed" type="range" min="4" max="30" step="0.5" value="12">
+    <label for="drop">Drop height above the cement</label><output id="oDrop" for="drop"></output>
+    <input id="drop" type="range" min="0.5" max="8" step="0.25" value="3">
   </div>
   <div class="btns">
     <button class="btn primary" id="live" type="button">Start camera</button>
@@ -82,6 +82,8 @@ details .row{margin-top:8px}
   </div>
   <details>
     <summary>Tune</summary>
+    <div class="row"><label for="reb">Rebound (how much of the drop height it bounces back)</label><output id="oReb" for="reb"></output>
+      <input id="reb" type="range" min="20" max="100" step="5" value="70"></div>
     <div class="row" id="pitchRow"><label for="pitch">Phone aimed down from level</label><output id="oPitch" for="pitch"></output>
       <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
     <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
@@ -90,6 +92,7 @@ details .row{margin-top:8px}
       <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
     <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
       <input id="fov" type="range" min="45" max="85" step="1" value="65"></div>
+    <p class="note" id="sens"></p>
     <p class="note" id="gnote">The dashed line is perpendicular to the slab face. The arc's bend depends on which way is down: with the camera running that comes from the phone's tilt sensor, otherwise set how steeply the phone is aimed at the floor.</p>
   </details>
 </div>
@@ -99,10 +102,11 @@ details .row{margin-top:8px}
 "use strict";
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
-const P={speed:12,size:12,tol:26,pitch:50,fov:65};
+const G=32.174; // ft/s^2
+const P={drop:3,reb:70,size:12,tol:26,pitch:50,fov:65};
+const speed=()=>Math.sqrt(2*G*P.drop*P.reb/100); // ft/s leaving the cement
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,tapped:false};
 let C=null; // per-frame cache of the colour mask for a fixed reference
-const G=32.174; // ft/s^2
 
 /* ---------- vector helpers ---------- */
 const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
@@ -134,7 +138,9 @@ function prepare(){
   const x=c.getContext("2d",{willReadFrequently:true});
   x.imageSmoothingQuality="high";
   // two-step downscale to reduce aliasing
-  const mx=mid.getContext("2d");mx.imageSmoothingQuality="high";mx.drawImage(S.src,0,0,pw*2,ph*2);
+  const mx=mid.getContext("2d",{willReadFrequently:true});mx.imageSmoothingQuality="high";mx.drawImage(S.src,0,0,pw*2,ph*2);
+  const hd=mx.getImageData(0,0,pw*2,ph*2).data,hY=new Float32Array(pw*ph*4);
+  for(let i=0,n=hY.length;i<n;i++)hY[i]=.299*hd[i*4]+.587*hd[i*4+1]+.114*hd[i*4+2];
   x.drawImage(mid,0,0,pw,ph);
   const d=x.getImageData(0,0,pw,ph).data,N=pw*ph;
   let Y=new Float32Array(N),Cb=new Float32Array(N),Cr=new Float32Array(N);
@@ -147,7 +153,7 @@ function prepare(){
       for(let dx=-3;dx<=3;dx++){const xx=x+dx;if(xx<0||xx>=pw)continue;const v=Y[yy*pw+xx];s+=v;s2+=v*v;c++;}}
     const mu=s/c;Tx[y*pw+x]=Math.sqrt(Math.max(0,s2/c-mu*mu));
   }
-  S.proc={pw,ph,k,Yr:Y,Tx,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
+  S.proc={pw,ph,k,hY,hw:pw*2,hh:ph*2,Yr:Y,Tx,Y:blur3(Y,pw,ph),Cb:blur3(Cb,pw,ph),Cr:blur3(Cr,pw,ph)};
 }
 
 /* ---------- slab detection: colour region -> hull -> 4 fitted edges ---------- */
@@ -264,7 +270,51 @@ function detectAt(sx,sy,tol,ref){
   if(area<N*.025)return null; // too small in view to be the slab
   const dd=rad+2.5,fill=(count+perim*dd+4*dd*dd)/area;
   if(fill<.8||fill>1.2)return null;
-  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
+  return {q:refineQuad(q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k}))),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
+}
+// Sharpen the outline on the double-resolution image: find the edge at many points along each side,
+// fit a straight line through them ignoring strays, and take the corners where those lines cross.
+function refineQuad(q){
+  const {hY,hw,hh,k}=S.proc,k2=k*2,P=q.map(p=>({x:p.x*k2,y:p.y*k2}));
+  const cx=(P[0].x+P[1].x+P[2].x+P[3].x)/4,cy=(P[0].y+P[1].y+P[2].y+P[3].y)/4;
+  const smp=(x,y)=>{x=clamp(x,0,hw-1.001);y=clamp(y,0,hh-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*hw+xi;
+    return (hY[j]*(1-fx)+hY[j+1]*fx)*(1-fy)+(hY[j+hw]*(1-fx)+hY[j+hw+1]*fx)*fy;};
+  const lines=[];
+  for(let i=0;i<4;i++){
+    const A=P[i],B=P[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);
+    let dx=(B.x-A.x)/len,dy=(B.y-A.y)/len,nx=-dy,ny=dx;
+    if(nx*((A.x+B.x)/2-cx)+ny*((A.y+B.y)/2-cy)<0){nx=-nx;ny=-ny;}
+    const w=Math.max(5,len*.035),pts=[];
+    for(let j=0;j<32;j++){
+      const t=len*(.08+.84*j/31),bx=A.x+dx*t,by=A.y+dy*t,gs=[];let gmax=0;
+      // each reading averages a short run along the edge so cement speckle and sensor noise don't register as edges
+      for(let o=-w;o<=w;o+=.5){let g=0;
+        for(let u=-2;u<=2;u+=2)g+=smp(bx+dx*u+nx*(o+1),by+dy*u+ny*(o+1))-smp(bx+dx*u+nx*(o-1),by+dy*u+ny*(o-1));
+        g=Math.abs(g/3);gs.push(g);if(g>gmax)gmax=g;}
+      if(gmax<6)continue;
+      for(let m=1;m<gs.length-1;m++)if(gs[m]>=.4*gmax&&gs[m]>=gs[m-1]&&gs[m]>=gs[m+1]){
+        const den=gs[m-1]-2*gs[m]+gs[m+1],o=-w+m*.5+(den<0?.25*(gs[m-1]-gs[m+1])/den:0);
+        pts.push({x:bx+nx*o,y:by+ny*o});break;}
+    }
+    let L={px:A.x,py:A.y,dx,dy};
+    if(pts.length>=10){
+      let use=pts;
+      for(let pass=0;pass<3;pass++){
+        let mx=0,my=0;for(const p of use){mx+=p.x;my+=p.y;}mx/=use.length;my/=use.length;
+        let sxx=0,sxy=0,syy=0;for(const p of use){const a=p.x-mx,b=p.y-my;sxx+=a*a;sxy+=a*b;syy+=b*b;}
+        const th=.5*Math.atan2(2*sxy,sxx-syy);L={px:mx,py:my,dx:Math.cos(th),dy:Math.sin(th)};
+        const res=pts.map(p=>Math.abs((p.x-mx)*L.dy-(p.y-my)*L.dx)),med=res.slice().sort((a,b)=>a-b)[res.length>>1],lim=Math.max(.75,2.5*med);
+        const keep=pts.filter((p,n)=>res[n]<=lim);if(keep.length<8||keep.length===use.length)break;use=keep;
+      }
+    }
+    lines.push(L);
+  }
+  return q.map((p0,i)=>{
+    const a=lines[(i+3)%4],b=lines[i],c=a.dx*b.dy-a.dy*b.dx;if(Math.abs(c)<1e-6)return p0;
+    const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c,x=(a.px+t*a.dx)/k2,y=(a.py+t*a.dy)/k2;
+    const side=Math.hypot(q[(i+1)%4].x-p0.x,q[(i+1)%4].y-p0.y);
+    return Math.hypot(x-p0.x,y-p0.y)<side*.08+3/k2?{x,y}:p0;
+  });
 }
 // does this outline look like a square seen in perspective (for the assumed lens)?
 function squareish(q){
@@ -354,7 +404,8 @@ function track(){
   }
   S.far=0;
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
-  const a=clamp(d/(side*.06),.06,.5);
+  // (the gyroscope says when the phone is being held still, which allows much heavier averaging)
+  const a=clamp(d/(side*.05),S.rot!=null&&S.rot<4?.04:.1,.6);
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
   S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
 }
@@ -414,7 +465,7 @@ function refine(r1,r2,t,obs,hs,sg,up,sp,st){
   }
   return {r1,r2,t,cost:c};
 }
-function solvePose(q,f,cx,cy,hs,g){
+function solvePose(q,f,cx,cy,hs,g,prev){
   const H=homog(q,f,cx,cy,hs);if(!H)return null;
   const lam=2/(Math.hypot(...H.c0)+Math.hypot(...H.c1));
   const c=mul(H.c2,lam),r1=norm(H.c0),r2=norm(sub(H.c1,mul(r1,dot(H.c1,r1))));
@@ -424,13 +475,19 @@ function solvePose(q,f,cx,cy,hs,g){
   const v=norm(c),half=(a,x)=>sub(mul(a,2*dot(a,x)),x);
   const n1=half(v,n0),f1=half(n1,half(v,r1)),f2=half(n1,half(v,r2));
   const A=refine(r1,r2,c,obs,hs,sg,up,sp,st),B=refine(f1,f2,c,obs,hs,sg,up,sp,st);
-  const best=!A?B:!B?A:(B.cost<A.cost?B:A);if(!best)return null;
+  let best=!A?B:!B?A:(B.cost<A.cost?B:A);if(!best)return null;
+  if(prev&&A&&B){
+    // don't flip between the two mirror solutions from frame to frame unless the other is clearly better
+    const other=best===A?B:A,nb=mul(norm(cross(best.r1,best.r2)),sg),no=mul(norm(cross(other.r1,other.r2)),sg);
+    if(dot(no,prev)>dot(nb,prev)&&other.cost<best.cost*3+1)best=other;
+  }
   return {c:best.t,n:mul(norm(cross(best.r1,best.r2)),sg),r1:norm(best.r1),r2:norm(best.r2),hs,f,cx,cy};
 }
 
 /* ---------- trajectory ---------- */
 function update(){
-  $("oSpeed").textContent=P.speed.toFixed(1)+" ft/s";
+  $("oDrop").textContent=P.drop.toFixed(2).replace(/0$/,"")+" ft";
+  $("oReb").textContent=P.reb+"%";
   $("oPitch").textContent=P.pitch+"°";
   $("oSize").textContent=P.size+" in";
   $("oTol").textContent=P.tol;
@@ -438,7 +495,8 @@ function update(){
   const st=$("status");
   S.tr=null;
   const sensor=S.live&&S.grav;
-  const pose=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,sensor?S.grav:null);
+  const pose=S.quad&&solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,sensor?S.grav:null,S.live?S.nS:null);
+  $("sens").textContent=S.live?(sensor?"Tilt sensor: on. It sets which way is down and steadies the outline.":"Tilt sensor: off. Allow motion access for this site, or set the phone angle above."):"";
   $("pitchRow").style.display=sensor?"none":"";
   if(S.msg){st.className="chip warn";st.textContent=S.msg;}
   if(!pose){
@@ -455,13 +513,13 @@ function update(){
     if(S.nS){pose.n=S.nS=norm(add(mul(S.nS,.88),mul(pose.n,.12)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
     else{S.nS=pose.n;S.cS=pose.c;}
   }
-  const {c,n,r1,r2,hs}=pose,vup=-P.speed*dot(n,g);
+  const {c,n,r1,r2,hs}=pose,v0=speed(),vup=-v0*dot(n,g);
   let hf=0;
   for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
     const d=add(mul(r1,hs*s[0]),mul(r2,hs*s[1]));hf=Math.min(hf,-dot(d,g));
   }
   const T=Math.min(4,(vup+Math.sqrt(vup*vup-2*G*hf))/G);
-  const at=t=>add(add(c,mul(n,P.speed*t)),mul(g,.5*G*t*t));
+  const at=t=>add(add(c,mul(n,v0*t)),mul(g,.5*G*t*t));
   const end=sub(at(T),c),hz=sub(end,mul(g,dot(end,g)));
   const apex=vup>0?vup*vup/(2*G):0;
   S.tr={pose,T,at,ta:vup>0?Math.min(T,vup/G):0,apex};
@@ -537,6 +595,8 @@ function stopLive(){
   S.stream=null;S.live=false;$("live").textContent="Start camera";
 }
 function onMotion(e){
+  const rr=e.rotationRate;
+  if(rr&&rr.alpha!=null){const m=Math.hypot(rr.alpha,rr.beta,rr.gamma);S.rot=S.rot==null?m:S.rot*.8+m*.2;}
   const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
   let g=[-a.x,-a.y,-a.z];
   // phones disagree on the sign; in use, down is toward the phone's bottom edge or its back
@@ -608,7 +668,7 @@ function loadFile(file){
 /* ---------- wiring ---------- */
 $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
-for(const key of ["speed","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
+for(const key of ["drop","reb","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
   P[key]=parseFloat(e.target.value);
   if(key==="tol"&&!S.live){const r=detect(S.seed);S.quad=r&&r.q;}
   update();
