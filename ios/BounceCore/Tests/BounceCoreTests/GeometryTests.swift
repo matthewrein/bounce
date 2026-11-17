@@ -122,4 +122,30 @@ final class GeometryTests: XCTestCase {
             XCTAssertGreaterThan(w.start, 1); XCTAssertLessThan(w.start, 100)
         }
     }
+
+    func testCutBandWidthIsMeasuredAcrossTheSide() {
+        // A level slab seen obliquely (pitch 50, yaw 20, 1.2 m, f = 1450): on a side seen at a slant, the band between
+        // the top edge and the bottom of the cut face is much narrower than the projected vertical edge is long. The
+        // width is the distance of each bottom corner from the top edge's image line.
+        let s = SyntheticView.make(pitch: 50, distance: 1.2, tilt: 0, heading: 0, yaw: 20)
+        let box = SlabBoxView(pose: s.pose, spec: .standard, intrinsics: s.intrinsics)
+        let T = box.topOutline!
+        var ratios: [Double] = []
+        for i in 0..<4 where box.cutFaceVisible(side: i) {
+            let j = (i + 1) % 4, dir = (T[j] - T[i]).normalized
+            let w = box.cutBandWidth(side: i)
+            let bi = s.intrinsics.project(box.bottomCorners[i])!, bj = s.intrinsics.project(box.bottomCorners[j])!
+            XCTAssertEqual(w.start, abs(dir.cross(bi - T[i])), accuracy: 1e-9, "side \(i)")
+            XCTAssertEqual(w.end, abs(dir.cross(bj - T[j])), accuracy: 1e-9, "side \(i)")
+            XCTAssertEqual(box.verticalEdge(corner: i)!.length, bi.distance(to: T[i]), accuracy: 1e-9)
+            ratios.append(w.start / box.verticalEdge(corner: i)!.length)
+            // never wider than the vertical edge is long
+            XCTAssertLessThanOrEqual(w.start, box.verticalEdge(corner: i)!.length + 1e-9)
+        }
+        XCTAssertEqual(ratios.count, 2)
+        // the obliquely seen side: about 0.3 of the vertical edge's length (the old value overstated it about 3x)
+        XCTAssertLessThan(ratios.min()!, 0.45)
+        // the side seen nearly square-on: close to the vertical edge's length
+        XCTAssertGreaterThan(ratios.max()!, 0.9)
+    }
 }
