@@ -71,9 +71,9 @@ jobs:
           sys.exit(0 if m and m.group(1) == "Release" else 1)
           EOF
 
-      - name: BounceCore tests (macOS)
+      - name: BounceCore tests (macOS, optimised; Linux runs them unoptimised)
         if: matrix.xcode == 'default'
-        run: swift test --package-path ios/BounceCore
+        run: swift test -c release -Xswiftc -enable-testing --package-path ios/BounceCore
 
       - name: Build for the iOS Simulator
         run: >

@@ -38,7 +38,8 @@ struct SettingsView: View {
                 Section(footer: Text("The demo shows a synthetic slab instead of the camera, to see how the app works without the slab, or on a Mac's iPhone Simulator.")) {
                     Toggle("Demo scene (no camera)", isOn: $demo).accessibilityIdentifier("demoToggle")
                 }
-                Section(footer: Text("Build \(appBuild)").accessibilityIdentifier("buildLabel")) {
+                Section {
+                    HStack { Text("Build"); Spacer(); Text(appBuild).foregroundColor(.secondary).accessibilityIdentifier("buildLabel") }
                     Button("Restore defaults") {
                         side = 7; sideB = 7; thickness = 1; dish = 0.125; ballMm = 35; dropFeet = 3; rebound = 70; dishBounce = false
                     }
