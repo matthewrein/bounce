@@ -100,8 +100,7 @@ details .row{margin-top:8px}
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
 const P={speed:12,size:12,tol:26,pitch:50,fov:65};
-const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,learn:null,teach:false,seedAge:0};
-try{const v=JSON.parse(localStorage.getItem("slabRef"));if(Array.isArray(v)&&v.length===4)S.learn=v;}catch(_){}
+const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,tapped:false};
 let C=null; // per-frame cache of the colour mask for a fixed reference
 const G=32.174; // ft/s^2
 
@@ -199,9 +198,9 @@ function detectAt(sx,sy,tol,ref){
   const st=new Int32Array(N);let sp=0;st[sp++]=s;e[s]=2;
   const rmin=new Int16Array(ph).fill(pw),rmax=new Int16Array(ph).fill(-1);
   const cmin=new Int16Array(pw).fill(ph),cmax=new Int16Array(pw).fill(-1);
-  let count=0,border=0;
+  let count=0,border=0,tsum=0;
   while(sp){
-    const i=st[--sp],x=i%pw,y=(i-x)/pw;count++;
+    const i=st[--sp],x=i%pw,y=(i-x)/pw;count++;tsum+=Tx[i];
     if(x<=1||y<=1||x>=pw-2||y>=ph-2)border++;
     if(x<rmin[y])rmin[y]=x;if(x>rmax[y])rmax[y]=x;if(y<cmin[x])cmin[x]=y;if(y>cmax[x])cmax[x]=y;
     if(e[i-1]===1){e[i-1]=2;st[sp++]=i-1}
@@ -222,7 +221,7 @@ function detectAt(sx,sy,tol,ref){
   }
   const cen={x:(h[0].x+h[1].x+h[2].x+h[3].x)/4,y:(h[0].y+h[1].y+h[2].y+h[3].y)/4};
   // fit a line to each side from boundary points, pushed out 1px to undo the erosion
-  const lines=[];let perim=0;
+  const lines=[],edges=[];let perim=0;
   for(let i=0;i<4;i++){
     const A=h[i],B=h[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);perim+=len;
     if(len<10)return null;
@@ -245,6 +244,7 @@ function detectAt(sx,sy,tol,ref){
         g+=smp(qx+nx,qy+ny)-smp(qx-nx,qy-ny);}
       g=Math.abs(g/14);gs.push(g);if(g>gmax)gmax=g;}
     if(gmax>=10)for(let j=0;j<gs.length;j++)if(gs[j]>=.6*gmax&&gs[j]>=(gs[j-1]||0)&&gs[j]>=(gs[j+1]||0)){const o=-4+j*.5;px+=nx*o;py+=ny*o;break;}
+    edges.push(gmax);
     lines.push({px,py,dx,dy});
   }
   const q=[];
@@ -261,9 +261,10 @@ function detectAt(sx,sy,tol,ref){
   for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];area+=a.x*b.y-b.x*a.y;
     const z=cr2(a,b,c);if(z===0)return null;if(sign&&Math.sign(z)!==sign)return null;sign=Math.sign(z);}
   area=Math.abs(area)/2;
+  if(area<N*.025)return null; // too small in view to be the slab
   const dd=rad+2.5,fill=(count+perim*dd+4*dd*dd)/area;
   if(fill<.8||fill>1.2)return null;
-  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen};
+  return {q:q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
 }
 // does this outline look like a square seen in perspective (for the assumed lens)?
 function squareish(q){
@@ -271,25 +272,42 @@ function squareish(q){
   const a=Math.hypot(...h.c0),b=Math.hypot(...h.c1);
   return Math.abs(Math.log(a/b))<.3&&Math.abs(dot(h.c0,h.c1)/(a*b))<.25;
 }
-function detect(seed,ref){
-  const {pw,ph,k}=S.proc,all=[];
-  if(ref){
-    // look everywhere, but only for the taught colour and texture
-    for(const m of [.7,1,1.45])for(let j=0;j<6;j++)for(let i=0;i<4;i++){
-      const r=detectAt((i+.5)/4*pw,(j+.5)/6*ph,P.tol*m,ref);if(r&&squareish(r.q))all.push(r);}
-  }else{
-    const seeds=seed?[[seed.x*k,seed.y*k]]:
-      [[0,0],[-.12,0],[.12,0],[0,-.12],[0,.12],[-.12,-.12],[.12,-.12],[-.12,.12],[.12,.12]].map(o=>[pw/2+o[0]*pw,ph/2+o[1]*ph]);
-    for(const s of seeds){
-      for(const m of [.5,.7,1,1.45]){const r=detectAt(s[0],s[1],P.tol*m);if(r&&squareish(r.q))all.push(r);}
-      if(all.length)break;
+// the cement always sits on its black base: how much of the strip just outside one side of the outline is black?
+function baseFrac(r){
+  const {pw,ph,Y,k}=S.proc,q=r.q,lim=r.ref[0]*DARK;let best=0;
+  const cx=(q[0].x+q[1].x+q[2].x+q[3].x)/4,cy=(q[0].y+q[1].y+q[2].y+q[3].y)/4;
+  for(let i=0;i<4;i++){
+    const A=q[i],B=q[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);
+    let nx=-(B.y-A.y)/len,ny=(B.x-A.x)/len;if(nx*((A.x+B.x)/2-cx)+ny*((A.y+B.y)/2-cy)<0){nx=-nx;ny=-ny;}
+    let dark=0,tot=0;
+    for(let o=1;o<=12;o++)for(let j=0;j<12;j++){
+      const t=.06+.88*j/11,x=Math.round((A.x+(B.x-A.x)*t+nx*len*.03*o)*k),y=Math.round((A.y+(B.y-A.y)*t+ny*len*.03*o)*k);
+      if(x<0||y<0||x>=pw||y>=ph)continue;tot++;if(Y[y*pw+x]<lim)dark++;
     }
+    if(tot>40)best=Math.max(best,dark/tot);
   }
-  if(!all.length)return null;
-  // a looser match can leak into look-alike surroundings, so take the tightest match that still covers most of the largest one
-  let amax=0;for(const r of all)if(r.area>amax)amax=r.area;
-  all.sort((a,b)=>a.tol-b.tol);
-  for(const r of all)if(r.area>=amax*.7)return r;
+  return best;
+}
+const DARK=.5,TOLS=[.5,.7,1,1.45];
+// Try several colour tolerances and keep the outline whose weakest side still sits on the clearest image edge.
+// Too tight a match stops at a lighting gradient and too loose a one leaks; either way one side has no real edge under it.
+function detectSeed(px,py,needBase,ref){
+  let best=null,bs=needBase?6:-1;
+  for(const m of TOLS){
+    const r=detectAt(px,py,P.tol*m,ref);
+    // when searching unprompted, the patch must also be smooth like cement, not patterned
+    if(!r||!squareish(r.q)||(needBase&&(r.cv>.075||baseFrac(r)<.07)))continue;
+    r.edge=Math.min(...r.edges);
+    if(r.edge>bs){bs=r.edge;best=r;}
+  }
+  return best;
+}
+// photo and tap detection: a tapped spot is trusted; otherwise look around the middle, preferring something on a black base
+function detect(seed){
+  const {pw,ph,k}=S.proc;
+  if(seed)return detectSeed(seed.x*k,seed.y*k,false);
+  const seeds=[[0,0],[-.12,0],[.12,0],[0,-.12],[0,.12],[-.12,-.12],[.12,-.12],[-.12,.12],[.12,.12]].map(o=>[pw/2+o[0]*pw,ph/2+o[1]*ph]);
+  for(const b of [true,false])for(const s of seeds){const r=detectSeed(s[0],s[1],b);if(r)return r;}
   return null;
 }
 /* live tracking: follow the slab from frame to frame and smooth its corners */
@@ -298,18 +316,30 @@ function track(){
   if(S.quad){
     // once locked, keep the same colour reference and tolerance so the outline doesn't hop between matches
     const c={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
-    r=detectAt(c.x*S.proc.k,c.y*S.proc.k,S.ltol,S.ref);
+    const px=c.x*S.proc.k,py=c.y*S.proc.k;
+    r=detectAt(px,py,S.ltol,S.ref);
+    // if a side has lost its edge (light shifted), retry other tolerances; failing that, re-read the colour from the middle of the slab
+    if(!r||Math.min(...r.edges)<8){
+      const r2=detectSeed(px,py,false,S.ref)||detectSeed(px,py,false);
+      if(r2){if(r2.ref!==S.ref&&r2.ref.some((v,i)=>v!==S.ref[i]))S.ref=r2.ref.slice();S.ltol=r2.tol;r=r2;}
+    }
   }else if(S.seed){
     r=detect(S.seed);if(!r&&++S.seedAge>45)S.seed=null;
-  }else if(S.learn){
-    if(S.fid%3===0)r=detect(null,S.learn);
+  }else{
+    // sweep the view a few spots per frame, accepting only a square patch that sits on something black
+    const {pw,ph}=S.proc;
+    // and after a full sweep taking the largest, so a small look-alike can't win over the slab
+    for(let n=0;n<3;n++){
+      const i=S.si++%24,c=detectSeed((i%4+.5)/4*pw,((i>>2)+.5)/6*ph,true);
+      if(c&&(!S.cand||c.area>S.cand.area))S.cand=c;
+      if(S.si%24===0){r=S.cand;S.cand=null;if(r)break;}
+    }
   }
   if(!r){if(S.quad&&++S.lost>12){S.quad=null;S.nS=null;S.lost=0;}return;}
   const q=r.q;
   if(!S.quad){
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
-    if(S.grav){const ps=solvePose(q,focal(),S.sw/2,S.sh/2,.5,null);if(!ps||-dot(ps.n,S.grav)<Math.cos(45*Math.PI/180))return;}
-    if(S.seed){S.learn=r.ref.slice();try{localStorage.setItem("slabRef",JSON.stringify(S.learn));}catch(_){}}
+    if(S.grav&&!S.seed){const ps=solvePose(q,focal(),S.sw/2,S.sh/2,.5,null);if(!ps||-dot(ps.n,S.grav)<Math.cos(45*Math.PI/180))return;}
     S.seed=null;S.lost=0;
     S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.nS=null;return;
   }
@@ -326,7 +356,7 @@ function track(){
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
   const a=clamp(d/(side*.06),.06,.5);
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
-  S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.03);
+  S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
 }
 
 /* ---------- pose of a square from its 4 image corners ---------- */
@@ -412,9 +442,8 @@ function update(){
   $("pitchRow").style.display=sensor?"none":"";
   if(S.msg){st.className="chip warn";st.textContent=S.msg;}
   if(!pose){
-    const teach=S.live&&!S.learn&&!S.seed;
-    if(!S.msg){st.className="chip warn";st.textContent=teach?"Tap the cement":S.live?"Looking for slab":"No slab found";}
-    $("hint").textContent=teach?"Tap the cement once so it knows what to look for":S.live?"Looking for your cement. Tap it if the light has changed":"Tap the cement in the photo, or loosen the color match under Tune";
+    if(!S.msg){st.className="chip warn";st.textContent=S.live?"Looking for slab":"No slab found";}
+    $("hint").textContent=S.live?"Point at the cement on its black base, or tap it":"Tap the cement in the photo, or loosen the color match under Tune";
     for(const id of ["rTilt","rApex","rRange","rAir"])$(id).textContent="–";
     return;
   }
@@ -533,7 +562,7 @@ async function startLive(){
       $("stage").appendChild(v);S.video=v;
     }
     S.video.srcObject=stream;await S.video.play();
-    S.stream=stream;S.src=S.video;S.live=true;S.example=false;S.quad=null;S.nS=null;S.seed=null;S.lost=0;
+    S.stream=stream;S.src=S.video;S.live=true;S.example=false;S.quad=null;S.nS=null;S.cand=null;S.si=0;S.seed=null;S.lost=0;
     $("live").textContent="Stop camera";
   }catch(err){
     S.msg=err&&err.message==="insecure"?"Camera needs an https:// address":"Camera blocked. Allow it in browser settings";
