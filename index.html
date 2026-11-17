@@ -114,7 +114,7 @@ const P={drop:3,reb:70,ball:35,size:7,thick:.9,cutEdge:false,tol:26,pitch:50,fov
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
 try{P.cutEdge=localStorage.getItem("slabCutEdge")==="1";const t=parseFloat(localStorage.getItem("slabThick"));if(t>=.25&&t<=2)P.thick=t;}catch(_){}
-const BUILD="b16";
+const BUILD="b17";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -564,9 +564,13 @@ function track(){
   }else if(S.seed){
     r=detect(S.seed);if(!r&&++S.seedAge>45)S.seed=null;
   }else{
-    if(S.fid%2===0)r=sweep(); // every other frame, so the picture stays smooth while searching
+    if(S.fid%2===0){
+      r=sweep(); // every other frame, so the picture stays smooth while searching
+    }
   }
-  if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;S.cut=null;bump('unlocks');}}return;}
+  if(!r){if(S.quad){bump('heldFrames');
+    // while the slab is lost for a moment, keep the held outline turning with the phone, so it doesn't stay behind
+    if(S.gy&&S.gy.sign){const w=mul(turned,S.gy.sign);S.quad=S.quad.map(p=>turnP(p,w));if(S.nS)S.nS=norm(turnV(S.nS,w));}if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;S.cut=null;bump('unlocks');}}return;}
   const q=squareUp(r.q);
   if(!S.quad){
     S.gyPrev=null;

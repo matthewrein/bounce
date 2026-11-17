@@ -189,3 +189,15 @@ fp_lid_sticker_behind_d5, fp_floorball_behind_d4): the first version of this cha
 the mirror-appearance test removed that. Result (2 phases vs b15): held-ball detection at 4 ft 0 -> 53% of frames
 (drop-height error 1.4-1.8 in), 5 ft with the ball 3 ft up 0 -> 7%, dim light 0 -> 2%; false ball detections still
 0 on all 61 clips; no other clip metric changed.
+
+## b17 - a briefly lost outline keeps turning with the phone (kept); re-finding the sweep's pick (reverted)
+
+False locks in the pan clips come from stale outlines. Two fixes were tried:
+- The sweep keeps the best slab it found over a whole pass of the picture, several frames long, so while the phone
+  turns its pick is out of date. Re-finding it in the current frame before locking cut time-to-lock in the pan-in
+  clip 0.69 -> 0.14 s and false locks in pan-out-and-back 3 -> 2, but re-finding from the pick's middle fails
+  too often elsewhere (outdoor clip never locked; with the re-find limited to a turning phone, the orbit clip still
+  locked 0.7 s later and the pan-in clip had one more false-lock event). Reverted.
+- While the slab is lost for a moment (up to 12 frames), the held outline used to stay put. With the gyro's sign
+  known, it is now turned with the phone. Result (2 phases vs b16): no clip worse; fp_lid_sticker_behind_d5 lock
+  81 -> 96%, gyro_bias_d4 tilt 3.04 -> 2.81 deg. Kept.
