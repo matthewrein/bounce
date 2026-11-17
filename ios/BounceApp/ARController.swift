@@ -6,8 +6,29 @@ import Foundation
 import UIKit
 import simd
 
-/// Runs the AR session and feeds every camera frame through BounceCore's tracker on a background queue, then hands the
-/// overlay (already projected into view points) and the readouts to the UI.
+/// One frame from the camera or from the demo, with its pixels read only when needed (and only while the call that
+/// receives it runs: nothing here keeps an ARFrame alive).
+struct SourceFrame {
+    let timestamp: Double
+    /// the camera for the full image (ARKit: the captured image; demo: the rendered frame), CV axes, world y up
+    let fullView: BounceCore.CameraView
+    /// the detectors' image is the full image shrunk by this factor
+    let factor: Int
+    let trackingNormal: Bool
+    let trackingText: String
+    /// normalised image coordinates -> normalised view coordinates (ARKit's display transform, or aspect-fill for the demo)
+    let displayTransform: CGAffineTransform
+    let ycc: () -> YCCImage?
+    /// full-resolution luma crop: (x0, y0, width, height, shrink factor)
+    let lumaCrop: (Int, Int, Int, Int, Int) -> Plane?
+    let depth: () -> (DepthMap, CameraIntrinsics)?
+    /// world-from-ARKit-camera, column-major (what a recording stores)
+    let arkitTransform: [Double]
+    let exposureDuration: Double?
+}
+
+/// Runs the AR session (or the demo) and feeds every frame through BounceCore's tracker on a background queue, then
+/// hands the overlay (already in view points) and the readouts to the UI.
 final class ARController: NSObject, ARSessionDelegate {
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
     static var depthSupported: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
@@ -28,13 +49,11 @@ final class ARController: NSObject, ARSessionDelegate {
     // processing-queue state
     private var tracker: SlabTracker
     private var settings = AppSettings()
-    private var config = ARWorldTrackingConfiguration()
     private var floorYs: [UUID: Double] = [:]
     private var captureLocked = false
     private var lastTracking = "not started"
     private var lastOutput: TrackerOutput? = nil
     private var lastDisplayTransform: CGAffineTransform = .identity
-    private var lastImageSize = CGSize(width: 1920, height: 1440)
     private var lastLens: CameraIntrinsics? = nil
     private var frameTimes: [Double] = []
     private var msAverage = 0.0
@@ -42,6 +61,12 @@ final class ARController: NSObject, ARSessionDelegate {
     private var recorder: SessionRecorder? = nil
     private var recordRequest: AppSettings? = nil
     private var lastRecorded = -Double.infinity
+
+    // the demo (no camera)
+    private var demoTimer: DispatchSourceTimer? = nil
+    private var demoScript: DemoScript? = nil
+    private var demoStart = 0.0
+    private(set) var isDemo = false
 
     override init() {
         tracker = SlabTracker(settings: AppSettings().tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
@@ -56,19 +81,19 @@ final class ARController: NSObject, ARSessionDelegate {
         queue.async {
             self.settings = s
             self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
+            self.floorYs = [:]
         }
         let c = ARWorldTrackingConfiguration()
         c.worldAlignment = .gravity
         c.planeDetection = [.horizontal]
         c.isAutoFocusEnabled = true
         if ARController.depthSupported { c.frameSemantics.insert(.sceneDepth) }
-        // the highest-resolution 4:3 format (usually 1920x1440); the detectors work on a quarter of it
+        // the highest-resolution 4:3 format up to 1920 wide (usually 1920x1440); the detectors use a quarter of it
         if let f = ARWorldTrackingConfiguration.supportedVideoFormats
             .filter({ abs($0.imageResolution.width / $0.imageResolution.height - 4.0 / 3.0) < 0.01 && $0.imageResolution.width <= 1920 })
             .max(by: { $0.imageResolution.width < $1.imageResolution.width }) {
             c.videoFormat = f
         }
-        config = c
         session.run(c, options: [.resetTracking, .removeExistingAnchors])
         if motion.isDeviceMotionAvailable {
             motion.deviceMotionUpdateInterval = 1.0 / 60
@@ -79,6 +104,31 @@ final class ARController: NSObject, ARSessionDelegate {
     func stop() {
         session.pause()
         motion.stopDeviceMotionUpdates()
+        stopDemo()
+    }
+
+    /// Run the synthetic demo scene instead of the camera (no ARKit needed: works in the Simulator).
+    func startDemo(script: DemoScript, settings s: AppSettings) {
+        session.pause()
+        queue.async {
+            self.settings = s
+            self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
+            self.demoScript = script
+            self.demoStart = CACurrentMediaTime()
+            self.isDemo = true
+            let t = DispatchSource.makeTimerSource(queue: self.queue)
+            t.schedule(deadline: .now(), repeating: .milliseconds(80), leeway: .milliseconds(10))
+            t.setEventHandler { [weak self] in self?.demoTick() }
+            self.demoTimer?.cancel()
+            self.demoTimer = t
+            t.resume()
+        }
+    }
+
+    func stopDemo() {
+        queue.async {
+            self.demoTimer?.cancel(); self.demoTimer = nil; self.demoScript = nil; self.isDemo = false
+        }
     }
 
     func update(settings s: AppSettings) {
@@ -98,53 +148,96 @@ final class ARController: NSObject, ARSessionDelegate {
         lock.lock(); resetRequested = true; lock.unlock()
     }
 
-    // MARK: frames (processing queue)
+    // MARK: sources (processing queue)
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard !isDemo else { return }
+        let camera = frame.camera
+        var text = "normal", normal = false
+        switch camera.trackingState {
+        case .normal: normal = true
+        case .notAvailable: text = "not available"
+        case .limited(let r):
+            switch r {
+            case .initializing: text = "limited: initializing"
+            case .excessiveMotion: text = "limited: moving too fast"
+            case .insufficientFeatures: text = "limited: too few features"
+            case .relocalizing: text = "limited: relocalizing"
+            @unknown default: text = "limited"
+            }
+        }
+        let full = FrameConversion.view(camera)
+        let factor = max(1, full.intrinsics.width / 480)   // about 480 px wide for the detectors
+        lock.lock(); let vp = viewport; lock.unlock()
+        let pb = frame.capturedImage
+        let sf = SourceFrame(
+            timestamp: frame.timestamp, fullView: full, factor: factor, trackingNormal: normal, trackingText: text,
+            displayTransform: frame.displayTransform(for: .portrait, viewportSize: vp),
+            ycc: { FrameConversion.ycc(pb, factor: factor) },
+            lumaCrop: { x0, y0, w, h, k in FrameConversion.lumaCrop(pb, x0: x0, y0: y0, width: w, height: h, factor: k) },
+            depth: {
+                guard let sd = frame.sceneDepth, let d = FrameConversion.depth(sd) else { return nil }
+                return (d, full.intrinsics.scaled(by: Double(d.width) / Double(full.intrinsics.width)))
+            },
+            arkitTransform: FrameConversion.columnMajor(camera.transform), exposureDuration: camera.exposureDuration)
+        handle(sf, viewport: vp)
+    }
+
+    private func demoTick() {
+        guard let script = demoScript else { return }
+        let t = CACurrentMediaTime() - demoStart
+        let scene = script.scene(at: t, spec: settings.recording.slab), view = script.view(at: t)
+        let K = view.intrinsics
+        let rgb = scene.renderRGB(view: view)
+        let img = SyntheticScene.ycc(rgb: rgb, width: K.width, height: K.height)
+        lock.lock(); let vp = viewport; lock.unlock()
+        // the frame fills the view (aspect fill, centred), as the camera feed does
+        let s = max(vp.width / CGFloat(K.width), vp.height / CGFloat(K.height))
+        let ox = (vp.width - CGFloat(K.width) * s) / 2, oy = (vp.height - CGFloat(K.height) * s) / 2
+        let tr = CGAffineTransform(a: CGFloat(K.width) * s / vp.width, b: 0, c: 0, d: CGFloat(K.height) * s / vp.height,
+                                   tx: ox / vp.width, ty: oy / vp.height)
+        let arkit = RigidTransform(rotation: view.worldFromCamera.rotation * ARKitConvention.cvToARKitCamera, translation: view.worldFromCamera.translation)
+        let sf = SourceFrame(
+            timestamp: t, fullView: view, factor: 1, trackingNormal: true, trackingText: "demo", displayTransform: tr,
+            ycc: { img },
+            lumaCrop: { x0, y0, w, h, k in
+                let p = img.luma.cropped(x0: x0, y0: y0, width: w, height: h)
+                return k > 1 ? p.downscaled(by: k) : p
+            },
+            depth: { nil }, arkitTransform: arkit.columnMajor4x4, exposureDuration: nil)
+        let cg = DemoImage.cgImage(rgb: rgb, width: K.width, height: K.height)
+        handle(sf, viewport: vp, background: cg)
+    }
+
+    // MARK: processing (processing queue)
+
+    private func handle(_ f: SourceFrame, viewport vp: CGSize, background: CGImage? = nil) {
         let t0 = CACurrentMediaTime()
         lock.lock()
-        let vp = viewport, tapView = pendingTap, newSettings = pendingSettings, reset = resetRequested
+        let tapView = pendingTap, newSettings = pendingSettings, reset = resetRequested
         pendingTap = nil; pendingSettings = nil; resetRequested = false
         lock.unlock()
 
         if let s = newSettings, s != settings {
+            let sizeChanged = s.tracker.spec != settings.tracker.spec
             settings = s
             tracker.settings = s.tracker
-            if s.tracker.spec != tracker.settings.spec { tracker.reset() }
+            if sizeChanged { tracker.reset(); recentEvents.append("settings: slab changed, searching again") }
         }
         if reset { tracker.reset(); unlockCapture(); recentEvents.append("reset") }
 
-        let camera = frame.camera
-        switch camera.trackingState {
-        case .normal: lastTracking = "normal"
-        case .notAvailable: lastTracking = "not available"
-        case .limited(let r):
-            switch r {
-            case .initializing: lastTracking = "limited: initializing"
-            case .excessiveMotion: lastTracking = "limited: moving too fast"
-            case .insufficientFeatures: lastTracking = "limited: too few features"
-            case .relocalizing: lastTracking = "limited: relocalizing"
-            @unknown default: lastTracking = "limited"
-            }
-        }
-        let trackingNormal: Bool
-        if case .normal = camera.trackingState { trackingNormal = true } else { trackingNormal = false }
-
-        let fullView = FrameConversion.view(camera)
-        lastLens = fullView.intrinsics
-        let W = fullView.intrinsics.width
-        let factor = max(1, W / 480)                       // about 480 px wide for the detectors
-        let K = fullView.intrinsics.scaled(by: 1 / Double(factor))
-        let pview = BounceCore.CameraView(worldFromCamera: fullView.worldFromCamera,
-                                          intrinsics: CameraIntrinsics(fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy, width: W / factor,
-                                                                       height: fullView.intrinsics.height / factor))
-        lastImageSize = CGSize(width: fullView.intrinsics.width, height: fullView.intrinsics.height)
-        lastDisplayTransform = frame.displayTransform(for: .portrait, viewportSize: vp)
+        lastTracking = f.trackingText
+        lastLens = f.fullView.intrinsics
+        lastDisplayTransform = f.displayTransform
+        let full = f.fullView, K = full.intrinsics.scaled(by: 1 / Double(f.factor))
+        let pview = BounceCore.CameraView(worldFromCamera: full.worldFromCamera,
+                                          intrinsics: CameraIntrinsics(fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy,
+                                                                       width: full.intrinsics.width / f.factor, height: full.intrinsics.height / f.factor))
 
         // a tap in the view -> processing-image pixels
         var tap: Vec2? = nil
         if let p = tapView {
-            let n = CGPoint(x: p.x / vp.width, y: p.y / vp.height).applying(lastDisplayTransform.inverted())
+            let n = CGPoint(x: p.x / vp.width, y: p.y / vp.height).applying(f.displayTransform.inverted())
             tap = Vec2(Double(n.x) * Double(pview.intrinsics.width), Double(n.y) * Double(pview.intrinsics.height))
         }
 
@@ -159,46 +252,45 @@ final class ARController: NSObject, ARSessionDelegate {
                 recentEvents.append("recording failed: \(error.localizedDescription)")
             }
         }
-        // only convert the image when it will be used: a detection is due, or we are recording
-        let recordDue = recorder != nil && frame.timestamp - lastRecorded >= 0.1
-        let needImage = tap != nil || tracker.detectionDue(at: frame.timestamp) || recordDue
-        var ycc: YCCImage? = nil
-        if needImage { ycc = FrameConversion.ycc(frame.capturedImage, factor: factor) }
+
+        // only convert the image when it will be used: a detection is due, a tap, or the recording
+        let recordDue = recorder != nil && f.timestamp - lastRecorded >= 0.2
+        let needImage = tap != nil || tracker.detectionDue(at: f.timestamp) || recordDue
+        let ycc: YCCImage? = needImage ? f.ycc() : nil
         let colorFrame = ycc?.colorFrame ?? ColorFrame(gray: Plane(width: 2, height: 2))
 
         // LiDAR depth, when the slab is locked (or for the recording)
-        var depth: DepthMap? = nil, depthK: CameraIntrinsics? = nil
-        if let sd = frame.sceneDepth, tracker.state == .locked || recordDue {
-            depth = FrameConversion.depth(sd)
-            if let d = depth { depthK = fullView.intrinsics.scaled(by: Double(d.width) / Double(fullView.intrinsics.width)) }
-        }
+        var depth: (DepthMap, CameraIntrinsics)? = nil
+        if tracker.state == .locked || recordDue { depth = f.depth() }
 
         // a full-resolution crop around the slab and the space above it, for the ball
         var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
-        if tracker.state == .locked, tracker.ballDue(at: frame.timestamp), let s = tracker.slab,
-           let q = Optional(s.topCorners.compactMap { fullView.project(world: $0) }), q.count == 4 {
-            // the box around the slab, stretched toward "up" in the image to reach a ball held up to ~1.2 m above it
-            let up = s.topCorners.map { fullView.project(world: $0 + Vec3(0, 1.2, 0)) }.compactMap { $0 }
-            let pts = q + up
-            let side = ShapeCheck.meanSide(q)
-            let x0 = Int(pts.map { $0.x }.min()! - side), x1 = Int(pts.map { $0.x }.max()! + side)
-            let y0 = Int(pts.map { $0.y }.min()! - side), y1 = Int(pts.map { $0.y }.max()! + side)
-            let cx0 = max(0, x0), cy0 = max(0, y0), cw = min(fullView.intrinsics.width, x1) - cx0, chh = min(fullView.intrinsics.height, y1) - cy0
-            if cw > 32, chh > 32 {
-                let k = max(1, Int(ceil(Double(max(cw, chh)) / 900)))
-                if let p = FrameConversion.lumaCrop(frame.capturedImage, x0: cx0, y0: cy0, width: cw, height: chh, factor: k) {
-                    ballImage = p
-                    ballK = fullView.intrinsics.cropped(x0: Double(cx0), y0: Double(cy0), scale: 1 / Double(k), width: p.width, height: p.height)
+        if tracker.state == .locked, tracker.ballDue(at: f.timestamp), let s = tracker.slab {
+            let q = s.topCorners.compactMap { full.project(world: $0) }
+            if q.count == 4 {
+                // stretched toward "up" in the image to reach a ball held up to about 1.2 m above the slab
+                let up = s.topCorners.compactMap { full.project(world: $0 + Vec3(0, 1.2, 0)) }
+                let pts = q + up, side = ShapeCheck.meanSide(q)
+                let x0 = Int(pts.map { $0.x }.min()! - side), x1 = Int(pts.map { $0.x }.max()! + side)
+                let y0 = Int(pts.map { $0.y }.min()! - side), y1 = Int(pts.map { $0.y }.max()! + side)
+                let cx0 = max(0, x0), cy0 = max(0, y0)
+                let cw = min(full.intrinsics.width, x1) - cx0, chh = min(full.intrinsics.height, y1) - cy0
+                if cw > 32, chh > 32 {
+                    let k = max(1, Int(ceil(Double(max(cw, chh)) / 900)))
+                    if let p = f.lumaCrop(cx0, cy0, cw, chh, k) {
+                        ballImage = p
+                        ballK = full.intrinsics.cropped(x0: Double(cx0), y0: Double(cy0), scale: 1 / Double(k), width: p.width, height: p.height)
+                    }
                 }
             }
         }
 
-        let tf = TrackerFrame(timestamp: frame.timestamp, view: pview, frame: colorFrame, depth: depth, depthIntrinsics: depthK,
-                              ballImage: ballImage, ballIntrinsics: ballK, tap: tap, floorY: floorY(), trackingNormal: trackingNormal)
+        let tf = TrackerFrame(timestamp: f.timestamp, view: pview, frame: colorFrame, depth: depth?.0, depthIntrinsics: depth?.1,
+                              ballImage: ballImage, ballIntrinsics: ballK, tap: tap, floorY: floorY(), trackingNormal: f.trackingNormal)
         let out = tracker.process(tf)
         lastOutput = out
         if !out.events.isEmpty {
-            recentEvents.append(contentsOf: out.events.map { String(format: "%.2f ", frame.timestamp) + $0 })
+            recentEvents.append(contentsOf: out.events.map { String(format: "%.2f ", f.timestamp) + $0 })
             if recentEvents.count > 30 { recentEvents.removeFirst(recentEvents.count - 30) }
         }
         if out.events.contains("locked") || out.events.contains("relocked") { lockCapture() }
@@ -206,30 +298,30 @@ final class ARController: NSObject, ARSessionDelegate {
 
         // recording
         if recordDue, let rec = recorder, let img = ycc {
-            lastRecorded = frame.timestamp
-            var rf = RecordedFrame(index: 0, timestamp: frame.timestamp, file: "", worldFromCamera: FrameConversion.columnMajor(camera.transform),
-                                   intrinsics: pview.intrinsics, trackingNormal: trackingNormal)
+            lastRecorded = f.timestamp
+            var rf = RecordedFrame(index: 0, timestamp: f.timestamp, file: "", worldFromCamera: f.arkitTransform,
+                                   intrinsics: pview.intrinsics, trackingNormal: f.trackingNormal)
             rf.gravityCamera = pview.directionToCamera(ARKitConvention.worldDown).array
-            if let m = motion.deviceMotion {
+            if let m = motion.deviceMotion, !isDemo {
                 rf.userAcceleration = [m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z]
                 rf.rotationRate = [m.rotationRate.x, m.rotationRate.y, m.rotationRate.z]
                 let q = m.attitude.quaternion
                 rf.attitude = [q.x, q.y, q.z, q.w]
             }
-            rf.exposureDuration = camera.exposureDuration
+            rf.exposureDuration = f.exposureDuration
             rf.locked = captureLocked
-            rf.depthIntrinsics = depthK
-            rec.append(rf, image: img, depth: depth)
+            rf.depthIntrinsics = depth?.1
+            rec.append(rf, image: img, depth: depth?.0)
         }
 
         // overlay, projected for the view, and the readouts
-        let ov = overlay(out, view: fullView, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
+        let ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
         let hud = makeHUD(out)
         let dt = (CACurrentMediaTime() - t0) * 1000
         msAverage = msAverage == 0 ? dt : msAverage * 0.95 + dt * 0.05
-        frameTimes.append(frame.timestamp)
+        frameTimes.append(f.timestamp)
         if frameTimes.count > 60 { frameTimes.removeFirst() }
-        Task { @MainActor [weak model] in model?.publish(overlay: ov, hud: hud) }
+        Task { @MainActor [weak model] in model?.publish(overlay: ov, hud: hud, background: background) }
     }
 
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { updatePlanes(anchors) }
@@ -241,7 +333,7 @@ final class ARController: NSObject, ARSessionDelegate {
         let msg = "Camera stopped: \(error.localizedDescription)"
         Task { @MainActor [weak model] in
             guard let m = model else { return }
-            var h = m.hud; h.status = msg; m.publish(overlay: OverlayState(), hud: h)
+            var h = m.hud; h.status = msg; m.publish(overlay: OverlayState(), hud: h, background: nil)
         }
     }
 
@@ -251,9 +343,11 @@ final class ARController: NSObject, ARSessionDelegate {
         }
     }
 
-    /// The floor under the slab: the lowest horizontal plane between 1 cm and 60 cm below the slab's centre.
+    /// The floor under the slab: the lowest horizontal plane between 1 cm and 60 cm below the slab's centre. (The demo's
+    /// floor is at y = 0.)
     private func floorY() -> Double? {
         guard let s = tracker.slab else { return nil }
+        if isDemo { return 0 }
         let cand = floorYs.values.filter { s.center.y - $0 > 0.01 && s.center.y - $0 < 0.6 }
         return cand.min()
     }
@@ -262,8 +356,8 @@ final class ARController: NSObject, ARSessionDelegate {
 
     /// Lock focus, exposure and white balance once the slab is found, so the image stops changing under the detector.
     private func lockCapture() {
-        guard !captureLocked else { return }
-        if #available(iOS 16.0, *), let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera {
+        guard !captureLocked, !isDemo else { return }
+        if let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera {
             do {
                 try device.lockForConfiguration()
                 if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
@@ -280,7 +374,7 @@ final class ARController: NSObject, ARSessionDelegate {
 
     private func unlockCapture() {
         guard captureLocked else { return }
-        if #available(iOS 16.0, *), let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera {
+        if let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera {
             do {
                 try device.lockForConfiguration()
                 if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
@@ -296,7 +390,7 @@ final class ARController: NSObject, ARSessionDelegate {
 
     // MARK: overlay
 
-    /// World point -> view point (through the captured image and ARKit's display transform).
+    /// World point -> view point (through the full image and the display transform).
     private func toView(_ p: Vec3, _ view: BounceCore.CameraView, _ vp: CGSize) -> CGPoint? {
         guard let q = view.project(world: p) else { return nil }
         let n = CGPoint(x: q.x / Double(view.intrinsics.width), y: q.y / Double(view.intrinsics.height)).applying(lastDisplayTransform)
@@ -326,15 +420,15 @@ final class ARController: NSObject, ARSessionDelegate {
             if let c = o.ball, let edge = toView(b.center + view.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * settings.ballMm / 2000, view, vp) {
                 o.ballRadius = CGFloat(hypot(edge.x - c.x, edge.y - c.y))
             }
-            o.dropTop = o.ball
         }
         return o
     }
 
     private func makeHUD(_ out: TrackerOutput) -> HUDState {
         var h = HUDState()
+        let live = lastTracking == "normal" || lastTracking == "demo"
         switch out.state {
-        case .searching: h.status = lastTracking == "normal" ? "Looking for the slab" : "Move the phone slowly (\(lastTracking))"
+        case .searching: h.status = live ? "Looking for the slab" : "Move the phone slowly (\(lastTracking))"
         case .confirming: h.status = "Found it, checking"
         case .locked: h.status = out.ball != nil ? "Slab locked, ball in view" : "Slab locked"
         }
@@ -350,6 +444,7 @@ final class ARController: NSObject, ARSessionDelegate {
             h.depth = String(format: "LiDAR: %.1f° tilt, %.1f° from image", d.tiltDegrees, d.angleToImageDegrees)
         }
         if let rec = recorder { h.recording = "Recording \(rec.frameCount) frames" }
+        h.demo = isDemo
         return h
     }
 
@@ -374,9 +469,8 @@ final class ARController: NSObject, ARSessionDelegate {
         return json
     }
 
-    func startRecording(settings s: AppSettings) -> Bool {
+    func startRecording(settings s: AppSettings) {
         queue.async { if self.recorder == nil { self.recordRequest = s } }
-        return true
     }
 
     func stopRecording(_ done: @escaping (URL?) -> Void) {
@@ -400,12 +494,24 @@ enum Format {
 }
 
 enum Device {
-    /// e.g. "iPhone15,2"
+    /// e.g. "iPhone15,2" (on the Simulator, the Mac's model)
     static var model: String {
         var u = utsname()
         uname(&u)
         return withUnsafeBytes(of: &u.machine) { raw in
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
         }
+    }
+}
+
+/// The demo's frames as images for the screen.
+enum DemoImage {
+    static func cgImage(rgb: [UInt8], width w: Int, height h: Int) -> CGImage? {
+        var rgba = [UInt8](repeating: 255, count: w * h * 4)
+        for i in 0..<(w * h) { rgba[i * 4] = rgb[i * 3]; rgba[i * 4 + 1] = rgb[i * 3 + 1]; rgba[i * 4 + 2] = rgb[i * 3 + 2] }
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 }

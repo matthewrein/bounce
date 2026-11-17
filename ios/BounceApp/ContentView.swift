@@ -10,7 +10,16 @@ struct ContentView: View {
             // the camera feed, the overlay and the tap target share one full-screen coordinate space
             GeometryReader { geo in
                 ZStack {
-                    ARFeedView(session: model.controller.session)
+                    if model.hud.demo, let bg = model.background {
+                        // the demo's synthetic frame, filling the view as the camera feed does
+                        Image(decorative: bg, scale: 1)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                    } else {
+                        ARFeedView(session: model.controller.session)
+                    }
                     OverlayView(overlay: model.overlay)
                     Color.clear
                         .contentShape(Rectangle())
@@ -38,11 +47,18 @@ struct ContentView: View {
         .sheet(item: Binding(get: { model.shareURL.map(ShareItem.init) }, set: { model.shareURL = $0?.url })) { item in
             ShareSheet(url: item.url)
         }
-        .alert("ARKit is not available on this device", isPresented: .constant(model.arUnsupported)) { Button("OK") {} }
+        .sheet(item: Binding(get: { model.diagnosticsText.map(DiagnosticsItem.init) }, set: { model.diagnosticsText = $0?.text })) { item in
+            DiagnosticsView(text: item.text)
+        }
+        .alert("ARKit is not available on this device", isPresented: Binding(get: { model.arUnsupported }, set: { model.arUnsupported = $0 })) {
+            Button("Show the demo") { UserDefaults.standard.set(true, forKey: "demo"); model.restart() }
+            Button("OK", role: .cancel) {}
+        } message: { Text("The camera tracking needs an iPhone. The demo shows a synthetic slab instead.") }
     }
 
     private var statusChip: some View {
-        Text(model.hud.status)
+        Text(model.hud.demo ? "Demo: " + model.hud.status : model.hud.status)
+            .accessibilityIdentifier("status")
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(model.hud.locked ? Color.green.opacity(0.8) : Color.black.opacity(0.6))
@@ -53,13 +69,13 @@ struct ContentView: View {
     private var readouts: some View {
         VStack(spacing: 6) {
             HStack {
-                readout("Tilt", model.hud.tilt)
-                readout("Apex", model.hud.apex)
-                readout("Lands", model.hud.landing)
-                readout("Air", model.hud.air)
+                readout("Tilt", model.hud.tilt, id: "tilt")
+                readout("Apex", model.hud.apex, id: "apex")
+                readout("Lands", model.hud.landing, id: "lands")
+                readout("Air", model.hud.air, id: "air")
             }
             HStack {
-                Text("Drop \(model.hud.drop)")
+                Text("Drop \(model.hud.drop)").accessibilityIdentifier("drop")
                 if let d = model.hud.depth { Text("· \(d)") }
                 if let r = model.hud.recording { Text("· \(r)").foregroundColor(.red) }
             }
@@ -70,31 +86,60 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func readout(_ label: String, _ value: String) -> some View {
+    private func readout(_ label: String, _ value: String, id: String) -> some View {
         VStack(spacing: 2) {
             Text(label).font(.caption2).foregroundColor(.white.opacity(0.7))
-            Text(value).font(.headline.monospacedDigit()).foregroundColor(.white)
+            Text(value).font(.headline.monospacedDigit()).foregroundColor(.white).accessibilityIdentifier(id)
         }
         .frame(maxWidth: .infinity)
     }
 
     private var buttons: some View {
         HStack(spacing: 10) {
-            button(model.isRecording ? "Stop" : "Record", model.isRecording ? "stop.circle.fill" : "record.circle") { model.toggleRecording() }
-            button("Reset", "arrow.counterclockwise") { model.reset() }
-            button(model.copiedAt != nil ? "Copied" : "Diagnostics", "doc.on.doc") { model.copyDiagnostics() }
-            button("Settings", "slider.horizontal.3") { showSettings = true }
+            button(model.isRecording ? "Stop" : "Record", model.isRecording ? "stop.circle.fill" : "record.circle", id: "record") { model.toggleRecording() }
+            button("Reset", "arrow.counterclockwise", id: "reset") { model.reset() }
+            button("Diagnostics", "doc.on.doc", id: "diagnostics") { model.copyDiagnostics() }
+            button("Settings", "slider.horizontal.3", id: "settings") { showSettings = true }
         }
     }
 
-    private func button(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+    private func button(_ title: String, _ icon: String, id: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 2) { Image(systemName: icon).font(.title3); Text(title).font(.caption2) }
                 .frame(maxWidth: .infinity).padding(.vertical, 8)
         }
+        .accessibilityIdentifier(id)
         .foregroundColor(.white)
         .background(Color.black.opacity(0.55))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct DiagnosticsItem: Identifiable {
+    let text: String
+    var id: Int { text.hashValue }
+}
+
+/// The diagnostics JSON (already copied to the clipboard), to read or copy again.
+struct DiagnosticsView: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                Text(text)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .accessibilityIdentifier("diagnosticsText")
+            }
+            .navigationTitle("Diagnostics (copied)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Copy") { UIPasteboard.general.string = text } }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.accessibilityIdentifier("diagnosticsDone") }
+            }
+        }
     }
 }
 

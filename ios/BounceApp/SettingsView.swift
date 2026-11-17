@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.keys.drop) private var dropFeet = 3.0
     @AppStorage(AppSettings.keys.reb) private var rebound = 70.0
     @AppStorage(AppSettings.keys.dishBounce) private var dishBounce = false
+    @AppStorage("demo") private var demo = false
     @Environment(\.dismiss) private var dismiss
     var onDone: () -> Void
 
@@ -17,7 +18,7 @@ struct SettingsView: View {
         NavigationView {
             Form {
                 Section(header: Text("Slab"), footer: Text("Measure the top face edge to edge. If it is not quite square, set the second side too. Thickness is the light cut face at the middle of an edge. The dish is how far the middle of the top dips below a straightedge laid corner to corner.")) {
-                    row("Side", String(format: "%.2f in", side)) { Stepper("", value: $side, in: 3...20, step: 0.05).labelsHidden() }
+                    row("Side", String(format: "%.2f in", side)) { Stepper("", value: $side, in: 3...20, step: 0.05).labelsHidden().accessibilityIdentifier("sideStepper") }
                     row("Other side", String(format: "%.2f in", sideB)) { Stepper("", value: $sideB, in: 3...20, step: 0.05).labelsHidden() }
                     row("Thickness", String(format: "%.2f in", thickness)) { Stepper("", value: $thickness, in: 0.2...4, step: 0.05).labelsHidden() }
                     row("Dish depth", String(format: "%.3f in", dish)) { Stepper("", value: $dish, in: 0...0.75, step: 0.03125).labelsHidden() }
@@ -34,14 +35,17 @@ struct SettingsView: View {
                     }
                     Toggle("Bounce off the dish where it lands", isOn: $dishBounce)
                 }
-                Section(footer: Text("Build \(appBuild)")) {
+                Section(footer: Text("The demo shows a synthetic slab instead of the camera, to see how the app works without the slab, or on a Mac's iPhone Simulator.")) {
+                    Toggle("Demo scene (no camera)", isOn: $demo).accessibilityIdentifier("demoToggle")
+                }
+                Section(footer: Text("Build \(appBuild)").accessibilityIdentifier("buildLabel")) {
                     Button("Restore defaults") {
                         side = 7; sideB = 7; thickness = 1; dish = 0.125; ballMm = 35; dropFeet = 3; rebound = 70; dishBounce = false
                     }
                 }
             }
             .navigationTitle("Settings")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone(); dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone(); dismiss() }.accessibilityIdentifier("settingsDone") } }
         }
         .onDisappear { onDone() }
     }

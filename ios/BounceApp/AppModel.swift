@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in the app and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n1"
+let appBuild = "n2"
 
 /// The owner's settings, in the owner's units, stored in UserDefaults.
 struct AppSettings: Equatable {
@@ -72,6 +72,7 @@ struct HUDState: Equatable {
     var drop: String = "–"
     var depth: String? = nil
     var recording: String? = nil
+    var demo = false
 }
 
 @MainActor
@@ -83,6 +84,8 @@ final class AppModel: ObservableObject {
     @Published var isRecording = false
     @Published var copiedAt: Date? = nil
     @Published var arUnsupported = false
+    @Published var background: CGImage? = nil
+    @Published var diagnosticsText: String? = nil
 
     let controller = ARController()
 
@@ -91,12 +94,47 @@ final class AppModel: ObservableObject {
     }
 
     private var running = false
+    private var runningDemo = false
+
+    /// The demo scene runs instead of the camera when asked for in Settings, or by launch arguments (UI tests):
+    /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3] [-demoSlideTo 3 -demoSlideAt 8]
+    nonisolated static func demoScriptRequested(_ d: UserDefaults = .standard) -> Bool { d.bool(forKey: "demo") }
+
+    nonisolated static func demoScript(_ d: UserDefaults = .standard) -> DemoScript? {
+        guard demoScriptRequested(d) else { return nil }
+        var s = DemoScript()
+        func num(_ k: String) -> Double? { d.string(forKey: k).flatMap { Double($0) } }
+        if let x = num("demoTilt") { s.tilt = x }
+        if let x = num("demoHeading") { s.heading = x }
+        if let x = num("demoBall") { s.ballHeight = x }
+        if let x = num("demoSlideTo") { s.slideTo = x }
+        if let x = num("demoSlideAt") { s.slideAt = x }
+        return s
+    }
 
     func start() {
         guard !running else { return }
-        guard ARController.isSupported else { arUnsupported = true; hud.status = "This device cannot run ARKit world tracking"; return }
+        if let demo = AppModel.demoScript() {
+            running = true; runningDemo = true
+            controller.startDemo(script: demo, settings: settings)
+            return
+        }
+        runningDemo = false
+        guard ARController.isSupported else {
+            arUnsupported = true
+            hud.status = "No ARKit on this device: turn on the demo in Settings"
+            return
+        }
         running = true
         controller.start(settings: settings)
+    }
+
+    /// Settings' demo switch changed: restart on the camera or the demo.
+    func restart() {
+        if running { controller.stop(); running = false }
+        arUnsupported = false
+        background = nil
+        start()
     }
 
     func stop() {
@@ -109,6 +147,7 @@ final class AppModel: ObservableObject {
     func settingsChanged() {
         settings = AppSettings.load()
         controller.update(settings: settings)
+        if !running || runningDemo != AppModel.demoScriptRequested() { restart() }
     }
 
     func tap(at p: CGPoint) { controller.tap(at: p) }
@@ -121,13 +160,16 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.isRecording = false; self?.shareURL = url }
             }
         } else {
-            isRecording = controller.startRecording(settings: settings)
+            controller.startRecording(settings: settings)
+            isRecording = true
         }
     }
 
+    /// Copies the diagnostics JSON and shows it.
     func copyDiagnostics() {
         let json = controller.diagnosticsJSON(settings: settings)
         UIPasteboard.general.string = json
+        diagnosticsText = json
         copiedAt = Date()
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -138,8 +180,9 @@ final class AppModel: ObservableObject {
     func setViewport(_ size: CGSize) { controller.setViewport(size) }
 
     // called by the controller on the main queue
-    func publish(overlay o: OverlayState, hud h: HUDState) {
+    func publish(overlay o: OverlayState, hud h: HUDState, background bg: CGImage?) {
         if o != overlay { overlay = o }
         if h != hud { hud = h }
+        if let bg = bg { background = bg } else if !h.demo, background != nil { background = nil }
     }
 }

@@ -45,13 +45,33 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: NO
+  # end-to-end UI tests in the Simulator, on the demo scene (see BounceAppUITests/SlabBounceUITests.swift)
+  SlabBounceUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BounceAppUITests
+    dependencies:
+      - target: SlabBounce
+      - package: BounceCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.matthewrein.SlabBounceUITests
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
 schemes:
   SlabBounce:
     build:
       targets:
         SlabBounce: all
+        SlabBounceUITests: [test]
     # the detectors are plain Swift loops: run optimised even when launched from Xcode
     run:
       config: Release
+    # the demo renders and detects in plain Swift loops: test the optimised build
+    test:
+      config: Release
+      targets: [SlabBounceUITests]
     archive:
       config: Release
