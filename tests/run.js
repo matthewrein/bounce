@@ -72,7 +72,7 @@ async function runStep(srv, clip, gt) {
 
 async function runLive(srv, clip, gt) {
   gt = { ...gt, sensors: presentSensors(gt) };
-  // real time: the fake camera plays the file at 30 fps; each processed frame is identified by matching a tiny thumbnail
+  // real time: the fake camera plays the file at 30 fps with the app's own animation loop; frames are identified by the video's clock
   const browser = await launch(path.join(clip.dir, "clip.mjpeg"));
   try {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
@@ -82,32 +82,24 @@ async function runLive(srv, clip, gt) {
     await page.goto(`${srv.url}/${APP}`);
     const rel = "/" + path.relative(ROOT, path.join(clip.dir, "clip.mjpeg")).split(path.sep).join("/");
     await page.evaluate((u) => window.__harness.load(u), rel);
-    await page.evaluate(async (sensors) => {
-      const H = window.__harness, TW = 18, TH = 32, c = document.createElement("canvas"); c.width = TW; c.height = TH; const x = c.getContext("2d", { willReadFrequently: true });
-      const thumb = (img) => { x.drawImage(img, 0, 0, TW, TH); const d = x.getImageData(0, 0, TW, TH).data, o = new Float32Array(TW * TH); for (let i = 0; i < o.length; i++) o[i] = d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]; return o; };
-      H.thumbs = []; for (const f of H.frames) { const b = await createImageBitmap(new Blob([f], { type: "image/jpeg" })); H.thumbs.push(thumb(b)); b.close(); }
-      H.rec = []; H.fi = 0; H.fiAt = performance.now();
+    await page.evaluate(async ([sensors, n, fps]) => {
+      // The fake camera starts the file at frame 0 when the stream opens and plays it at the clip's frame rate, so the
+      // video's own clock says which clip frame the app is looking at.
+      const H = window.__harness; H.rec = []; H.fi = 0;
+      const frameNow = () => { const v = document.querySelector("#stage video"); return v && v.readyState >= 2 ? Math.floor(v.currentTime * fps) : -1; };
       const raf = window.requestAnimationFrame.bind(window);
-      // after each app frame: which clip frame did it see?
-      const after = () => {
-        const d = window.slabDiagnostics(); if (!d.live) return;
-        const v = document.querySelector("#stage video"); if (!v || v.readyState < 2) return;
-        const t = thumb(v); let bi = 0, bs = Infinity;
-        for (let i = 0; i < H.thumbs.length; i++) { let s = 0; const a = H.thumbs[i]; for (let j = 0; j < a.length; j++) s += Math.abs(a[j] - t[j]); if (s < bs) { bs = s; bi = i; } }
-        if (bi !== H.fi) { H.fi = bi; H.fiAt = performance.now(); }
-        H.rec.push({ fi: bi, at: performance.now(), d });
-      };
+      const after = () => { const d = window.slabDiagnostics(); if (!d.live) return; const f = frameNow(); if (f < 0) return; H.fi = f; H.rec.push({ fi: f, at: performance.now(), d }); };
       window.requestAnimationFrame = (cb) => raf((ts) => { cb(ts); after(); });
-      // motion samples follow the clip frame currently on screen
-      setInterval(() => { const tt = H.fi / 30 + (performance.now() - H.fiAt) / 1000, k = Math.max(0, Math.min(sensors.length - 1, Math.round((tt + 0.5) * 60))); H.motion(sensors[k]); }, 1000 / 60);
-    }, gt.sensors);
+      // motion samples follow the video's clock too
+      setInterval(() => { const v = document.querySelector("#stage video"), tt = v ? v.currentTime : 0, k = Math.max(0, Math.min(sensors.length - 1, Math.round((tt + 0.5) * 60))); H.motion(sensors[k]); }, 1000 / 60);
+    }, [gt.sensors, gt.frames.length, gt.fps]);
     await page.evaluate(() => document.getElementById("live").click());
     await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000, polling: 50 });
     await page.waitForTimeout(gt.frames.length / gt.fps * 1000 + 300);
     const rec = await page.evaluate(() => window.__harness.rec.map((r) => ({ fi: r.fi, at: r.at, d: r.d })));
     // keep the first pass through the file (it loops)
-    const ticks = []; let was = false, last = -1;
-    for (const r of rec) { if (r.fi + 20 < last) break; last = Math.max(last, r.fi); const p = PICK(r.d); ticks.push({ t: r.fi / gt.fps, fi: r.fi, wasLocked: was, ...p }); was = p.locked; }
+    const ticks = []; let was = false;
+    for (const r of rec) { if (r.fi >= gt.frames.length) break; const p = PICK(r.d); ticks.push({ t: r.fi / gt.fps, fi: r.fi, wasLocked: was, ...p }); was = p.locked; }
     return { ticks, errs };
   } finally { await browser.close(); }
 }
