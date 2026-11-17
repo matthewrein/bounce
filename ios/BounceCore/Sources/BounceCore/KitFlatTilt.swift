@@ -45,6 +45,12 @@ public struct KitFlatReading: Codable, Equatable {
     /// which way the phone slopes down, phone axes, from x (right) toward y (top), 0..<360 degrees
     public var azimuthDegrees: Double
 
+    /// The phone lay flat, screen up: its own tilt is at most `KitQuality.maxReadingTilt` (25°). A phone lying screen
+    /// down reads about 180°, on its side about 90°; neither says anything about the slab.
+    public var isFlat: Bool { tiltDegrees <= KitQuality.maxReadingTilt + 1e-9 }
+    /// The phone lay still: the spread is at most `KitQuality.maxReadingSpread` (0.3°).
+    public var isSteady: Bool { spreadDegrees <= KitQuality.maxReadingSpread + 1e-9 }
+
     /// Statistics of a window of samples; nil when no sample has a usable gravity reading.
     public static func from(_ window: [KitMotionSample]) -> KitFlatReading? {
         let usable = window.filter { $0.gravity.isFinite && $0.gravity.length > 0.1 }
@@ -144,6 +150,21 @@ public struct KitTrueTilt: Codable, Equatable {
         guard let t = tiltDegrees, let a = downhillAzimuthDegrees else { return nil }
         let r = Units.radians(a)
         return Vec2(t * cos(r), t * sin(r))
+    }
+
+    /// The slab's normal (unit, pointing up) in CoreMotion's reference frame (z up, heading fixed for one run of motion
+    /// updates), at reading A. Seen from the phone, the normal is the bump's tilt alone (`B^T z`); reading A's mean
+    /// attitude carries it into the reference frame. This is how the downhill direction reaches ARKit's world: the
+    /// scorer finds the rotation from CoreMotion's reference frame to ARKit's world in a video shot of the same motion
+    /// and ARKit runs (`KitShotManifest.motionSessionId`, `arSessionId`) and applies it. With a single reading the
+    /// attitude is read in the documented convention and an uncorrected reading counts the bump as zero. nil without a
+    /// usable result.
+    public var slabNormalInMotionFrame: Vec3? {
+        guard isUsable, let a = readingA, a.attitude.isFinite else { return nil }
+        let bump = bumpDegrees.flatMap { $0.count == 2 && $0.allSatisfy({ $0.isFinite }) ? Vec2($0[0], $0[1]) : nil } ?? .zero
+        let normalInPhone = KitFlatTilt.tiltMatrix(bump * (Double.pi / 180)).transposed * Vec3(0, 0, 1)
+        let q = (attitudeConjugated ?? false) ? a.attitude.normalized.conjugate : a.attitude.normalized
+        return q.rotate(normalInPhone).normalized
     }
 }
 
@@ -267,8 +288,33 @@ public enum KitFlatTilt {
         Units.radians(r.rmsDegrees) / max(1, Double(r.samples) / 10).squareRoot()
     }
 
-    /// Two readings, A then B with the phone turned around between them.
+    /// A two-reading solve beyond these (degrees) cannot come from a phone lying on its back on a slab: the readings do
+    /// not belong together (the slab moved between them, or the phone lay on something), and only reading A is used. A
+    /// camera bump of 10° would mean a bump 12 mm high on a phone 70 mm wide; real ones rock the phone by a degree or
+    /// two (a case can add a little; `KitQuality.maxBump`, 5°, already makes the shot fair).
+    public static let maxPlausibleTiltDegrees = 45.0
+    public static let maxPlausibleBumpDegrees = 10.0
+    /// A two-reading solve that misses the readings by more than this (degrees) is not used either.
+    public static let maxResidualDegrees = 0.5
+
+    static func notFlat(_ r: KitFlatReading) -> String {
+        String(format: "The phone was not lying flat, screen up (it read %.0f°).", r.tiltDegrees)
+    }
+
+    /// Two readings, A then B with the phone turned around between them. Each reading must be flat, screen up
+    /// (`KitFlatReading.isFlat`): without reading A the shot fails; without reading B, reading A stands alone.
     public static func twoReading(_ a: KitFlatReading, _ b: KitFlatReading, knownBump: KitBump? = nil) -> KitTrueTilt {
+        guard a.isFlat else {
+            var r = KitTrueTilt.failed(notFlat(a), readingA: a)
+            r.readingB = b
+            return r
+        }
+        guard b.isFlat else {
+            var r = singleReading(a, knownBump: knownBump)
+            r.readingB = b
+            r.reasons.insert(String(format: "Reading B was left out: the phone was not lying flat, screen up (it read %.0f°).", b.tiltDegrees), at: 0)
+            return r
+        }
         let t = turn(attitudeA: a.attitude, attitudeB: b.attitude, gA: a.gravity, gB: b.gravity)
         let turnDeg = Units.degrees(t.angle)
         guard turnDeg >= minTurnDegrees && turnDeg <= 360 - minTurnDegrees else {
@@ -281,6 +327,14 @@ public enum KitFlatTilt {
             var r = singleReading(a, knownBump: knownBump)
             r.readingB = b; r.turnDegrees = turnDeg
             r.reasons.insert("The two readings could not be solved together.", at: 0)
+            return r
+        }
+        let solvedTilt = Units.degrees(sol.slab.length), solvedBump = Units.degrees(sol.bump.length)
+        guard solvedTilt <= maxPlausibleTiltDegrees, solvedBump <= maxPlausibleBumpDegrees, Units.degrees(sol.residual) <= maxResidualDegrees else {
+            var r = singleReading(a, knownBump: knownBump)
+            r.readingB = b; r.turnDegrees = turnDeg
+            r.reasons.insert(String(format: "The two readings don't fit together (they solve to a %.0f° tilt on a %.0f° camera bump), so only reading A was used. Keep the slab still while you turn the phone.",
+                                    solvedTilt, solvedBump), at: 0)
             return r
         }
         let lever = 2 * sin(t.angle / 2) // >= 1 for turns of 60-300 degrees
@@ -303,8 +357,10 @@ public enum KitFlatTilt {
                            readingA: a, readingB: b, reasons: reasons)
     }
 
-    /// One reading: corrected by a bump known from earlier in the kit if there is one, otherwise uncorrected.
+    /// One reading: corrected by a bump known from earlier in the kit if there is one, otherwise uncorrected. Fails when
+    /// the phone was not lying flat, screen up.
     public static func singleReading(_ a: KitFlatReading, knownBump: KitBump?) -> KitTrueTilt {
+        guard a.isFlat else { return .failed(notFlat(a), readingA: a) }
         if let bump = knownBump, bump.degrees.count == 2, bump.vector.length.isFinite {
             let B = tiltMatrix(bump.vector * (Double.pi / 180))
             let v = B * a.gravity.normalized // = T^T (0,0,-1): gravity in the slab's frame
@@ -365,7 +421,8 @@ public struct KitFlatSettings: Codable, Equatable {
 ///
 /// waitingForStillA -> readingA -> waitingForLift -> waitingForStillB -> readingB -> done. A reading starts once the
 /// phone has been still for `stillSeconds`; if the phone moves during a reading, it waits for stillness again. Waiting
-/// for A gives up after `timeoutA` (result: failed); waiting for B after `timeoutB` (result: reading A alone).
+/// for A gives up after `timeoutA` (result: failed); waiting for B after `timeoutB` (result: reading A alone). A reading
+/// A taken with the phone not flat, screen up (screen down, on its side) ends the shot at once: readingA -> done, failed.
 public final class KitFlatSession {
     public enum Phase: String, Codable, CaseIterable {
         case waitingForStillA, readingA, waitingForLift, waitingForStillB, readingB, done
@@ -431,8 +488,13 @@ public final class KitFlatSession {
                 let r = KitFlatReading.from(reading)
                 if phase == .readingA {
                     readingA = r
-                    phase = .waitingForLift
-                    deadline = s.time + settings.timeoutB
+                    if let r = r, r.isFlat {
+                        phase = .waitingForLift
+                        deadline = s.time + settings.timeoutB
+                    } else {
+                        // screen down, on its side, ...: a second reading cannot help, so say so at once
+                        complete(KitFlatTilt.result(readingA: r, readingB: nil, knownBump: knownBump))
+                    }
                 } else {
                     readingB = r
                     complete(KitFlatTilt.result(readingA: readingA, readingB: readingB, knownBump: knownBump))
@@ -517,7 +579,9 @@ public final class KitFlatSession {
         case .waitingForStillB:
             return "Lay it flat in the middle again, top toward you, and let go."
         case .done:
-            guard let r = result, let t = r.tiltDegrees else { return "No reading: the phone did not lie still." }
+            guard let r = result, r.method != .failed, let t = r.tiltDegrees else {
+                return result?.reasons.first ?? "No reading: the phone did not lie still."
+            }
             switch r.method {
             case .twoReading: return String(format: "Done: the slab tilts %.1f°.", t)
             default: return String(format: "Done (one reading): the slab tilts about %.1f°.", t)

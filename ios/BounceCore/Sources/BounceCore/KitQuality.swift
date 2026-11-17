@@ -4,16 +4,18 @@ import Foundation
 // retrying; a detector missing the slab on good footage is exactly what the kit is for, so detector-based checks say
 // "if it was in view, Next is fine". Computed on the phone from per-frame statistics, unit-tested here.
 
-/// One frame's numbers for the quality check (the app collects one per recorded video frame).
+/// One frame's numbers for the quality check (the app collects one per recorded video frame). A number the app did not
+/// measure on a frame is nil: the checks take their medians over the frames that have it, and say "not measured" when
+/// none do, rather than counting a made-up value.
 public struct KitFrameStat: Codable, Equatable {
     /// frame time (s)
     public var t: Double
     /// ARKit tracking was "normal"
     public var trackingNormal: Bool
-    /// mean luma 0-255
-    public var luma: Double
-    /// estimated motion blur (video pixels)
-    public var blurPixels: Double
+    /// mean luma 0-255, if measured
+    public var luma: Double?
+    /// estimated motion blur (video pixels), if measured
+    public var blurPixels: Double?
     /// the slab was found (confirming or locked)
     public var slabFound: Bool
     /// the slab was locked
@@ -23,15 +25,18 @@ public struct KitFrameStat: Codable, Equatable {
     /// ARKit's ambient light estimate (lumens), if any
     public var ambientLumens: Double?
 
-    public init(t: Double, trackingNormal: Bool = true, luma: Double = 128, blurPixels: Double = 0, slabFound: Bool = false,
+    /// Non-finite numbers count as not measured.
+    public init(t: Double, trackingNormal: Bool = true, luma: Double? = nil, blurPixels: Double? = nil, slabFound: Bool = false,
                 slabLocked: Bool = false, ballFound: Bool = false, ambientLumens: Double? = nil) {
-        self.t = t; self.trackingNormal = trackingNormal; self.luma = luma; self.blurPixels = blurPixels
-        self.slabFound = slabFound || slabLocked; self.slabLocked = slabLocked; self.ballFound = ballFound; self.ambientLumens = ambientLumens
+        self.t = t; self.trackingNormal = trackingNormal
+        self.luma = luma.flatMap { $0.isFinite ? $0 : nil }; self.blurPixels = blurPixels.flatMap { $0.isFinite ? $0 : nil }
+        self.slabFound = slabFound || slabLocked; self.slabLocked = slabLocked; self.ballFound = ballFound
+        self.ambientLumens = ambientLumens.flatMap { $0.isFinite ? $0 : nil }
     }
 
-    /// From a recorded frame (missing luma or blur count as mid-grey and sharp, so they never fail a check).
+    /// From a recorded frame.
     public init(frame f: KitFrame) {
-        self.init(t: f.time, trackingNormal: f.tracking.isNormal, luma: f.luma ?? 128, blurPixels: f.blur ?? 0,
+        self.init(t: f.time, trackingNormal: f.tracking.isNormal, luma: f.luma, blurPixels: f.blur,
                   slabFound: f.live?.slabFound ?? false, slabLocked: f.live?.state == .locked, ballFound: f.live?.ballCircle != nil,
                   ambientLumens: f.ambientLumens)
     }
@@ -63,7 +68,7 @@ public enum KitSeverity: String, Codable {
 /// One check's outcome.
 public struct KitQualityCheck: Codable, Equatable {
     /// "frames", "tracking", "light", "lightChange", "blur", "slab", "ball", "falsePositives", "reading", "still", "flat",
-    /// "turn", "bump"
+    /// "turn", "bump", "solve"
     public var id: String
     public var passed: Bool
     /// the effect of this check on the verdict (when it failed, or for info checks always)
@@ -86,13 +91,18 @@ public struct KitQualityReport: Codable, Equatable {
     public var summary: String
     /// frames recorded (video shots)
     public var frames: Int?
-    /// median luma over the frames (video shots): the dim and bright shots compare against the level shot's
+    /// median luma over the frames that measured it (video shots); nil when none did
     public var medianLuma: Double?
-    /// median motion blur (video shots, pixels)
+    /// median motion blur over the frames that measured it (video shots, pixels); nil when none did
     public var medianBlur: Double?
+    /// median ARKit ambient light estimate (lumens) when most frames had one (video shots): the dim and bright shots
+    /// compare against the level shot's
+    public var medianAmbient: Double?
 
-    public init(verdict: KitVerdict, checks: [KitQualityCheck], summary: String, frames: Int? = nil, medianLuma: Double? = nil, medianBlur: Double? = nil) {
-        self.verdict = verdict; self.checks = checks; self.summary = summary; self.frames = frames; self.medianLuma = medianLuma; self.medianBlur = medianBlur
+    public init(verdict: KitVerdict, checks: [KitQualityCheck], summary: String, frames: Int? = nil, medianLuma: Double? = nil,
+                medianBlur: Double? = nil, medianAmbient: Double? = nil) {
+        self.verdict = verdict; self.checks = checks; self.summary = summary; self.frames = frames; self.medianLuma = medianLuma
+        self.medianBlur = medianBlur; self.medianAmbient = medianAmbient
     }
 
     /// the check with this id, if it ran
@@ -100,25 +110,37 @@ public struct KitQualityReport: Codable, Equatable {
     /// failed checks that count (fair or poor)
     public var problems: [KitQualityCheck] { checks.filter { !$0.passed && $0.severity != .info } }
 
-    /// Build a report from checks: poor if a poor check failed, fair if a fair one did, else good.
-    public init(checks: [KitQualityCheck], frames: Int? = nil, medianLuma: Double? = nil, medianBlur: Double? = nil) {
+    /// Build a report from checks: poor if a poor check failed, fair if a fair one did, else good. The summary is the
+    /// verdict, the first problem's message and "Next is fine." or "Retry is suggested." (once: not again when the
+    /// message already says it).
+    public init(checks: [KitQualityCheck], frames: Int? = nil, medianLuma: Double? = nil, medianBlur: Double? = nil,
+                medianAmbient: Double? = nil) {
         let failed = checks.filter { !$0.passed }
         let verdict: KitVerdict = failed.contains { $0.severity == .poor } ? .poor : (failed.contains { $0.severity == .fair } ? .fair : .good)
+        func line(_ head: String, _ message: String?, _ advice: String) -> String {
+            let m = message ?? ""
+            return head + (m.isEmpty ? "" : m + " ") + (m.contains(advice) ? "" : advice)
+        }
         let summary: String
         switch verdict {
         case .good: summary = "Good. Every check passed."
-        case .fair: summary = "Fair. " + (failed.first { $0.severity == .fair }?.message ?? "") + " Next is fine."
-        case .poor: summary = "Poor. " + (failed.first { $0.severity == .poor }?.message ?? "") + " Retry is suggested."
+        case .fair: summary = line("Fair. ", failed.first { $0.severity == .fair }?.message, "Next is fine.")
+        case .poor: summary = line("Poor. ", failed.first { $0.severity == .poor }?.message, "Retry is suggested.")
         }
-        self.init(verdict: verdict, checks: checks, summary: summary, frames: frames, medianLuma: medianLuma, medianBlur: medianBlur)
+        self.init(verdict: verdict, checks: checks, summary: summary.trimmingCharacters(in: .whitespaces), frames: frames,
+                  medianLuma: medianLuma, medianBlur: medianBlur, medianAmbient: medianAmbient)
     }
 }
 
-/// What the light checks compare against.
+/// What the light checks compare against: the level hold-still shot (`KitPlan.lightReferenceShotId`), if it was captured.
 public struct KitQualityReference: Codable, Equatable {
-    /// the median luma of the level hold-still shot (`KitPlan.lightReferenceShotId`), if it was captured
+    /// its median luma
     public var levelStillMedianLuma: Double?
-    public init(levelStillMedianLuma: Double? = nil) { self.levelStillMedianLuma = levelStillMedianLuma }
+    /// its median ARKit ambient light estimate (lumens), if most of its frames had one
+    public var levelStillMedianAmbient: Double?
+    public init(levelStillMedianLuma: Double? = nil, levelStillMedianAmbient: Double? = nil) {
+        self.levelStillMedianLuma = levelStillMedianLuma; self.levelStillMedianAmbient = levelStillMedianAmbient
+    }
 }
 
 /// The quality rules.
@@ -185,39 +207,42 @@ public enum KitQuality {
                                       message: trackOK ? "Tracking was steady."
                                                        : "The phone lost track of the room in \(pct(1 - trackShare)) of frames. Move more slowly and keep more of the room in view."))
 
-        // light
-        let luma = KitStats.median(stats.map { $0.luma })
+        // light: the median over the frames that measured it
+        let lumas = stats.compactMap { $0.luma }
+        let luma: Double? = lumas.isEmpty ? nil : KitStats.median(lumas)
         let floor = shot.expect.light == .dim ? minDimLuma : minLuma
-        let lightOK = luma >= floor - eps
-        checks.append(KitQualityCheck(id: "light", passed: lightOK, severity: .fair, value: luma, threshold: floor,
-                                      message: lightOK ? String(format: "Brightness %.0f of 255.", luma)
-                                                       : shot.expect.light == .dim
-                                                         ? String(format: "Too dark even for the dim shot (brightness %.0f of 255). Turn one lamp on.", luma)
-                                                         : String(format: "Too dark (brightness %.0f of 255). Turn on more light, then retry.", luma)))
-        if let ref = reference.levelStillMedianLuma, ref > 0, shot.expect.light != .normal {
-            if shot.expect.light == .dim {
-                let limit = dimRatio * ref, ok = luma < limit
-                checks.append(KitQualityCheck(id: "lightChange", passed: ok, severity: .fair, value: luma / ref, threshold: dimRatio,
-                                              message: ok ? String(format: "Dimmer than the level shot (%.0f vs %.0f).", luma, ref)
-                                                          : String(format: "It doesn't look dimmer than the level shot (brightness %.0f vs %.0f). Dim the room more.", luma, ref)))
-            } else {
-                let limit = brightRatio * ref, ok = luma > limit
-                checks.append(KitQualityCheck(id: "lightChange", passed: ok, severity: .fair, value: luma / ref, threshold: brightRatio,
-                                              message: ok ? String(format: "Brighter than the level shot (%.0f vs %.0f).", luma, ref)
-                                                          : String(format: "It doesn't look brighter than the level shot (brightness %.0f vs %.0f). Turn on more light.", luma, ref)))
-            }
+        if let luma = luma {
+            let lightOK = luma >= floor - eps
+            checks.append(KitQualityCheck(id: "light", passed: lightOK, severity: .fair, value: luma, threshold: floor,
+                                          message: lightOK ? String(format: "Brightness %.0f of 255.", luma)
+                                                           : shot.expect.light == .dim
+                                                             ? String(format: "Too dark even for the dim shot (brightness %.0f of 255). Turn one lamp on.", luma)
+                                                             : String(format: "Too dark (brightness %.0f of 255). Turn on more light, then retry.", luma)))
+        } else {
+            checks.append(KitQualityCheck(id: "light", passed: true, severity: .info, threshold: floor, message: "Brightness was not measured."))
+        }
+        // the light estimate, when most frames have one
+        let ambients = stats.compactMap { $0.ambientLumens }.filter { $0 > 0 }
+        let ambient: Double? = 2 * ambients.count >= n ? KitStats.median(ambients) : nil
+        if shot.expect.light != .normal, let c = lightChange(shot.expect.light, luma: luma, ambient: ambient, reference: reference) {
+            checks.append(c)
         }
 
-        // blur
-        let blur = KitStats.median(stats.map { $0.blurPixels })
+        // blur: the median over the frames that measured it
+        let blurs = stats.compactMap { $0.blurPixels }
+        let blur: Double? = blurs.isEmpty ? nil : KitStats.median(blurs)
         let moving = shot.expect.motion == .moving
         let maxBlur = moving ? maxBlurMoving : maxBlurStill
-        let blurOK = blur <= maxBlur + eps
-        let blurPoor = blur > poorBlurFactor * maxBlur + eps
-        let steadier = moving ? "Walk more slowly and keep the phone steady." : "Hold the phone steadier (brace your elbows)."
-        checks.append(KitQualityCheck(id: "blur", passed: blurOK, severity: blurPoor ? .poor : .fair, value: blur, threshold: maxBlur,
-                                      message: blurOK ? String(format: "Sharp enough (blur about %.1f px).", blur)
-                                                      : String(format: "The picture is blurred (about %.0f px). ", blur) + steadier))
+        if let blur = blur {
+            let blurOK = blur <= maxBlur + eps
+            let blurPoor = blur > poorBlurFactor * maxBlur + eps
+            let steadier = moving ? "Walk more slowly and keep the phone steady." : "Hold the phone steadier (brace your elbows)."
+            checks.append(KitQualityCheck(id: "blur", passed: blurOK, severity: blurPoor ? .poor : .fair, value: blur, threshold: maxBlur,
+                                          message: blurOK ? String(format: "Sharp enough (blur about %.1f px).", blur)
+                                                          : String(format: "The picture is blurred (about %.0f px). ", blur) + steadier))
+        } else {
+            checks.append(KitQualityCheck(id: "blur", passed: true, severity: .info, threshold: maxBlur, message: "Blur was not measured."))
+        }
 
         // slab and ball
         let slabShare = Double(stats.filter { $0.slabFound }.count) / nd
@@ -244,13 +269,38 @@ public enum KitQuality {
             checks.append(KitQualityCheck(id: "falsePositives", passed: true, severity: .info, value: share, threshold: nil,
                                           message: "For the record: the app saw a \(what.joined(separator: " or ")) that isn't there in \(pct(share)) of frames."))
         }
-        return KitQualityReport(checks: checks, frames: n, medianLuma: luma, medianBlur: blur)
+        return KitQualityReport(checks: checks, frames: n, medianLuma: luma, medianBlur: blur, medianAmbient: ambient)
     }
 
-    /// Check a flat-phone shot from its result.
+    /// The dim or bright shot against the level shot. The camera's auto-exposure keeps the picture near mid-grey, so the
+    /// picture's brightness barely follows the room's light; ARKit's light estimate (`amb`) allows for the exposure. So
+    /// the check compares light estimates when both shots have them (fair when it fails), and otherwise only reports the
+    /// brightness for the record (info: a failure there is often the camera's doing, which a retry cannot fix).
+    static func lightChange(_ light: KitLight, luma: Double?, ambient: Double?, reference: KitQualityReference) -> KitQualityCheck? {
+        let dim = light == .dim
+        let threshold = dim ? dimRatio : brightRatio
+        func passes(_ ratio: Double) -> Bool { dim ? ratio < threshold : ratio > threshold }
+        let word = dim ? "dimmer" : "brighter", Word = dim ? "Dimmer" : "Brighter"
+        let fix = dim ? "Dim the room more." : "Turn on more light."
+        if let a = ambient, let ref = reference.levelStillMedianAmbient, ref > 0 {
+            let ratio = a / ref, ok = passes(ratio)
+            return KitQualityCheck(id: "lightChange", passed: ok, severity: .fair, value: ratio, threshold: threshold,
+                                   message: ok ? String(format: "%@ than the level shot (light level %.0f vs %.0f).", Word, a, ref)
+                                               : String(format: "It doesn't look %@ than the level shot (light level %.0f vs %.0f). %@", word, a, ref, fix))
+        }
+        if let l = luma, let ref = reference.levelStillMedianLuma, ref > 0 {
+            let ratio = l / ref, ok = passes(ratio)
+            return KitQualityCheck(id: "lightChange", passed: ok, severity: .info, value: ratio, threshold: threshold,
+                                   message: String(format: "For the record: brightness %.0f vs %.0f in the level shot (the camera adjusts its exposure, so this is not checked).", l, ref))
+        }
+        return nil
+    }
+
+    /// Check a flat-phone shot from its result. A failed result with a reading (the phone lay still, but not flat and
+    /// screen up) is checked like the others, so the owner is told which reading went wrong.
     public static func evaluate(shot: KitShotSpec, flat r: KitTrueTilt) -> KitQualityReport {
         var checks: [KitQualityCheck] = []
-        guard let a = r.readingA, r.method != .failed else {
+        guard let a = r.readingA else {
             checks.append(KitQualityCheck(id: "reading", passed: false, severity: .poor,
                                           message: "No reading: the phone did not lie still. Lay it flat, let go and keep the slab still."))
             return KitQualityReport(checks: checks)
@@ -266,7 +316,14 @@ public enum KitQuality {
             let ok = x.tiltDegrees <= maxReadingTilt + eps
             checks.append(KitQualityCheck(id: "flat", passed: ok, severity: .poor, value: x.tiltDegrees, threshold: maxReadingTilt,
                                           message: ok ? String(format: "Reading %@: the phone lay flat enough (%.1f°).", name, x.tiltDegrees)
-                                                      : String(format: "In reading %@ the phone was not lying flat (%.0f°). Lay it flat in the middle of the slab.", name, x.tiltDegrees)))
+                                                      : String(format: "In reading %@ the phone was not lying flat, screen up (%.0f°). Lay it flat in the middle of the slab, screen up.", name, x.tiltDegrees)))
+        }
+        if r.method == .failed {
+            if !checks.contains(where: { !$0.passed }) {
+                checks.append(KitQualityCheck(id: "reading", passed: false, severity: .poor,
+                                              message: r.reasons.first ?? "No usable reading. Lay the phone flat, let go and keep the slab still."))
+            }
+            return KitQualityReport(checks: checks)
         }
         if r.readingB == nil || r.turnDegrees == nil {
             checks.append(KitQualityCheck(id: "turn", passed: false, severity: .fair, value: nil, threshold: nil,
@@ -284,6 +341,11 @@ public enum KitQuality {
             checks.append(KitQualityCheck(id: "bump", passed: ok, severity: .fair, value: mag, threshold: maxBump,
                                           message: ok ? String(format: "Camera bump %.1f°.", mag)
                                                       : String(format: "The phone rocks %.0f° on its camera bump; a thick or uneven case?", mag)))
+        } else if let b = r.readingB, b.isFlat, let turn = r.turnDegrees,
+                  turn >= KitFlatTilt.minTurnDegrees && turn <= 360 - KitFlatTilt.minTurnDegrees {
+            // two good readings, turned enough, that still did not solve together: something moved
+            checks.append(KitQualityCheck(id: "solve", passed: false, severity: .poor,
+                                          message: r.reasons.first ?? "The two readings don't fit together, so only reading A was used."))
         }
         return KitQualityReport(checks: checks)
     }
@@ -291,6 +353,25 @@ public enum KitQuality {
 
 /// Cheap image statistics the app computes per frame.
 public enum KitImageStats {
+    /// Mean of an 8-bit luma plane straight from the camera's buffer (the Y plane of a CVPixelBuffer), over every
+    /// `step`-th pixel in x and y: cheap enough for every recorded frame (step 8 reads about 19,000 of 1920x1440 pixels).
+    /// nil when the sizes do not fit the buffer.
+    public static func meanLuma(bytes: UnsafeBufferPointer<UInt8>, width: Int, height: Int, bytesPerRow: Int, step: Int = 8) -> Double? {
+        let k = max(1, step)
+        guard width > 0, height > 0, bytesPerRow >= width else { return nil }
+        let (rows, overflow) = (height - 1).multipliedReportingOverflow(by: bytesPerRow)
+        guard !overflow, rows <= Int.max - width, rows + width <= bytes.count else { return nil }
+        var s = 0, n = 0
+        var y = 0
+        while y < height {
+            let row = y * bytesPerRow
+            var x = 0
+            while x < width { s += Int(bytes[row + x]); n += 1; x += k }
+            y += k
+        }
+        return Double(s) / Double(n)
+    }
+
     /// Mean of a luma plane over every `step`-th pixel in x and y.
     public static func meanLuma(_ p: Plane, step: Int = 4) -> Double {
         let k = max(1, step)

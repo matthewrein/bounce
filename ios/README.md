@@ -121,6 +121,44 @@ seconds**, or about **25 MB per 10 seconds on a phone with LiDAR**, and the zip 
 **Save to Files** or iCloud Drive; Mail switches to Mail Drop above about 20 MB. Once the zip is made, the app deletes the
 unzipped copy. A recording stops by itself at 1.5 GB, or if the phone runs out of space, and the app tells you why.
 
+## Capture kit
+
+The capture kit records the slab, the ball and a few bounces together with the truth about them: your measurements, and
+the slab's exact tilt, read by laying the phone flat on it. With it, the app can be tested and improved against your own
+room without more help from you. You do it once, and it takes about 10 minutes. (The app's capture kit screens are still
+being built. Until a build has them, this section describes what is coming.)
+
+**Taking it.** Have a ruler and the ball at hand. Open **Capture kit** in the app and follow the screens. Each one says
+what to do ("Step 4 of 12"), counts down, records by itself and then checks the result. Tap **Next** to go on, **Retry**
+to take a shot again, or **Skip**. You can quit at any time, and the app offers **Resume** later. If it asks whether the
+slab has moved since you last set it up, answer honestly; the app then retakes the slab's tilt first. At the end it lists
+what was captured and what was skipped, and saves the kit as one or more zip files named like
+`slab-kit-20261117-153000-part1of3.zip`. You can see them in the **Files** app under **On My iPhone > Slab Bounce > Kits**.
+
+**Sending it back.** The kit shows your room, so it goes into a **private** GitHub repository. Never put it in this
+public repository, an issue or a comment. You need only Safari on the iPhone.
+
+Once, to make the private repository:
+
+1. In Safari, open **github.com/new** and sign in if asked.
+2. Under **Repository name**, type `slab-kits`. Choose **Private**. Turn on **Add a README file**. Tap **Create
+   repository**.
+
+For each kit:
+
+3. In Safari, open your `slab-kits` repository (github.com/*your-name*/slab-kits).
+4. Tap the **aA** button at the left of the address bar, then **Request Desktop Website**. The phone version of the page
+   has no upload button.
+5. Tap **Add file**, then **Upload files**, then **choose your files**. In the menu that opens, tap **Choose File**. Go to
+   **On My iPhone > Slab Bounce > Kits** and open the kit's folder. Tap **Select**, tap every part, then tap **Open**.
+6. Wait until every part has finished uploading. Each part is at most 24 MB, under GitHub's 25 MB limit for uploads.
+   Then tap **Commit changes**.
+7. Tell Claude "the kit is in *your-name*/slab-kits". If Claude can reach only some of your repositories, add this one
+   first: on github.com, open **Settings > Applications > Installed GitHub Apps**, tap **Configure** next to Claude, and
+   add `slab-kits` under **Repository access**.
+
+Once Claude confirms it has the kit, the app's finish screen can delete it from the phone.
+
 ## For developers
 
 - `BounceCore/` is a Swift package with no Apple-only code. It contains the pose and bounce maths, the detectors, the

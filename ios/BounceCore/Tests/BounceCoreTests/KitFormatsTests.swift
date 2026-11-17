@@ -61,6 +61,59 @@ final class KitFormatsTests: XCTestCase {
         XCTAssertNil(KitLiveResult(state: .confirming, corners: [Vec2(1, 1)]).cornerPoints)
     }
 
+    func testNonFiniteLiveNumbersAreLeftOutNotThrown() throws {
+        // a degenerate pose on one frame: NaN tilt, an infinite corner, a NaN ball radius
+        let url = tmp.appendingPathComponent(KitClipFiles.frames)
+        let w = try KitJSONLWriter(url: url)
+        let pose = RigidTransform.identity.columnMajor4x4.map(Float.init)
+        let lives = [KitLiveResult(state: .locked, tilt: .nan, corners: [Vec2(1, 2), Vec2(.infinity, 3), Vec2(5, 6), Vec2(7, 8)], ball: (Vec2(1, 2), .nan)),
+                     KitLiveResult(state: .confirming, tilt: .infinity, ball: (Vec2(.nan, 2), 3)),
+                     KitLiveResult(state: .locked, tilt: 4.5, corners: [Vec2(1, 2), Vec2(3, 4), Vec2(5, 6), Vec2(7, 8)], ball: (Vec2(1, 2), 3))]
+        for (i, l) in lives.enumerated() {
+            try w.append(KitFrame(index: i, time: Double(i), pose: pose, intrinsics: [1, 1, 0, 0], luma: .nan, blur: .infinity, live: l))
+        }
+        try w.close()
+        let back = try KitJSONL.read(KitFrame.self, from: url)
+        XCTAssertEqual(back.map { $0.index }, [0, 1, 2], "line n is still video frame n")
+        XCTAssertEqual(back[0].live?.state, .locked)
+        XCTAssertNil(back[0].live?.tilt); XCTAssertNil(back[0].live?.corners); XCTAssertNil(back[0].live?.ball)
+        XCTAssertEqual(back[1].live?.state, .confirming)
+        XCTAssertNil(back[1].live?.tilt); XCTAssertNil(back[1].live?.ball)
+        XCTAssertEqual(back[2].live, lives[2], "finite values are kept")
+        XCTAssertEqual(try keys(JSONEncoder().encode(lives[0])), ["state"])
+    }
+
+    func testUnknownLiveStatesStillRead() throws {
+        // a newer app's tracker state: the frame (and so the clip) still reads, and the spelling survives
+        let line = #"{"i":0,"t":1,"pose":[],"K":[],"track":"normal","live":{"state":"lost","tilt":3}}"#
+        let f = try JSONDecoder().decode(KitFrame.self, from: Data(line.utf8))
+        XCTAssertEqual(f.live?.state, .other("lost"))
+        XCTAssertEqual(f.live?.state.rawValue, "lost")
+        XCTAssertEqual(f.live?.slabFound, false)
+        XCTAssertEqual(f.live?.tilt, 3)
+        XCTAssertTrue(String(decoding: try JSONEncoder().encode(f.live), as: UTF8.self).contains(#""state":"lost""#))
+        XCTAssertEqual(try KitJSONL.decode(KitFrame.self, from: Data((line + "\n" + line + "\n").utf8)).items.count, 2)
+        for (t, k) in [(TrackerState.searching, KitLiveState.searching), (.confirming, .confirming), (.locked, .locked)] {
+            XCTAssertEqual(KitLiveState(t), k)
+            XCTAssertEqual(KitLiveState(rawValue: t.rawValue), k)
+            XCTAssertEqual(k.rawValue, t.rawValue)
+        }
+        XCTAssertTrue(KitLiveResult(state: .confirming).slabFound)
+        XCTAssertTrue(KitLiveResult(state: KitLiveState(TrackerState.locked)).slabFound)
+    }
+
+    func testClipFileNames() {
+        let shot = URL(fileURLWithPath: "/kits/k/shots/s02-scan")
+        XCTAssertEqual([KitClipFiles.video, KitClipFiles.frames, KitClipFiles.motion, KitClipFiles.shotManifest, KitClipFiles.depthFolder],
+                       ["video.mp4", "frames.jsonl", "motion.jsonl", "shot.json", "depth"])
+        XCTAssertEqual(KitClipFiles.shotManifest, KitStore.shotManifestFile)
+        XCTAssertEqual(KitClipFiles.depthURL(shotFolder: shot, frame: 42).path, "/kits/k/shots/s02-scan/depth/d000042.bdp2")
+        var f = KitFrame(index: 42, time: 0, pose: [], intrinsics: [], depthFile: KitDepth.fileName(frame: 42))
+        XCTAssertEqual(f.depthURL(shotFolder: shot), KitClipFiles.depthURL(shotFolder: shot, frame: 42))
+        f.depthFile = nil
+        XCTAssertNil(f.depthURL(shotFolder: shot))
+    }
+
     func testTrackingReadsUnknownValues() throws {
         func dec(_ s: String) throws -> KitTracking { try JSONDecoder().decode([KitTracking].self, from: Data("[\"\(s)\"]".utf8))[0] }
         for t in KitTracking.allCases { XCTAssertEqual(try dec(t.rawValue), t) }

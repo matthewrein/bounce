@@ -51,10 +51,12 @@ public struct KitMeasurements: Codable, Equatable {
         self.dishInches = dishInches; self.ballDiameterMm = ballDiameterMm
     }
 
-    /// Pre-filled from the app's settings.
+    /// Pre-filled from the app's settings, for the form and for a kit whose step 1 is not done yet. The dish is left
+    /// empty (nil): the settings always hold one, usually the default, and a value the owner did not measure must not
+    /// be recorded as if they had.
     public init(settings s: RecordingSettings) {
         self.init(slabWidthInches: s.sideUInches, slabDepthInches: s.sideVInches, slabThicknessInches: s.thicknessInches,
-                  dishInches: s.dishInches, ballDiameterMm: s.ballDiameterMm)
+                  dishInches: nil, ballDiameterMm: s.ballDiameterMm)
     }
 
     /// The ranges the app's Settings accept.
@@ -152,22 +154,35 @@ public struct KitVideoInfo: Codable, Equatable {
     }
 }
 
-/// A slab position: where the slab lay from one flat-phone shot to the next.
+/// A slab position: where the slab lay from one flat-phone shot to the next. If the slab was set up again for the same
+/// plan position (the owner said it had moved, on resume: `KitStore.restartPosition`), that is a new **generation** with
+/// its own entry and true tilt: "p2" is the first, "p2#2" the second, and so on. Shots keep the generation they were
+/// captured in.
 public struct KitSlabPosition: Codable, Equatable {
-    /// "p1", "p2", ... (from the plan)
+    /// "p1", "p2", ... (from the plan), with "#2", "#3" ... for later generations
     public var id: String
     /// "level", "tilt 1", ...
     public var label: String
     /// the flat-phone shot that started it
     public var shotId: String
-    /// the slab's true tilt here; nil if the flat-phone shot was skipped or failed
+    /// the slab's true tilt here; nil if the flat-phone shot was skipped, failed or is not taken yet
     public var groundTruth: KitTrueTilt?
     /// when it started (ISO)
     public var startedAt: String?
+    /// 2, 3, ... when the slab was set up again; nil for the first
+    public var generation: Int?
 
-    public init(id: String, label: String, shotId: String, groundTruth: KitTrueTilt? = nil, startedAt: String? = nil) {
+    public init(id: String, label: String, shotId: String, groundTruth: KitTrueTilt? = nil, startedAt: String? = nil, generation: Int? = nil) {
         self.id = id; self.label = label; self.shotId = shotId; self.groundTruth = groundTruth; self.startedAt = startedAt
+        self.generation = generation
     }
+
+    /// the plan's position id ("p2" for "p2#3")
+    public var planPositionId: String { id.split(separator: "#", maxSplits: 1).first.map(String.init) ?? id }
+    /// 1 for the first time the slab was set up there
+    public var generationNumber: Int { max(1, generation ?? 1) }
+    /// "p2" for generation 1, "p2#3" for generation 3
+    public static func id(plan: String, generation: Int) -> String { generation <= 1 ? plan : "\(plan)#\(generation)" }
 }
 
 /// Where a shot stands.
@@ -226,13 +241,19 @@ public struct KitManifest: Codable, Equatable {
     public var updatedAt: String
     public var finishedAt: String?
     public var device: KitDevice
+    /// the owner's measurements once step 1 is done (`measurementsEnteredAt`); before that, the app's settings
     public var measurements: KitMeasurements
-    /// slab positions started so far, in plan order, with their true tilts
+    /// when the owner entered the measurements (step 1). nil: `measurements` are the app's settings, not measured for
+    /// this kit, and the scorer must not score sizes against them.
+    public var measurementsEnteredAt: String?
+    /// slab positions started so far (with later generations after their first), in plan order, with their true tilts
     public var positions: [KitSlabPosition]
     /// one record per shot, in plan order
     public var shots: [KitShotRecord]
     /// the level hold-still shot's median luma: the reference for the dim and bright shots
     public var lightReferenceLuma: Double?
+    /// the level hold-still shot's median ARKit light estimate (lumens), if most of its frames had one
+    public var lightReferenceAmbient: Double?
     public var notes: String?
 
     public init(kitId: String, planId: String, timeScale: Double? = nil, build: String, createdAt: String, device: KitDevice,
@@ -242,8 +263,15 @@ public struct KitManifest: Codable, Equatable {
     }
 
     public func record(_ id: String) -> KitShotRecord? { shots.first { $0.id == id } }
+    /// a position by id ("p2", or "p2#2" for a later generation)
     public func position(_ id: String) -> KitSlabPosition? { positions.first { $0.id == id } }
+    /// the latest generation of a plan position ("p2")
+    public func currentPosition(plan id: String) -> KitSlabPosition? { positions.last { $0.planPositionId == id } }
+    /// the slab position a captured shot belongs to, and so its true tilt (`groundTruth`)
+    public func position(forShot id: String) -> KitSlabPosition? { record(id)?.positionId.flatMap { position($0) } }
     public var isFinished: Bool { finishedAt != nil }
+    /// step 1 was done: the measurements are the owner's
+    public var measurementsEntered: Bool { measurementsEnteredAt != nil }
 }
 
 /// shot.json: one clip.
@@ -257,16 +285,27 @@ public struct KitShotManifest: Codable, Equatable {
     public var step: Int
     /// 1 for the first committed attempt, 2 after a retry, ...
     public var attempt: Int
-    /// when the recording started (ISO)
+    /// when the recording started (ISO, to the second; for people)
     public var startedAt: String
+    /// when the recording started, in seconds of system uptime (the clock of the frames' `t` and of motion samples):
+    /// the origin of the video's timestamps and of `releaseCue`. Set by the app.
+    public var startTime: Double?
     /// recording length (s)
     public var duration: Double
     public var build: String
     public var device: KitDevice
     public var measurements: KitMeasurements
-    /// the slab position and its true tilt (copied from kit.json at capture time)
+    /// the measurements were entered by the owner (step 1) when this shot was taken; false: the app's settings
+    public var measurementsEntered: Bool?
+    /// the slab position (with its generation, "p2#2") and its true tilt (copied from kit.json at capture time)
     public var positionId: String?
     public var trueTilt: KitTrueTilt?
+    /// the run of CoreMotion updates the motion samples come from: shots with the same id share one reference frame
+    /// (heading). An opaque id the app makes (e.g. a counter per kit); set by the app.
+    public var motionSessionId: String?
+    /// the ARKit session run the poses come from (a new id after every reset): shots with the same id share one world
+    /// frame. Set by the app.
+    public var arSessionId: String?
     /// the video (nil for flat-phone shots)
     public var video: KitVideoInfo?
     /// the ARKit camera format it was recorded with (full size)
@@ -278,22 +317,28 @@ public struct KitShotManifest: Codable, Equatable {
     /// the measured height of the ball's bottom above the slab (inches)
     public var enteredHeightInches: Double?
     public var quality: KitQualityReport?
-    /// drops: seconds after the start when the app beeped to let go
+    /// drops: seconds after `startTime` when the plan has the app beep to let go (the plan's value)
     public var releaseCue: Double?
+    /// drops: when the beep actually played, seconds of system uptime. Set by the app; the scorer uses it, or
+    /// `startTime + releaseCue` without it.
+    public var releaseTime: Double?
     /// flat-phone shots: the result
     public var flat: KitTrueTilt?
     public var notes: String?
 
-    public init(kitId: String, shotId: String, step: Int, attempt: Int, startedAt: String, duration: Double, build: String,
-                device: KitDevice, measurements: KitMeasurements, positionId: String? = nil, trueTilt: KitTrueTilt? = nil,
+    public init(kitId: String, shotId: String, step: Int, attempt: Int, startedAt: String, startTime: Double? = nil, duration: Double,
+                build: String, device: KitDevice, measurements: KitMeasurements, measurementsEntered: Bool? = nil,
+                positionId: String? = nil, trueTilt: KitTrueTilt? = nil, motionSessionId: String? = nil, arSessionId: String? = nil,
                 video: KitVideoInfo? = nil, cameraFormat: KitCameraFormat? = nil, hasDepth: Bool = false, depthFrames: Int? = nil,
                 motionSamples: Int? = nil, enteredHeightInches: Double? = nil, quality: KitQualityReport? = nil,
-                releaseCue: Double? = nil, flat: KitTrueTilt? = nil, notes: String? = nil) {
+                releaseCue: Double? = nil, releaseTime: Double? = nil, flat: KitTrueTilt? = nil, notes: String? = nil) {
         self.kitId = kitId; self.shotId = shotId; self.step = step; self.attempt = attempt; self.startedAt = startedAt
-        self.duration = duration; self.build = build; self.device = device; self.measurements = measurements
-        self.positionId = positionId; self.trueTilt = trueTilt; self.video = video; self.cameraFormat = cameraFormat
+        self.startTime = startTime; self.duration = duration; self.build = build; self.device = device; self.measurements = measurements
+        self.measurementsEntered = measurementsEntered; self.positionId = positionId; self.trueTilt = trueTilt
+        self.motionSessionId = motionSessionId; self.arSessionId = arSessionId; self.video = video; self.cameraFormat = cameraFormat
         self.hasDepth = hasDepth; self.depthFrames = depthFrames; self.motionSamples = motionSamples
-        self.enteredHeightInches = enteredHeightInches; self.quality = quality; self.releaseCue = releaseCue; self.flat = flat; self.notes = notes
+        self.enteredHeightInches = enteredHeightInches; self.quality = quality; self.releaseCue = releaseCue
+        self.releaseTime = releaseTime; self.flat = flat; self.notes = notes
     }
 }
 

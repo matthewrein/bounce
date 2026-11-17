@@ -75,8 +75,35 @@ final class KitFlatSessionTests: XCTestCase {
         let r = try XCTUnwrap(s.result)
         XCTAssertEqual(r.method, .failed)
         XCTAssertTrue(r.reasons[0].contains("did not lie still within 8 s"), r.reasons[0])
-        XCTAssertEqual(s.prompt, "No reading: the phone did not lie still.")
+        XCTAssertEqual(s.prompt, "No reading: the phone did not lie still within 8 s.", "the prompt gives the reason")
         XCTAssertEqual(KitQuality.evaluate(shot: try XCTUnwrap(KitPlan.standard.shot("s03-flat-level")), flat: r).verdict, .poor)
+    }
+
+    func testAPhoneLyingScreenDownEndsTheShotAtOnce() throws {
+        var sim = KitFlatSim(slab: KitFlatSim.vec(5, 0), bump: KitFlatSim.vec(1, 100), seed: 39)
+        let s = KitFlatSession()
+        var run = Run()
+        feed(s, sim.stillHeld(8, psi: 0, hand: KitFlatSim.screenDown), into: &run)
+        XCTAssertEqual(run.phases, [.waitingForStillA, .readingA, .done], "no second reading is asked for")
+        XCTAssertEqual(run.changeTimes[1], 4.0, accuracy: 0.03)
+        let r = try XCTUnwrap(s.result)
+        XCTAssertEqual(r.method, .failed)
+        XCTAssertFalse(r.isUsable)
+        XCTAssertEqual(try XCTUnwrap(r.readingA?.tiltDegrees), 175, accuracy: 2)
+        XCTAssertTrue(s.prompt.hasPrefix("The phone was not lying flat, screen up"), s.prompt)
+        let q = KitQuality.evaluate(shot: try XCTUnwrap(KitPlan.standard.shot("s03-flat-level")), flat: r)
+        XCTAssertEqual(q.verdict, .poor)
+        XCTAssertEqual(q.check("flat")?.passed, false)
+        // turned around onto its screen for reading B: reading A stands alone
+        var sim2 = KitFlatSim(slab: KitFlatSim.vec(5, 0), bump: KitFlatSim.vec(1, 100), seed: 40)
+        let t = KitFlatSession()
+        var run2 = Run()
+        feed(t, sim2.still(5, psi: 0), into: &run2)
+        feed(t, sim2.handle(2.0, from: 0, to: 0, lift: 12, jitter: 0.5), into: &run2)
+        feed(t, sim2.stillHeld(5, psi: 0, hand: KitFlatSim.endOverEnd), into: &run2)
+        XCTAssertEqual(run2.phases, fullOrder)
+        XCTAssertEqual(t.result?.method, .uncorrected)
+        XCTAssertTrue(t.prompt.hasPrefix("Done (one reading)"), t.prompt)
     }
 
     func testNeverTurnedFallsBackToOneReading() throws {

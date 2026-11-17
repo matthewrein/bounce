@@ -97,6 +97,28 @@ struct KitFlatSim {
         t += 5 // time passes between readings
         return KitFlatReading.from(s)
     }
+
+    /// The phone lying still at turn psi but not on its back: turned by `hand` (a rotation vector in phone axes,
+    /// radians) from lying flat. (0, pi, 0) is screen down, top still away; (pi, 0, 0) is flipped end over end, screen
+    /// down, top toward the owner; (0, pi / 2, 0) is on its side.
+    mutating func stillHeld(_ seconds: Double, psi: Double, hand: Vec3) -> [KitMotionSample] {
+        let R = rotation(psi: psi, hand: hand)
+        let n = Int((seconds * rate).rounded())
+        var out: [KitMotionSample] = []
+        for _ in 0..<n { t += 1 / rate; out.append(sample(time: t, R: R, rotationRate: .zero)) }
+        lastR = R
+        return out
+    }
+
+    mutating func reading(psi: Double, hand: Vec3) -> KitFlatReading? {
+        let s = stillHeld(3, psi: psi, hand: hand)
+        t += 5
+        return KitFlatReading.from(s)
+    }
+
+    static let screenDown = Vec3(0, Double.pi, 0)
+    static let endOverEnd = Vec3(Double.pi, 0, 0)
+    static let onItsSide = Vec3(0, Double.pi / 2, 0)
 }
 
 /// angle between two azimuths (degrees, 0...180)
@@ -278,6 +300,97 @@ final class KitFlatTiltTests: XCTestCase {
         let quiet = try sigma(0.02), loud = try sigma(0.3)
         XCTAssertLessThan(quiet, 0.03)
         XCTAssertGreaterThan(loud, 3 * quiet)
+    }
+
+    func testAPhoneNotLyingScreenUpGivesNoTrueTilt() throws {
+        // screen down for both readings, turned around between them: before, this "solved" to a 175° tilt with a mirrored
+        // bump that later corrected other readings the wrong way
+        var sim = KitFlatSim(slab: KitFlatSim.vec(5, 0), bump: KitFlatSim.vec(1, 100), seed: 51)
+        let downA = try XCTUnwrap(sim.reading(psi: 0, hand: KitFlatSim.screenDown))
+        let downB = try XCTUnwrap(sim.reading(psi: 180, hand: KitFlatSim.screenDown))
+        XCTAssertGreaterThan(downA.tiltDegrees, 170)
+        XCTAssertFalse(downA.isFlat)
+        let r = KitFlatTilt.twoReading(downA, downB)
+        XCTAssertEqual(r.method, .failed)
+        XCTAssertFalse(r.isUsable)
+        XCTAssertNil(r.tiltDegrees); XCTAssertNil(r.solvedBump)
+        XCTAssertTrue(r.reasons[0].hasPrefix("The phone was not lying flat, screen up (it read 17"), r.reasons[0])
+        XCTAssertEqual(r.readingA, downA); XCTAssertEqual(r.readingB, downB)
+        XCTAssertEqual(KitFlatTilt.singleReading(downA, knownBump: nil).method, .failed)
+        XCTAssertEqual(KitFlatTilt.result(readingA: downA, readingB: nil, knownBump: nil).method, .failed)
+        // on its side: also not a reading of the slab
+        let side = try XCTUnwrap(sim.reading(psi: 0, hand: KitFlatSim.onItsSide))
+        XCTAssertEqual(side.tiltDegrees, 90, accuracy: 7)
+        XCTAssertEqual(KitFlatTilt.twoReading(side, downB).method, .failed)
+
+        // reading A screen up, then B flipped end over end (screen down): B is left out, A stands alone
+        for known in [nil, KitBump(degrees: [sim.bump.x, sim.bump.y], uncertaintyDegrees: 0.03)] {
+            for tilt in [0.3, 5, 10] {
+                var s2 = KitFlatSim(slab: KitFlatSim.vec(tilt, 30), bump: KitFlatSim.vec(1, 100), seed: 52)
+                let a = try XCTUnwrap(s2.reading(psi: 0)), b = try XCTUnwrap(s2.reading(psi: 0, hand: KitFlatSim.endOverEnd))
+                let one = KitFlatTilt.twoReading(a, b, knownBump: known)
+                XCTAssertEqual(one.method, known == nil ? .uncorrected : .bumpCorrected, "tilt \(tilt)")
+                XCTAssertTrue(one.reasons[0].hasPrefix("Reading B was left out: the phone was not lying flat, screen up"), one.reasons[0])
+                XCTAssertEqual(one.readingB, b)
+                if known != nil { XCTAssertEqual(try XCTUnwrap(one.tiltDegrees), tilt, accuracy: 0.05) }
+                else { XCTAssertEqual(try XCTUnwrap(one.tiltDegrees), a.tiltDegrees, accuracy: 1e-12) }
+                // and the quality check asks for a retry
+                let q = KitQuality.evaluate(shot: try XCTUnwrap(KitPlan.standard.shot("s03-flat-level")), flat: one)
+                XCTAssertEqual(q.verdict, .poor)
+                XCTAssertTrue(q.summary.hasPrefix("Poor. In reading B the phone was not lying flat, screen up"), q.summary)
+            }
+        }
+    }
+
+    func testReadingsThatDoNotFitTogetherAreNotSolved() throws {
+        // two flat readings sloping opposite ways, turned 90°: the exact model "solves" them only with a 16-26° camera bump
+        func reading(_ tilt: Double, _ az: Double, turn: Double) -> KitFlatReading {
+            let t = Units.radians(tilt), a = Units.radians(az)
+            return KitFlatReading(samples: 300, start: 0, end: 3, gravity: Vec3(sin(t) * cos(a), sin(t) * sin(a), -cos(t)), spreadDegrees: 0.05,
+                                  rmsDegrees: 0.02, attitude: KitQuaternion(axis: Vec3(0, 0, 1), angle: Units.radians(turn)), maxRotationRate: 0.01,
+                                  tiltDegrees: tilt, azimuthDegrees: az)
+        }
+        for (tilt, turn) in [(15.0, 90.0), (24, 90), (24, 61), (20, 65)] {
+            let a = reading(tilt, 0, turn: 0), b = reading(tilt, 180, turn: turn)
+            let r = KitFlatTilt.twoReading(a, b)
+            XCTAssertEqual(r.method, .uncorrected, "\(tilt)° turned \(turn)°")
+            XCTAssertTrue(r.reasons[0].hasPrefix("The two readings don't fit together"), r.reasons[0])
+            XCTAssertEqual(try XCTUnwrap(r.turnDegrees), turn, accuracy: 1e-6)
+            let q = KitQuality.evaluate(shot: try XCTUnwrap(KitPlan.standard.shot("s03-flat-level")), flat: r)
+            XCTAssertEqual(q.verdict, .poor)
+            XCTAssertEqual(q.check("solve")?.passed, false)
+        }
+        // a real phone's bump (up to 4°) on slabs up to 20° still solves: covered across many cases above; the edge here
+        let g = KitFlatTilt.gravity(slabDegrees: KitFlatSim.vec(20, 0), bumpDegrees: KitFlatSim.vec(4, 180), turnDegrees: 180)
+        let ok = KitFlatTilt.twoReading(KitFlatReading.from([KitMotionSample(time: 0, gravity: g.a)])!,
+                                        KitFlatReading.from([KitMotionSample(time: 0, gravity: g.b, attitude: KitQuaternion(axis: Vec3(0, 0, 1), angle: .pi))])!)
+        XCTAssertEqual(ok.method, .twoReading)
+        XCTAssertEqual(try XCTUnwrap(ok.tiltDegrees), 20, accuracy: 1e-6)
+    }
+
+    func testSlabNormalInTheMotionFrame() throws {
+        for conj in [false, true] {
+            var sim = KitFlatSim(slab: KitFlatSim.vec(8, 130), bump: KitFlatSim.vec(1.8, 20), seed: 53)
+            sim.yaw = 75
+            sim.conjugate = conj
+            // the slab's normal in CoreMotion's reference frame: heading Y, then the slab's tilt
+            let truth = KitFlatTilt.rz(Units.radians(sim.yaw)) * KitFlatTilt.tiltMatrix(sim.slab * (Double.pi / 180)) * Vec3(0, 0, 1)
+            let a = try XCTUnwrap(sim.reading(psi: 25)), b = try XCTUnwrap(sim.reading(psi: 205))
+            let r = KitFlatTilt.twoReading(a, b)
+            XCTAssertEqual(r.attitudeConjugated, conj)
+            let n = try XCTUnwrap(r.slabNormalInMotionFrame)
+            XCTAssertLessThan(Units.degrees(n.angle(to: truth)), 0.05, "conjugated \(conj)")
+            XCTAssertEqual(Units.degrees(n.angle(to: Vec3(0, 0, 1))), try XCTUnwrap(r.tiltDegrees), accuracy: 0.01)
+            // one reading corrected by the bump points the same way; uncorrected, it is off by about the bump
+            if !conj {
+                let known = KitBump(degrees: [sim.bump.x, sim.bump.y], uncertaintyDegrees: 0.03)
+                let one = try XCTUnwrap(KitFlatTilt.singleReading(a, knownBump: known).slabNormalInMotionFrame)
+                XCTAssertLessThan(Units.degrees(one.angle(to: truth)), 0.1)
+                let raw = try XCTUnwrap(KitFlatTilt.singleReading(a, knownBump: nil).slabNormalInMotionFrame)
+                XCTAssertEqual(Units.degrees(raw.angle(to: truth)), 1.8, accuracy: 0.1)
+            }
+        }
+        XCTAssertNil(KitTrueTilt.failed("No reading").slabNormalInMotionFrame)
     }
 
     func testTrueTiltHelpers() throws {

@@ -218,10 +218,24 @@ public enum KitBundle {
     }
 
     /// Files of a kit folder that go into the bundle (relative paths, sorted): everything except unfinished attempts,
-    /// interrupted commits and hidden files.
+    /// interrupted commits and skips, and hidden files.
     public static func files(in kitFolder: URL) -> [String] {
         KitFiles.regularFiles(in: kitFolder).filter { rel in
-            !rel.split(separator: "/").contains { $0.hasPrefix(".") || $0.hasSuffix(KitStore.attemptSuffix) || $0.hasSuffix(KitStore.oldSuffix) }
+            !rel.split(separator: "/").contains {
+                $0.hasPrefix(".") || $0.hasSuffix(KitStore.attemptSuffix) || $0.hasSuffix(KitStore.oldSuffix) || $0.hasSuffix(KitStore.trashSuffix)
+            }
+        }
+    }
+
+    /// The hidden working folder of a build: ".<kitId>-bundle-<uuid>" in the outbox.
+    static func scratchPrefix(kitId: String) -> String { ".\(kitId)-bundle-" }
+
+    /// Remove what a build killed part-way left in the outbox (its hidden working folder, with the deflated copies and
+    /// any parts written so far). `build` does this first; the app can also call it at launch.
+    public static func removeLeftovers(kitId: String, in outbox: URL) {
+        let fm = FileManager.default
+        for name in (try? fm.contentsOfDirectory(atPath: outbox.path)) ?? [] where name.hasPrefix(scratchPrefix(kitId: kitId)) {
+            try? fm.removeItem(at: outbox.appendingPathComponent(name))
         }
     }
 
@@ -239,16 +253,19 @@ public enum KitBundle {
     /// Zip the kit folder into parts in `outbox` (created if needed; earlier parts of the same kit there are replaced).
     /// Files are packed whole, first fit in path order, each part at most `limit` bytes; kit.json goes into every part.
     /// A file that cannot fit even alone gets a part of its own (larger than the limit) and is reported. Files are read
-    /// in chunks of `chunkSize`; only files to be deflated are read whole (they are small). On failure nothing is left
-    /// behind in the outbox.
+    /// in chunks of `chunkSize`; only files to be deflated are read whole (they are small). The parts are written in a
+    /// hidden working folder and get their names in the outbox only once all of them are complete, so a half-written
+    /// part never carries a part name; a working folder left by a build that was killed is removed first. On failure
+    /// nothing is left behind in the outbox.
     public static func build(kitFolder: URL, outbox: URL, limit: Int64 = defaultLimit, deflate: KitDeflater? = nil,
                              chunkSize: Int = 1 << 20) throws -> KitBundleResult {
         let fm = FileManager.default
         let kitId = kitFolder.lastPathComponent
         guard fm.fileExists(atPath: kitFolder.appendingPathComponent(KitStore.manifestFile).path) else { throw KitBundleError.notAKit(kitId) }
         try fm.createDirectory(at: outbox, withIntermediateDirectories: true)
+        removeLeftovers(kitId: kitId, in: outbox)
         for old in existingParts(kitId: kitId, in: outbox) { try fm.removeItem(at: old) }
-        let scratch = outbox.appendingPathComponent(".\(kitId)-bundle-\(UUID().uuidString)")
+        let scratch = outbox.appendingPathComponent(scratchPrefix(kitId: kitId) + UUID().uuidString)
         try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: scratch) }
 
@@ -292,27 +309,33 @@ public enum KitBundle {
         }
         if parts.isEmpty { parts = [[]]; oversizedPart = [false] }
 
-        // write
-        var written: [URL] = []
+        // write, in the working folder
         var result: [KitBundlePart] = []
-        do {
-            for (k, members) in parts.enumerated() {
-                let name = partName(kitId: kitId, index: k + 1, count: parts.count), url = outbox.appendingPathComponent(name)
-                written.append(url)
-                let z = try KitZipWriter(url: url)
-                for p in [kitEntry] + members.map({ others[$0] }) {
-                    if p.method == .deflated {
-                        try z.addPayload(name: p.name, method: .deflated, crc: p.crc, uncompressedSize: p.size, payload: p.payload, chunkSize: chunkSize)
-                    } else {
-                        try z.addFile(name: p.name, from: p.source, chunkSize: chunkSize)
-                    }
+        let partsFolder = scratch.appendingPathComponent("parts")
+        try fm.createDirectory(at: partsFolder, withIntermediateDirectories: true)
+        for (k, members) in parts.enumerated() {
+            let name = partName(kitId: kitId, index: k + 1, count: parts.count)
+            let z = try KitZipWriter(url: partsFolder.appendingPathComponent(name))
+            for p in [kitEntry] + members.map({ others[$0] }) {
+                if p.method == .deflated {
+                    try z.addPayload(name: p.name, method: .deflated, crc: p.crc, uncompressedSize: p.size, payload: p.payload, chunkSize: chunkSize)
+                } else {
+                    try z.addFile(name: p.name, from: p.source, chunkSize: chunkSize)
                 }
-                let bytes = try z.finish()
-                result.append(KitBundlePart(index: k + 1, count: parts.count, name: name, url: url, bytes: bytes, entries: z.names,
-                                            oversized: oversizedPart[k]))
+            }
+            let bytes = try z.finish()
+            result.append(KitBundlePart(index: k + 1, count: parts.count, name: name, url: outbox.appendingPathComponent(name), bytes: bytes,
+                                        entries: z.names, oversized: oversizedPart[k]))
+        }
+        // all complete: give them their names in the outbox
+        var moved: [URL] = []
+        do {
+            for p in result {
+                try fm.moveItem(at: partsFolder.appendingPathComponent(p.name), to: p.url)
+                moved.append(p.url)
             }
         } catch {
-            for u in written { try? fm.removeItem(at: u) }
+            for u in moved { try? fm.removeItem(at: u) }
             throw error
         }
         return KitBundleResult(parts: result, oversized: zip(parts, oversizedPart).filter { $0.1 }.flatMap { $0.0.map { others[$0].name } },

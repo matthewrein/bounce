@@ -25,6 +25,31 @@ public enum KitFormatError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// The names of a shot's files inside its folder (shots/<shotId>/), for the app that writes them and the scorer that
+/// reads them. Flat-phone shots have only `motion` and `shotManifest`.
+public enum KitClipFiles {
+    /// the frames, HEVC (or H.264) in an MP4 container
+    public static let video = "video.mp4"
+    /// one `KitFrame` per encoded video frame
+    public static let frames = "frames.jsonl"
+    /// one `KitMotionSample` per CoreMotion update
+    public static let motion = "motion.jsonl"
+    /// `KitShotManifest`
+    public static let shotManifest = "shot.json"
+    /// LiDAR depth files (`KitDepth`), named by `KitDepth.fileName(frame:)`
+    public static let depthFolder = "depth"
+
+    /// depth/dNNNNNN.bdp2 in a shot folder, for video frame `frame`
+    public static func depthURL(shotFolder: URL, frame: Int) -> URL {
+        depthURL(shotFolder: shotFolder, file: KitDepth.fileName(frame: frame))
+    }
+
+    /// depth/<file> in a shot folder (a `KitFrame.depthFile`)
+    public static func depthURL(shotFolder: URL, file: String) -> URL {
+        shotFolder.appendingPathComponent(depthFolder).appendingPathComponent(file)
+    }
+}
+
 /// A unit quaternion (x, y, z, w), Hamilton convention: `a * b` rotates by b, then by a. As Codable it is the array
 /// [x, y, z, w], like CoreMotion's `CMQuaternion`.
 public struct KitQuaternion: Equatable, Codable, CustomStringConvertible {
@@ -141,9 +166,55 @@ public enum KitTracking: String, Codable, CaseIterable {
     }
 }
 
-/// The app's live result on one frame (what the owner saw on screen).
+/// The live tracker's state as frames.jsonl spells it ("searching", "confirming", "locked"). Kits are captured once and
+/// scored for a long time by newer code, so a state this build does not know reads as `.other` with its spelling kept
+/// (and written back as it was), instead of making the whole clip unreadable.
+public enum KitLiveState: Equatable, Codable, CustomStringConvertible {
+    case searching, confirming, locked
+    /// a state this build does not know, as spelled in the file
+    case other(String)
+
+    public init(rawValue s: String) {
+        switch s {
+        case "searching": self = .searching
+        case "confirming": self = .confirming
+        case "locked": self = .locked
+        default: self = .other(s)
+        }
+    }
+
+    /// From the tracker's own state (the app's live result).
+    public init(_ t: TrackerState) {
+        switch t {
+        case .searching: self = .searching
+        case .confirming: self = .confirming
+        case .locked: self = .locked
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .searching: return "searching"
+        case .confirming: return "confirming"
+        case .locked: return "locked"
+        case let .other(s): return s
+        }
+    }
+
+    public var description: String { rawValue }
+
+    public init(from decoder: Decoder) throws { self.init(rawValue: try decoder.singleValueContainer().decode(String.self)) }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
+    }
+}
+
+/// The app's live result on one frame (what the owner saw on screen). When written, a non-finite tilt is left out, and
+/// so are corners or a ball with any non-finite number (a degenerate pose on one frame must not stop the recording).
 public struct KitLiveResult: Codable, Equatable {
-    public var state: TrackerState
+    public var state: KitLiveState
     /// the slab's tilt the app showed (degrees)
     public var tilt: Double?
     /// the slab's four top corners in video pixels, outline order: [[x, y] x 4]
@@ -151,10 +222,21 @@ public struct KitLiveResult: Codable, Equatable {
     /// the ball's image circle in video pixels: [x, y, r]
     public var ball: [Double]?
 
-    public init(state: TrackerState, tilt: Double? = nil, corners: [Vec2]? = nil, ball: (center: Vec2, radius: Double)? = nil) {
+    enum CodingKeys: String, CodingKey { case state, tilt, corners, ball }
+
+    /// `state`: `KitLiveState(tracker.state)` in the app.
+    public init(state: KitLiveState, tilt: Double? = nil, corners: [Vec2]? = nil, ball: (center: Vec2, radius: Double)? = nil) {
         self.state = state; self.tilt = tilt
         self.corners = corners.map { $0.map { [$0.x, $0.y] } }
         self.ball = ball.map { [$0.center.x, $0.center.y, $0.radius] }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(state, forKey: .state)
+        if let t = tilt, t.isFinite { try c.encode(t, forKey: .tilt) }
+        if let k = corners, k.allSatisfy({ $0.allSatisfy { $0.isFinite } }) { try c.encode(k, forKey: .corners) }
+        if let b = ball, b.allSatisfy({ $0.isFinite }) { try c.encode(b, forKey: .ball) }
     }
 
     public var cornerPoints: [Vec2]? {
@@ -165,8 +247,8 @@ public struct KitLiveResult: Codable, Equatable {
         guard let b = ball, b.count == 3 else { return nil }
         return (Vec2(b[0], b[1]), b[2])
     }
-    /// the slab was found on this frame (confirming or locked)
-    public var slabFound: Bool { state != .searching }
+    /// the slab was found on this frame (confirming or locked; a state this build does not know counts as not found)
+    public var slabFound: Bool { state == .confirming || state == .locked }
 }
 
 /// One line of frames.jsonl: one encoded video frame. Short keys keep the file small (see the table in CaptureKit.md);
@@ -190,11 +272,12 @@ public struct KitFrame: Codable, Equatable {
     public var ambientLumens: Double?
     /// ambient colour temperature, kelvin (`ct`)
     public var colorTemperature: Double?
-    /// mean luma 0-255 of the tracker's processing frame (`luma`)
+    /// mean luma 0-255 of this frame's camera image (`luma`; `KitImageStats.meanLuma(bytes:...)` on the Y plane, every
+    /// recorded frame)
     public var luma: Double?
     /// estimated motion blur in video pixels (`blur`; `KitMotionBlur`)
     public var blur: Double?
-    /// depth file name in the shot's depth/ folder, if this frame has one (`depth`)
+    /// depth file name in the shot's depth/ folder, if this frame has one (`depth`; `KitClipFiles.depthURL`)
     public var depthFile: String?
     /// the app's live result (`live`)
     public var live: KitLiveResult?
@@ -244,6 +327,9 @@ public struct KitFrame: Codable, Equatable {
         guard let t = worldFromCamera, let k = cameraIntrinsics(videoWidth: videoWidth, videoHeight: videoHeight) else { return nil }
         return CameraView(worldFromCamera: ARKitConvention.worldFromCVCamera(arkitCameraTransform: t), intrinsics: k)
     }
+
+    /// This frame's depth file in a shot folder, if it has one.
+    public func depthURL(shotFolder: URL) -> URL? { depthFile.map { KitClipFiles.depthURL(shotFolder: shotFolder, file: $0) } }
 }
 
 /// One line of motion.jsonl: one CoreMotion device-motion update, device axes (x right, y toward the top, z out of the

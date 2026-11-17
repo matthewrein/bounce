@@ -6,11 +6,12 @@ final class KitQualityTests: XCTestCase {
     func shot(_ id: String) -> KitShotSpec { plan.shot(id) ?? plan.shots[0] }
 
     /// n frames; the first `share` of each kind true
-    func stats(_ n: Int, luma: Double = 120, blur: Double = 1, tracking: Double = 1, slab: Double = 1, ball: Double = 0) -> [KitFrameStat] {
+    func stats(_ n: Int, luma: Double? = 120, blur: Double? = 1, tracking: Double = 1, slab: Double = 1, ball: Double = 0,
+               ambient: Double? = nil) -> [KitFrameStat] {
         (0..<n).map { i in
             let f = Double(i) / Double(n)
             return KitFrameStat(t: Double(i) / 30, trackingNormal: f < tracking - 1e-9, luma: luma, blurPixels: blur,
-                                slabFound: f < slab - 1e-9, slabLocked: false, ballFound: f < ball - 1e-9)
+                                slabFound: f < slab - 1e-9, slabLocked: false, ballFound: f < ball - 1e-9, ambientLumens: ambient)
         }
     }
 
@@ -57,8 +58,9 @@ final class KitQualityTests: XCTestCase {
 
     func testLight() {
         let level = shot("s04-level-still"), dim = shot("s06-dim"), bright = shot("s06-bright")
-        func light(_ s: KitShotSpec, _ luma: Double, ref: Double? = nil) -> KitQualityReport {
-            KitQuality.evaluate(shot: s, stats: stats(60, luma: luma), expectedFrames: 60, reference: KitQualityReference(levelStillMedianLuma: ref))
+        func light(_ s: KitShotSpec, _ luma: Double, ref: Double? = nil, ambient: Double? = nil, refAmbient: Double? = nil) -> KitQualityReport {
+            KitQuality.evaluate(shot: s, stats: stats(60, luma: luma, ambient: ambient), expectedFrames: 60,
+                                reference: KitQualityReference(levelStillMedianLuma: ref, levelStillMedianAmbient: refAmbient))
         }
         XCTAssertEqual(light(level, 45).check("light")?.passed, true)
         XCTAssertEqual(light(level, 44.9).check("light")?.passed, false)
@@ -68,19 +70,78 @@ final class KitQualityTests: XCTestCase {
         XCTAssertEqual(light(dim, 11).check("light")?.passed, false)
         XCTAssertTrue(light(dim, 8).summary.contains("Too dark even for the dim shot"))
         XCTAssertNil(light(dim, 50).check("lightChange"), "without a reference there is nothing to compare")
-        XCTAssertEqual(light(dim, 69.9, ref: 100).check("lightChange")?.passed, true)
-        XCTAssertEqual(light(dim, 70, ref: 100).check("lightChange")?.passed, false, "must be below 70%")
-        XCTAssertTrue(light(dim, 90, ref: 100).summary.contains("doesn't look dimmer"))
-        XCTAssertEqual(light(dim, 90, ref: 100).verdict, .fair)
-        XCTAssertEqual(light(bright, 110.1, ref: 100).check("lightChange")?.passed, true)
-        XCTAssertEqual(light(bright, 110, ref: 100).check("lightChange")?.passed, false, "must be above 110%")
-        XCTAssertTrue(light(bright, 100, ref: 100).summary.contains("doesn't look brighter"))
         XCTAssertEqual(light(bright, 44, ref: 30).check("light")?.passed, false, "bright shots still need 45")
-        XCTAssertEqual(light(bright, 200, ref: 100).verdict, .good)
         // the median, not the mean
         var mixed = stats(61, luma: 120)
         for i in 0..<30 { mixed[i].luma = 0 }
         XCTAssertEqual(KitQuality.evaluate(shot: level, stats: mixed, expectedFrames: 61).medianLuma, 120)
+    }
+
+    func testLightChangeUsesTheLightEstimateNotTheAutoExposedPicture() {
+        let level = shot("s04-level-still"), dim = shot("s06-dim"), bright = shot("s06-bright")
+        func light(_ s: KitShotSpec, _ luma: Double, ref: Double? = nil, ambient: Double? = nil, refAmbient: Double? = nil) -> KitQualityReport {
+            KitQuality.evaluate(shot: s, stats: stats(60, luma: luma, ambient: ambient), expectedFrames: 60,
+                                reference: KitQualityReference(levelStillMedianLuma: ref, levelStillMedianAmbient: refAmbient))
+        }
+        XCTAssertEqual(light(level, 120, ambient: 950).medianAmbient, 950)
+        XCTAssertNil(light(level, 120).medianAmbient)
+        // the camera kept the picture at 120 in both shots, but the light estimate fell to 69%: dimmer
+        XCTAssertEqual(light(dim, 120, ref: 120, ambient: 690, refAmbient: 1000).check("lightChange")?.passed, true)
+        XCTAssertEqual(light(dim, 120, ref: 120, ambient: 690, refAmbient: 1000).verdict, .good)
+        let notDim = light(dim, 120, ref: 120, ambient: 700, refAmbient: 1000)
+        XCTAssertEqual(notDim.check("lightChange")?.passed, false, "must be below 70%")
+        XCTAssertEqual(notDim.check("lightChange")?.severity, .fair)
+        XCTAssertEqual(notDim.check("lightChange")?.value ?? 0, 0.7, accuracy: 1e-12)
+        XCTAssertEqual(notDim.summary, "Fair. It doesn't look dimmer than the level shot (light level 700 vs 1000). Dim the room more. Next is fine.")
+        XCTAssertEqual(light(bright, 120, ref: 120, ambient: 1101, refAmbient: 1000).verdict, .good)
+        let notBright = light(bright, 120, ref: 120, ambient: 1100, refAmbient: 1000)
+        XCTAssertEqual(notBright.verdict, .fair, "must be above 110%")
+        XCTAssertTrue(notBright.summary.contains("doesn't look brighter than the level shot (light level 1100 vs 1000). Turn on more light."), notBright.summary)
+        // without light estimates, the picture's brightness is only reported: auto-exposure would fail good shots
+        let lumaOnly = light(bright, 120, ref: 120)
+        XCTAssertEqual(lumaOnly.check("lightChange")?.passed, false)
+        XCTAssertEqual(lumaOnly.check("lightChange")?.severity, .info)
+        XCTAssertEqual(lumaOnly.verdict, .good)
+        XCTAssertTrue(lumaOnly.check("lightChange")?.message.contains("brightness 120 vs 120 in the level shot") ?? false)
+        XCTAssertEqual(light(dim, 69.9, ref: 100).check("lightChange")?.passed, true)
+        XCTAssertEqual(light(dim, 70, ref: 100).check("lightChange")?.passed, false)
+        XCTAssertEqual(light(dim, 90, ref: 100).verdict, .good)
+        XCTAssertEqual(light(bright, 110.1, ref: 100).check("lightChange")?.passed, true)
+        // an estimate on this shot but not on the reference falls back to brightness
+        XCTAssertEqual(light(dim, 120, ref: 120, ambient: 900).check("lightChange")?.severity, .info)
+        // and so does an estimate on fewer than half the frames
+        var few = stats(60, luma: 120, ambient: 900)
+        for i in 0..<31 { few[i].ambientLumens = nil }
+        let r = KitQuality.evaluate(shot: dim, stats: few, expectedFrames: 60,
+                                    reference: KitQualityReference(levelStillMedianLuma: 120, levelStillMedianAmbient: 1000))
+        XCTAssertNil(r.medianAmbient)
+        XCTAssertEqual(r.check("lightChange")?.severity, .info)
+        few[30].ambientLumens = 900
+        XCTAssertEqual(KitQuality.evaluate(shot: dim, stats: few, expectedFrames: 60).medianAmbient, 900, "half the frames is enough")
+    }
+
+    func testFramesWithoutLumaOrBlurAreNotCounted() {
+        // the app measured luma on every third frame only: the light check uses those frames, not a made-up 128
+        let s = shot("s04-level-still")
+        var st = stats(150, luma: nil, blur: nil)
+        for i in stride(from: 0, to: 150, by: 3) { st[i].luma = 15; st[i].blurPixels = 7 }
+        let r = KitQuality.evaluate(shot: s, stats: st, expectedFrames: 150)
+        XCTAssertEqual(r.medianLuma, 15)
+        XCTAssertEqual(r.check("light")?.passed, false)
+        XCTAssertEqual(r.medianBlur, 7)
+        XCTAssertEqual(r.verdict, .poor, "blur 7 px is over twice the 3 px limit")
+        // nothing measured: reported, never failed
+        let none = KitQuality.evaluate(shot: s, stats: stats(150, luma: nil, blur: nil), expectedFrames: 150)
+        XCTAssertEqual(none.verdict, .good)
+        XCTAssertNil(none.medianLuma); XCTAssertNil(none.medianBlur)
+        XCTAssertEqual(none.check("light")?.severity, .info)
+        XCTAssertEqual(none.check("light")?.message, "Brightness was not measured.")
+        XCTAssertEqual(none.check("blur")?.message, "Blur was not measured.")
+        XCTAssertNil(KitQuality.evaluate(shot: shot("s06-dim"), stats: stats(60, luma: nil), expectedFrames: 60,
+                                         reference: KitQualityReference(levelStillMedianLuma: 100)).check("lightChange"))
+        // non-finite numbers count as not measured
+        XCTAssertNil(KitFrameStat(t: 0, luma: .nan, blurPixels: .infinity, ambientLumens: .nan).luma)
+        XCTAssertNil(KitFrameStat(t: 0, luma: .nan, blurPixels: .infinity).blurPixels)
     }
 
     func testBlur() {
@@ -102,10 +163,11 @@ final class KitQualityTests: XCTestCase {
         let noSlab = KitQuality.evaluate(shot: s, stats: stats(100, slab: 0.49, ball: 0.3), expectedFrames: 100)
         XCTAssertEqual(noSlab.verdict, .fair)
         XCTAssertEqual(noSlab.check("slab")?.passed, false)
-        XCTAssertTrue(noSlab.summary.contains("found the slab in only 49% of frames. If the slab was in view, Next is fine."), noSlab.summary)
+        XCTAssertEqual(noSlab.summary, "Fair. The app found the slab in only 49% of frames. If the slab was in view, Next is fine.",
+                       "said once, not twice")
         let noBall = KitQuality.evaluate(shot: s, stats: stats(100, slab: 1, ball: 0.29), expectedFrames: 100)
         XCTAssertEqual(noBall.verdict, .fair)
-        XCTAssertTrue(noBall.summary.contains("If the ball was in view, Next is fine."))
+        XCTAssertEqual(noBall.summary, "Fair. The app found the ball in only 29% of frames. If the ball was in view, Next is fine.")
         // a slab locked counts as found
         XCTAssertTrue(KitFrameStat(t: 0, slabLocked: true).slabFound)
         // ball-only shots do not look for the slab
@@ -173,6 +235,15 @@ final class KitQualityTests: XCTestCase {
         let failed = KitQuality.evaluate(shot: s, flat: .failed("No reading"))
         XCTAssertEqual(failed.verdict, .poor)
         XCTAssertEqual(failed.checks.map { $0.id }, ["reading"])
+        // the phone lay still, screen down: the owner is told which reading went wrong
+        let down = KitQuality.evaluate(shot: s, flat: .failed("The phone was not lying flat, screen up (it read 175°).", readingA: reading(tilt: 175)))
+        XCTAssertEqual(down.verdict, .poor)
+        XCTAssertEqual(down.checks.map { $0.id }, ["still", "flat"])
+        XCTAssertEqual(down.summary, "Poor. In reading A the phone was not lying flat, screen up (175°). Lay it flat in the middle of the slab, screen up. Retry is suggested.")
+        // a failed result whose readings look fine still fails, with its reason
+        let odd = KitQuality.evaluate(shot: s, flat: .failed("Something else.", readingA: reading()))
+        XCTAssertEqual(odd.verdict, .poor)
+        XCTAssertEqual(odd.check("reading")?.message, "Something else.")
     }
 
     func testVerdictOrderAndReportBuilding() {
@@ -186,6 +257,9 @@ final class KitQualityTests: XCTestCase {
         XCTAssertEqual(r.summary, "Poor. Hard. Retry is suggested.")
         XCTAssertEqual(r.problems.map { $0.id }, ["a", "b"])
         XCTAssertEqual(KitQualityReport(checks: [checks[0], checks[2]]).summary, "Fair. Soft. Next is fine.")
+        let says = [KitQualityCheck(id: "a", passed: false, severity: .poor, message: "Bad. Retry is suggested.")]
+        XCTAssertEqual(KitQualityReport(checks: says).summary, "Poor. Bad. Retry is suggested.")
+        XCTAssertEqual(KitQualityReport(checks: [KitQualityCheck(id: "a", passed: false, severity: .fair, message: "")]).summary, "Fair. Next is fine.")
         XCTAssertEqual(KitQualityReport(checks: [checks[2]]).verdict, .good, "info never fails a shot")
     }
 
@@ -197,7 +271,9 @@ final class KitQualityTests: XCTestCase {
         f.live = KitLiveResult(state: .confirming); f.luma = nil; f.blur = nil; f.tracking = .normal
         s = KitFrameStat(frame: f)
         XCTAssertTrue(s.slabFound); XCTAssertFalse(s.slabLocked); XCTAssertFalse(s.ballFound); XCTAssertTrue(s.trackingNormal)
-        XCTAssertEqual(s.luma, 128); XCTAssertEqual(s.blurPixels, 0)
+        XCTAssertNil(s.luma, "not measured stays not measured"); XCTAssertNil(s.blurPixels)
+        f.live = KitLiveResult(state: .other("lost"))
+        XCTAssertFalse(KitFrameStat(frame: f).slabFound, "a state this build does not know is not a find")
         f.live = nil
         XCTAssertFalse(KitFrameStat(frame: f).slabFound)
     }
@@ -217,6 +293,27 @@ final class KitQualityTests: XCTestCase {
         XCTAssertGreaterThan(sharp, soft)
         XCTAssertEqual(KitImageStats.meanLuma(Plane(width: 0, height: 0)), 0)
         XCTAssertEqual(KitImageStats.sharpness(Plane(width: 2, height: 2)), 0)
+    }
+
+    func testMeanLumaFromTheCameraBuffer() {
+        // 6x4 pixels in rows of 8 bytes (padding 255, which must not count)
+        var bytes = [UInt8](repeating: 255, count: 8 * 4)
+        for y in 0..<4 { for x in 0..<6 { bytes[y * 8 + x] = UInt8(10 * x + y) } }
+        bytes.withUnsafeBufferPointer { b in
+            // every pixel: mean of 10x + y over x 0..5, y 0..3 = 25 + 1.5
+            XCTAssertEqual(KitImageStats.meanLuma(bytes: b, width: 6, height: 4, bytesPerRow: 8, step: 1) ?? -1, 26.5, accuracy: 1e-12)
+            // every second pixel: x 0, 2, 4 and y 0, 2: 20 + 1
+            XCTAssertEqual(KitImageStats.meanLuma(bytes: b, width: 6, height: 4, bytesPerRow: 8, step: 2) ?? -1, 21, accuracy: 1e-12)
+            XCTAssertEqual(KitImageStats.meanLuma(bytes: b, width: 6, height: 4, bytesPerRow: 8, step: 0) ?? -1, 26.5, accuracy: 1e-12)
+            // sizes that do not fit the buffer give nil, never a read past its end
+            XCTAssertNil(KitImageStats.meanLuma(bytes: b, width: 6, height: 5, bytesPerRow: 8))
+            XCTAssertNil(KitImageStats.meanLuma(bytes: b, width: 9, height: 4, bytesPerRow: 8))
+            XCTAssertNil(KitImageStats.meanLuma(bytes: b, width: 0, height: 4, bytesPerRow: 8))
+            XCTAssertNil(KitImageStats.meanLuma(bytes: b, width: 6, height: 4, bytesPerRow: Int.max / 2))
+        }
+        // the last row may stop at the image's width (no padding after it)
+        let tight = [UInt8](repeating: 50, count: 8 * 3 + 6)
+        tight.withUnsafeBufferPointer { XCTAssertEqual(KitImageStats.meanLuma(bytes: $0, width: 6, height: 4, bytesPerRow: 8, step: 1), 50) }
     }
 
     func testMotionBlur() {

@@ -163,27 +163,31 @@ final class KitBundleTests: XCTestCase {
         let ids = ["s02-scan", "s04-level-still", "s04-level-arc", "s05-tilt1-still", "s05-tilt1-arc"]
         for (n, id) in ids.enumerated() {
             let folder = try store.beginShot(id)
-            try Data((0..<videoSizes[n % videoSizes.count]).map { _ in UInt8(truncatingIfNeeded: rng.next()) }).write(to: folder.appendingPathComponent("video.mp4"))
-            let frames = try KitJSONLWriter(url: folder.appendingPathComponent("frames.jsonl"))
+            try Data((0..<videoSizes[n % videoSizes.count]).map { _ in UInt8(truncatingIfNeeded: rng.next()) }).write(to: folder.appendingPathComponent(KitClipFiles.video))
+            let frames = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.frames))
             for i in 0..<300 {
                 try frames.append(KitFrame(index: i, time: 1000 + Double(i) / 30, pose: RigidTransform.identity.columnMajor4x4.map(Float.init),
                                            intrinsics: [900, 900, 640, 480], luma: 120, blur: 1.5, live: KitLiveResult(state: .searching)))
             }
             try frames.close()
-            let motion = try KitJSONLWriter(url: folder.appendingPathComponent("motion.jsonl"))
+            let motion = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.motion))
             for i in 0..<500 { try motion.append(KitMotionSample(time: 1000 + Double(i) / 100, gravity: Vec3(0.01, -0.02, -0.9997))) }
             try motion.close()
-            try fm.createDirectory(at: folder.appendingPathComponent("depth"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder.appendingPathComponent(KitClipFiles.depthFolder), withIntermediateDirectories: true)
             for f in 0..<2 {
                 let d = try KitDepth(width: 64, height: 48, millimetres: (0..<(64 * 48)).map { UInt16(800 + $0 % 50) }, confidence: [UInt8](repeating: 2, count: 64 * 48))
-                try d.data.write(to: folder.appendingPathComponent("depth").appendingPathComponent(KitDepth.fileName(frame: f * 30)))
+                try d.data.write(to: KitClipFiles.depthURL(shotFolder: folder, frame: f * 30))
             }
             let m = try store.newShotManifest(id, startedAt: Date(timeIntervalSince1970: 1_794_929_400), duration: 10)
             try store.commitShot(id, manifest: m, date: Date(timeIntervalSince1970: 1_794_929_500))
         }
-        // leftovers that must not go into the bundle
+        // leftovers that must not go into the bundle: an unfinished attempt, an interrupted commit and skip, a hidden file
         try fm.createDirectory(at: store.attemptFolder("s06-dim"), withIntermediateDirectories: true)
-        try Data("half".utf8).write(to: store.attemptFolder("s06-dim").appendingPathComponent("video.mp4"))
+        try Data("half".utf8).write(to: store.attemptFolder("s06-dim").appendingPathComponent(KitClipFiles.video))
+        for leftover in [store.oldFolder("s06-bright"), store.trashFolder("s07-ball-3ft")] {
+            try fm.createDirectory(at: leftover, withIntermediateDirectories: true)
+            try Data("old".utf8).write(to: leftover.appendingPathComponent(KitClipFiles.shotManifest))
+        }
         try Data("x".utf8).write(to: store.folder.appendingPathComponent(".DS_Store"))
         return store
     }
@@ -229,7 +233,7 @@ final class KitBundleTests: XCTestCase {
         XCTAssertGreaterThan(r.parts.count, 1)
         XCTAssertEqual(r.oversized, [])
         let files = KitBundle.files(in: store.folder)
-        XCTAssertFalse(files.contains { $0.contains(".attempt") || $0.contains(".DS_Store") })
+        XCTAssertFalse(files.contains { $0.contains(".attempt") || $0.contains(".old") || $0.contains(".trash") || $0.contains(".DS_Store") })
         XCTAssertEqual(files.count, 1 + 5 * 6, "kit.json, and per shot: video, frames, motion, two depth files, shot.json")
         var seen: [String: Int] = [:]
         for (k, p) in r.parts.enumerated() {
@@ -326,6 +330,29 @@ final class KitBundleTests: XCTestCase {
         let one = try KitBundle.build(kitFolder: store.folder, outbox: outbox, deflate: KitTestDeflate.fixedHuffman)
         XCTAssertEqual(one.parts.count, 1)
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: outbox.path).sorted(), ["other-file.txt", "\(store.kitId)-part1of1.zip"].sorted())
+    }
+
+    func testABuildKilledPartWayIsCleanedUpByTheNext() throws {
+        let store = try makeKit()
+        let outbox = tmp.appendingPathComponent("outbox")
+        // what a killed build leaves: its hidden working folder (deflated copies, parts written so far)
+        let dead = outbox.appendingPathComponent(".\(store.kitId)-bundle-DEAD")
+        try fm.createDirectory(at: dead.appendingPathComponent("parts"), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 1000).write(to: dead.appendingPathComponent("000001.deflate"))
+        try Data(repeating: 2, count: 1000).write(to: dead.appendingPathComponent("parts/\(store.kitId)-part1of3.zip"))
+        // another kit's working folder is not this build's to remove
+        let other = outbox.appendingPathComponent(".slab-kit-20200101-000000-bundle-X")
+        try fm.createDirectory(at: other, withIntermediateDirectories: true)
+        let r = try KitBundle.build(kitFolder: store.folder, outbox: outbox, limit: 150_000, deflate: KitTestDeflate.fixedHuffman)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: outbox.path).sorted(), ([other.lastPathComponent] + r.parts.map { $0.name }).sorted())
+        for p in r.parts { XCTAssertEqual(KitFiles.fileSize(p.url.path), p.bytes, "every named part is complete") }
+        // the app can also tidy up at launch
+        try fm.createDirectory(at: dead, withIntermediateDirectories: true)
+        KitBundle.removeLeftovers(kitId: store.kitId, in: outbox)
+        XCTAssertFalse(fm.fileExists(atPath: dead.path))
+        XCTAssertTrue(fm.fileExists(atPath: other.path))
+        XCTAssertEqual(KitBundle.existingParts(kitId: store.kitId, in: outbox), r.urls, "the finished parts stay")
+        KitBundle.removeLeftovers(kitId: store.kitId, in: tmp.appendingPathComponent("no-such-folder"))
     }
 
     func testFailureLeavesNothingBehind() throws {

@@ -59,7 +59,31 @@ final class KitManifestTests: XCTestCase {
         XCTAssertEqual(noDish.recordingSettings(base: base).dishInches, 0.3, "an unmeasured dish keeps the setting")
         XCTAssertEqual(noDish.slab.dishDepth, Units.inches(RecordingSettings().dishInches), accuracy: 1e-12)
         XCTAssertEqual(KitMeasurements(settings: base).slabThicknessInches, 2)
-        XCTAssertEqual(KitMeasurements(settings: s), m)
+        // the settings always hold a dish (usually the default): it is not taken for a measurement
+        XCTAssertNil(KitMeasurements(settings: base).dishInches)
+        var unmeasured = m
+        unmeasured.dishInches = nil
+        XCTAssertEqual(KitMeasurements(settings: s), unmeasured)
+    }
+
+    func testPositionGenerations() {
+        XCTAssertEqual(KitSlabPosition.id(plan: "p2", generation: 1), "p2")
+        XCTAssertEqual(KitSlabPosition.id(plan: "p2", generation: 3), "p2#3")
+        let first = KitSlabPosition(id: "p2", label: "tilt 1", shotId: "s05-tilt1-flat")
+        let third = KitSlabPosition(id: "p2#3", label: "tilt 1", shotId: "s05-tilt1-flat", generation: 3)
+        XCTAssertEqual(first.planPositionId, "p2"); XCTAssertEqual(first.generationNumber, 1)
+        XCTAssertEqual(third.planPositionId, "p2"); XCTAssertEqual(third.generationNumber, 3)
+        var m = makeManifest()
+        m.positions += [first, third]
+        m.shots[3].status = .captured; m.shots[3].positionId = "p1"
+        XCTAssertEqual(m.currentPosition(plan: "p2")?.id, "p2#3")
+        XCTAssertNil(m.currentPosition(plan: "p4"))
+        XCTAssertEqual(m.position(forShot: m.shots[3].id)?.id, "p1")
+        XCTAssertNil(m.position(forShot: "s12-no-ball"))
+        XCTAssertFalse(m.measurementsEntered)
+        m.measurementsEnteredAt = KitTime.iso(date)
+        XCTAssertTrue(m.measurementsEntered)
+        XCTAssertEqual(try KitJSON.decode(KitManifest.self, from: KitJSON.encode(m)), m)
     }
 
     func testDeviceCarriesNoName() throws {
@@ -110,8 +134,15 @@ final class KitManifestTests: XCTestCase {
                                 cameraFormat: KitCameraFormat(width: 1920, height: 1440, fps: 60), hasDepth: true, depthFrames: 6,
                                 motionSamples: 602, quality: q, releaseCue: 2, notes: "synthetic")
         XCTAssertEqual(s.format, "bouncekit-shot")
-        let back = try KitJSON.decode(KitShotManifest.self, from: KitJSON.encode(s))
+        var back = try KitJSON.decode(KitShotManifest.self, from: KitJSON.encode(s))
         XCTAssertEqual(back, s)
+        // the uptime clock's start and release, and the motion and ARKit runs, are kept
+        back.startTime = 12_345.678_9; back.releaseTime = 12_347.701; back.motionSessionId = "m1"; back.arSessionId = "a2"
+        back.measurementsEntered = true
+        let again = try KitJSON.decode(KitShotManifest.self, from: KitJSON.encode(back))
+        XCTAssertEqual(again, back)
+        XCTAssertEqual(again.startTime, 12_345.678_9)
+        XCTAssertEqual(again.releaseTime, 12_347.701)
         XCTAssertEqual(back.quality?.verdict, .good)
         XCTAssertEqual(back.video?.frameCount, 361)
     }
