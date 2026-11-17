@@ -117,6 +117,27 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(r.tracker.slab, phone.tracker.slab)
     }
 
+    /// The app made a new tracker part-way (the camera restarted), with new detectors: the replay does the same at the same
+    /// frame, so a detector that remembers things between frames starts afresh there too (`replay(makeDetector:)`).
+    /// Handing the replay one detector for the whole recording would carry its memory across, and the report shows it.
+    func testANewTrackerMidRecordingIsReplayedWithNewDetectors() throws {
+        let folder = tmp.appendingPathComponent("restart.bouncerec")
+        var s = sim()
+        s.restartAt = 4.2; s.resetAt = nil; s.discontinuityAt = nil; s.limited = nil; s.ball = nil
+        s.makeDetector = { DriftingCodeDetector() }
+        let phone = try s.run(recordingTo: folder)
+        let rec = try RecordingReader(folder: folder)
+        let starts = rec.frames.filter { $0.controls?.contains { $0.kind == .start } == true }
+        XCTAssertEqual(starts.count, 2, "the recording's first frame and the restart")
+        XCTAssertEqual(starts.last!.controls!.first { $0.kind == .start }!.settings, phone.tracker.settings)
+        let r = try ReplayRunner(reader: rec).replay(makeDetector: { DriftingCodeDetector() }, makeBallLocator: { DiscBallLocator() })
+        XCTAssertTrue(r.report.agrees, r.report.description)
+        XCTAssertEqual(r.tracker.slab, phone.tracker.slab)
+        let one = try ReplayRunner(reader: rec).replay(detector: DriftingCodeDetector(), ballLocator: DiscBallLocator())
+        XCTAssertFalse(one.report.agrees)
+        XCTAssertGreaterThanOrEqual(one.steps[one.report.firstDifference!].frame.timestamp, 4.2)
+    }
+
     /// Replaying only the tracker on the phone's own detector outputs (no detector, no images) is exact too.
     func testTheTrackerAloneReplaysFromThePhonesDetections() throws {
         let (folder, phone) = try standard()

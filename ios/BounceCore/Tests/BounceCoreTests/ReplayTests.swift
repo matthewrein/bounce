@@ -52,7 +52,7 @@ final class ReplayTests: XCTestCase {
         let rec = try RecordingReader(folder: URL(fileURLWithPath: path))
         var options = ReplayRunner.Options()
         if ProcessInfo.processInfo.environment["BOUNCE_REPLAY_RECORDED"] == "1" { options.detections = .recorded; options.ball = .recorded }
-        let r = try ReplayRunner(reader: rec).replay(detector: AppDetectors.slab(), ballLocator: AppDetectors.ball(), options: options)
+        let r = try ReplayRunner(reader: rec).replay(makeDetector: AppDetectors.slab, makeBallLocator: AppDetectors.ball, options: options)
         func tilt(_ v: Double?) -> String { v.map { String(format: "%5.2f", $0) } ?? "    -" }
         print("  time  phone              replay             events (replay)")
         for st in r.steps {

@@ -83,23 +83,33 @@ public struct ReplayRunner {
     /// Run every frame, compare with the phone, and report.
     public func replay(detector: SlabDetecting, ballLocator: BallLocating? = nil, settings override: TrackerSettings? = nil,
                        floorY: Double? = nil, options: Options = Options()) throws -> Result {
+        try replay(makeDetector: { detector }, makeBallLocator: { ballLocator }, settings: override, floorY: floorY, options: options)
+    }
+
+    /// The same, making a new detector and ball finder whenever the phone made a new tracker (a `start` control), as the
+    /// app does (e.g. `makeDetector: AppDetectors.slab`): detectors that remember things from one frame to the next
+    /// (SlabFinderDetector) then start afresh at the same moments as the phone's.
+    public func replay(makeDetector: () -> SlabDetecting, makeBallLocator: () -> BallLocating? = { nil }, settings override: TrackerSettings? = nil,
+                       floorY: Double? = nil, options: Options = Options()) throws -> Result {
         let session = reader.session
-        let det = ReplaySlabDetector(detector)
+        let det = ReplaySlabDetector(makeDetector())
         det.useRecorded = options.detections == .recorded
-        let ball = ReplayBallLocator(ballLocator)
-        let hasBall = ballLocator != nil || reader.frames.contains { $0.output?.ballSearched == true }
+        let ball = ReplayBallLocator(makeBallLocator())
+        let hasBall = ball.inner != nil || reader.frames.contains { $0.output?.ballSearched == true }
         func makeTracker(_ s: TrackerSettings) -> SlabTracker { SlabTracker(settings: s, detector: det, ballLocator: hasBall ? ball : nil) }
         var tracker = makeTracker(override ?? settings)
         var steps: [Step] = []
         steps.reserveCapacity(reader.frames.count)
         let blank = ColorFrame(gray: Plane(width: 2, height: 2))
 
-        for f in reader.frames {
+        for (i, f) in reader.frames.enumerated() {
             var subs: [String] = []
             // what was done to the phone's tracker before this frame
             for c in f.controls ?? [] {
                 switch c.kind {
-                case .start: tracker = makeTracker(override ?? c.settings ?? settings)
+                case .start:
+                    if i > 0 { det.inner = makeDetector(); ball.inner = makeBallLocator() }   // (the first frame's are new)
+                    tracker = makeTracker(override ?? c.settings ?? settings)
                 case .settings: if override == nil, let s = c.settings { tracker.settings = s }
                 case .reset: tracker.reset()
                 case .worldDiscontinuity: tracker.noteWorldDiscontinuity(c.reason ?? "world-frame")
@@ -122,7 +132,7 @@ public struct ReplayRunner {
             let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = f.output?.ball.flatMap { b in
                 b.count == 6 ? (f.view.toCamera(Vec3(b[0], b[1], b[2])), Vec2(b[3], b[4]), b[5]) : nil
             }
-            let useRecordedBall = options.ball == .recorded || ballLocator == nil
+            let useRecordedBall = options.ball == .recorded || ball.inner == nil
             if !useRecordedBall, let p = try reader.ball(for: f), let k = f.ballIntrinsics {
                 ballImage = p; ballK = k
             } else if !useRecordedBall, options.rebuildBallCrops || f.output == nil, let k = f.ballIntrinsics, let im = img {
@@ -133,7 +143,7 @@ public struct ReplayRunner {
                 ballImage = Plane(width: 1, height: 1); ballK = f.ballIntrinsics ?? f.intrinsics
                 ball.prepare(recorded: .some(phoneBall))
                 if options.ball == .run {
-                    subs.append(ballLocator == nil ? "ball: the phone's result (no ball finder given)" : "ball: the phone's result (no ball image recorded)")
+                    subs.append(ball.inner == nil ? "ball: the phone's result (no ball finder given)" : "ball: the phone's result (no ball image recorded)")
                 }
             } else if !useRecordedBall, options.ballFromProcessingFrame, f.output == nil, let im = img {
                 ballImage = im.luma; ballK = f.intrinsics
@@ -240,7 +250,7 @@ public struct ReplayReport: CustomStringConvertible {
 
 /// The detector a replay hands its tracker: the real one on frames with an image, else the phone's recorded outlines.
 final class ReplaySlabDetector: SlabDetecting {
-    let inner: SlabDetecting
+    var inner: SlabDetecting
     var useRecorded = false
     private var hasImage = false
     private var recorded: [DetectedOutline]? = nil
@@ -266,7 +276,7 @@ final class ReplaySlabDetector: SlabDetecting {
 
 /// The ball finder a replay hands its tracker: the real one, or the phone's recorded result for this frame.
 final class ReplayBallLocator: BallLocating {
-    let inner: BallLocating?
+    var inner: BallLocating?
     /// .some(result) to return the phone's result on this frame
     private var recorded: ((center: Vec3, circle: Vec2, radius: Double)?)? = nil
 

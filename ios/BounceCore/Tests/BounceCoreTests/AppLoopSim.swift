@@ -44,6 +44,18 @@ final class CornerCodeDetector: SlabDetecting {
     }
 }
 
+/// A detector that remembers something between calls (as SlabFinderDetector keeps its edge choices): each call moves
+/// the outline its image carries a little further, so a replay matches the phone only if it makes a new one whenever the
+/// phone did.
+final class DriftingCodeDetector: SlabDetecting {
+    private(set) var calls = 0
+    func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
+        calls += 1
+        let d = 0.004 * Double(calls)
+        return CornerCodeImage.decode(frame).map { [DetectedOutline(quad: $0.map { $0 + Vec2(d, -d) })] } ?? []
+    }
+}
+
 /// A ball finder that is a pure function of its image and intrinsics: the bright disc's centroid and area give the
 /// circle, and its size the distance. Records what it was given.
 final class DiscBallLocator: BallLocating {
@@ -97,6 +109,10 @@ struct AppLoopSim {
     var ballMaxSide = 300
     /// a version 1 recorder instead: a line (with image and whole depth) only every 0.2 s, nothing else
     var version1 = false
+    /// the app makes a new tracker (and new detectors) at this time, as when the camera restarts
+    var restartAt: Double? = nil
+    /// the slab detector to make for each new tracker (default: one CornerCodeDetector for the whole run)
+    var makeDetector: (() -> SlabDetecting)? = nil
 
     init(world: World) { self.world = world }
 
@@ -185,7 +201,7 @@ struct AppLoopSim {
         var settings = RecordingSettings(dishBounce: false).trackerSettings
         settings.spec = .standard
         let det = CornerCodeDetector(), loc = DiscBallLocator()
-        let tracker = SlabTracker(settings: settings, detector: det, ballLocator: loc)
+        var tracker = SlabTracker(settings: settings, detector: makeDetector?() ?? det, ballLocator: loc)
         let pK = processing
         let session = RecordingSession(build: "sim", device: "sim", frameWidth: pK.width, frameHeight: pK.height,
                                        settings: RecordingSettings(dishBounce: false), tracker: version1 ? nil : tracker.settings,
@@ -205,6 +221,7 @@ struct AppLoopSim {
             if crossed(settingsAt) { var s = tracker.settings; s.launchRule = .dishNormal; s.ballInterval = 0.15; tracker.settings = s }
             if crossed(resetAt) { tracker.reset() }
             if crossed(discontinuityAt) { tracker.noteWorldDiscontinuity("interruption") }
+            if crossed(restartAt) { tracker = SlabTracker(settings: tracker.settings, detector: makeDetector?() ?? det, ballLocator: loc) }
             let fv = fullView(t)
             let pv = CameraView(worldFromCamera: fv.worldFromCamera, intrinsics: pK)
             let normal = !(limited?.contains(t) ?? false)
@@ -252,6 +269,7 @@ struct AppLoopSim {
             }
         }
         writer.close()
+        run.tracker = tracker
         return run
     }
 }
