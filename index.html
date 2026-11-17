@@ -110,7 +110,7 @@ const G=32.174; // ft/s^2
 const P={drop:3,reb:70,ball:35,size:12,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b8";
+const BUILD="b9";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -281,17 +281,17 @@ function detectAt(sx,sy,tol,ref){
 }
 // Sharpen the outline on the double-resolution image: find the edge at many points along each side,
 // fit a straight line through them ignoring strays, and take the corners where those lines cross.
-function refineQuad(q){
+function refineQuad(q,wf){
   const {hY,hw,hh,k}=S.proc,k2=k*2,P=q.map(p=>({x:p.x*k2,y:p.y*k2}));
   const cx=(P[0].x+P[1].x+P[2].x+P[3].x)/4,cy=(P[0].y+P[1].y+P[2].y+P[3].y)/4;
   const smp=(x,y)=>{x=clamp(x,0,hw-1.001);y=clamp(y,0,hh-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*hw+xi;
     return (hY[j]*(1-fx)+hY[j+1]*fx)*(1-fy)+(hY[j+hw]*(1-fx)+hY[j+hw+1]*fx)*fy;};
-  const lines=[];
+  const lines=[];let fitted=0;
   for(let i=0;i<4;i++){
     const A=P[i],B=P[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);
     let dx=(B.x-A.x)/len,dy=(B.y-A.y)/len,nx=-dy,ny=dx;
     if(nx*((A.x+B.x)/2-cx)+ny*((A.y+B.y)/2-cy)<0){nx=-nx;ny=-ny;}
-    const w=Math.max(5,len*.035),pts=[];
+    const w=Math.max(5,len*(wf||.035)),pts=[];
     for(let j=0;j<32;j++){
       const t=len*(.08+.84*j/31),bx=A.x+dx*t,by=A.y+dy*t,gs=[];let gmax=0;
       // each reading averages a short run along the edge so cement speckle and sensor noise don't register as edges
@@ -305,7 +305,7 @@ function refineQuad(q){
     }
     let L={px:A.x,py:A.y,dx,dy};
     if(pts.length>=10){
-      let use=pts;
+      fitted++;let use=pts;
       for(let pass=0;pass<3;pass++){
         let mx=0,my=0;for(const p of use){mx+=p.x;my+=p.y;}mx/=use.length;my/=use.length;
         let sxx=0,sxy=0,syy=0;for(const p of use){const a=p.x-mx,b=p.y-my;sxx+=a*a;sxy+=a*b;syy+=b*b;}
@@ -316,12 +316,14 @@ function refineQuad(q){
     }
     lines.push(L);
   }
-  return q.map((p0,i)=>{
+  const lim=(wf||.035)*2+.01;
+  const out=q.map((p0,i)=>{
     const a=lines[(i+3)%4],b=lines[i],c=a.dx*b.dy-a.dy*b.dx;if(Math.abs(c)<1e-6)return p0;
     const t=((b.px-a.px)*b.dy-(b.py-a.py)*b.dx)/c,x=(a.px+t*a.dx)/k2,y=(a.py+t*a.dy)/k2;
     const side=Math.hypot(q[(i+1)%4].x-p0.x,q[(i+1)%4].y-p0.y);
-    return Math.hypot(x-p0.x,y-p0.y)<side*.08+3/k2?{x,y}:p0;
+    return Math.hypot(x-p0.x,y-p0.y)<side*lim+3/k2?{x,y}:p0;
   });
+  out.fitted=fitted;return out;
 }
 // Could this outline really be the square slab? Fit a rigid square to it: an outline no square could
 // produce leaves a large misfit. Also rule out steep tilts (the slab is only softly angled) and absurd distances.
@@ -393,6 +395,11 @@ function tuneFov(){
   P.fov=clamp(P.fov+d,50,80);$("fov").value=P.fov;
   try{localStorage.setItem("slabFov",String(P.fov));}catch(_){}
 }
+// Replace an outline with the exact outline of the best-fitting square slab, so the drawn shape is always one the slab can make
+function squareUp(q){
+  const ps=solvePose(q,focal(),S.sw/2,S.sh/2,P.size/24,S.live&&S.grav?S.grav:null,S.live?S.nS:null);if(!ps)return q;
+  return MODEL.map(m=>{const p=add(ps.c,add(mul(ps.r1,m[0]*ps.hs),mul(ps.r2,m[1]*ps.hs)));return {x:ps.f*p[0]/p[2]+ps.cx,y:ps.f*p[1]/p[2]+ps.cy};});
+}
 /* live tracking: follow the slab from frame to frame and smooth its corners */
 function track(){
   let r=null;
@@ -400,12 +407,31 @@ function track(){
     // once locked, keep the same colour reference and tolerance so the outline doesn't hop between matches
     const c={x:(S.quad[0].x+S.quad[1].x+S.quad[2].x+S.quad[3].x)/4,y:(S.quad[0].y+S.quad[1].y+S.quad[2].y+S.quad[3].y)/4};
     const px=c.x*S.proc.k,py=c.y*S.proc.k;
+    // Normal case: follow the four edges directly from where they were last frame. This is far steadier than
+    // re-finding the slab by colour every frame, which can hop between slightly different outlines.
+    const tq=refineQuad(S.quad,.05);
+    if(tq.fitted===4&&plausible(tq)){
+      r={q:tq,tracked:true};bump('tracked');
+      // every so often, cross-check against a fresh colour-based find, and switch if they keep disagreeing
+      if(S.fid%15===0){
+        const rr=detectAt(px,py,S.ltol,S.ref);
+        if(rr&&plausible(rr.q)){
+          S.ref=S.ref.map((v,i)=>v+(rr.seen[i]-v)*.3);
+          let d=Infinity;for(let k=0;k<4;k++){let t=0;for(let i=0;i<4;i++)t+=Math.hypot(rr.q[(i+k)%4].x-tq[i].x,rr.q[(i+k)%4].y-tq[i].y)/4;d=Math.min(d,t);}
+          const side=Math.hypot(tq[1].x-tq[0].x,tq[1].y-tq[0].y);
+          if(d>side*.06){if(++S.dis>=3){r=rr;S.dis=0;bump('relock');}}else S.dis=0;
+        }
+      }
+    }
+    if(!r){
+    bump('regionFallback');
     r=detectAt(px,py,S.ltol,S.ref);
     if(r&&!plausible(r.q))r=null; // an outline the slab couldn't make is ignored; the last good one is held
     // if a side has lost its edge (light shifted), retry other tolerances; failing that, re-read the colour from the middle of the slab
     if(!r||Math.min(...r.edges)<8){
       const r2=detectSeed(px,py,false,S.ref)||detectSeed(px,py,false);
       if(r2){if(r2.ref!==S.ref&&r2.ref.some((v,i)=>v!==S.ref[i]))S.ref=r2.ref.slice();S.ltol=r2.tol;r=r2;}
+    }
     }
   }else if(S.seed){
     r=detect(S.seed);if(!r&&++S.seedAge>45)S.seed=null;
@@ -420,11 +446,11 @@ function track(){
     }
   }
   if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;bump('unlocks');}}return;}
-  const q=r.q;
+  const q=squareUp(r.q);
   if(!S.quad){
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
     S.seed=null;S.lost=0;
-    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.nS=null;bump('locks');return;
+    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.dis=0;S.nS=null;bump('locks');return;
   }
   S.lost=0;
   let bk=0,bd=Infinity;
@@ -435,13 +461,13 @@ function track(){
     bump('farFrames');if(++S.far<8)return;bump('jumps');
     S.quad=q.map((_,i)=>q[(i+bk)%4]);S.far=0;S.nS=null;return;
   }
-  S.far=0;S.jit=S.jit==null?d:S.jit*.9+d*.1;S.lastEdges=r.edges;S.lastArea=r.area;
+  S.far=0;S.jit=S.jit==null?d:S.jit*.9+d*.1;if(r.edges){S.lastEdges=r.edges;S.lastArea=r.area;}
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
   // (the gyroscope says when the phone is being held still, which allows much heavier averaging)
   const a=clamp(d/(side*.05),S.rot!=null&&S.rot<4?.04:.1,.6);
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
-  S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
-  if(S.fid%10===0)tuneFov();
+  if(r.seen)S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
+  if(S.fid%30===0)tuneFov();
 }
 
 /* ---------- ball: a round outline of the expected size anywhere in view ---------- */
@@ -660,7 +686,7 @@ function frame(now){
   requestAnimationFrame(frame);
   if(S.live){
     const v=S.video;if(v.readyState<2||!v.videoWidth)return;
-    S.sw=v.videoWidth;S.sh=v.videoHeight;
+    S.sw=v.videoWidth;S.sh=v.videoHeight;S.liveSrc=[S.sw,S.sh];
     prepare();track();if(S.fid%2===0)scanBall();update();
     const now=performance.now();S.fps=S.tPrev?(S.fps||30)*.9+.1*1000/(now-S.tPrev):30;S.tPrev=now;
     if(S.fid%30===0){HIST.push([Math.round(now/100)/10,S.quad?1:0,S.tilt==null?null:+S.tilt.toFixed(1),S.lastMisfit==null?null:+S.lastMisfit.toFixed(4),P.fov,S.jit==null?null:+S.jit.toFixed(2),Math.round(S.fps),S.ball?1:0]);if(HIST.length>40)HIST.shift();}
@@ -793,7 +819,7 @@ function loadFile(file){
 /* ---------- diagnostics ---------- */
 function diag(){
   const r=(v,d=2)=>v==null?null:Array.isArray(v)?v.map(x=>r(x,d)):+(+v).toFixed(d);
-  return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],view:[Math.round(S.W),Math.round(S.H)],
+  return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],liveSrc:S.liveSrc||null,view:[Math.round(S.W),Math.round(S.H)],
     screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
     sensor:{gravity:r(S.grav,3),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
     set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
