@@ -9,8 +9,9 @@ public enum EdgeMode: String, Codable, Equatable, CaseIterable {
     /// the cut face shows but its inner edge was not clear: the outer edge (light cut face to black base) moved inward
     /// by the band the box model predicts
     case shiftedOuter
-    /// the cut face shows but is not lit: nothing black lies just outside the strong edge (the cut face is in shadow, or
-    /// the slab overhangs the floor where it rocks in its cradle), so the strong edge is already the top face's own
+    /// the cut face shows and the strongest edge is already the top face's own: the cut face is darker than the top
+    /// (in shadow), with the base darker still one band further out, or with no black base right outside it (the slab
+    /// overhangs the floor where it slides in its cradle, or the base's lit rim shows)
     case outerIsTop
     /// too few edge points along the side: its line was kept as given
     case unfitted
@@ -18,9 +19,11 @@ public enum EdgeMode: String, Codable, Equatable, CaseIterable {
 
 /// What the edge refiner did on one side of the outline.
 public struct SideEdge: Equatable {
+    /// the side's settled mode: the edge its output line rests on, kept across calls with hysteresis (it changes only
+    /// once another mode has been used on `switchAfter` calls in a row), so it does not flicker with the evidence
     public var mode: EdgeMode
-    /// the cut face's band as the box model predicts it: frame pixels, perpendicular to the side, mean of its two ends
-    /// (0 when the cut face is hidden)
+    /// the band as the box model predicts it: frame pixels, perpendicular to the side, mean of its two ends (0 when the
+    /// cut face is hidden)
     public var bandPixels: Double
     /// the step (grey levels) of the edge the output rests on: the inner edge's when it was used, else the outer edge's
     public var contrast: Double
@@ -34,90 +37,165 @@ public struct SideEdge: Equatable {
     public var points: Int
     /// luma just outside the outer edge as a share of the top face's (small: the black base lies there); 0 on silhouettes
     public var outsideRatio: Double
+    /// what this call's image evidence alone said (no memory): how the strongest edge relates to the top face's edge
+    public var observed: EdgeMode
+    /// the edge this call's output line was placed on (the observation, unless the predicted top line overruled a weak
+    /// or not yet repeated one)
+    public var used: EdgeMode
+    /// the step (grey levels, signed outward) of a further darkening edge found one band outside the strongest edge; 0 if
+    /// none
+    public var outerPartnerContrast: Double
+    /// where the predicted top line (`EdgeChoice.outline`) lay from the strongest edge, in predicted bands (negative:
+    /// inside); nil without a prediction
+    public var predictedShift: Double?
 
     public init(mode: EdgeMode, bandPixels: Double, contrast: Double, outerContrast: Double, innerContrast: Double, shift: Double,
-                points: Int, outsideRatio: Double) {
+                points: Int, outsideRatio: Double, observed: EdgeMode? = nil, used: EdgeMode? = nil, outerPartnerContrast: Double = 0,
+                predictedShift: Double? = nil) {
         self.mode = mode; self.bandPixels = bandPixels; self.contrast = contrast; self.outerContrast = outerContrast
         self.innerContrast = innerContrast; self.shift = shift; self.points = points; self.outsideRatio = outsideRatio
+        self.observed = observed ?? mode; self.used = used ?? mode; self.outerPartnerContrast = outerPartnerContrast
+        self.predictedShift = predictedShift
     }
 }
 
-/// The edge refiner's memory between calls: which edge each side rests on, so a side does not flip between the top face's
-/// edge and the bottom of its cut face on noise. The caller passes the last result's `choice` back in on the next call.
+/// The edge refiner's memory between calls: where each side's top edge was, so a side does not flip between the top
+/// face's edge and the bottom of its cut face on noise. The caller passes the last result's `choice` back in on the next
+/// call, moved to where the slab should now appear (`moved(to:)`; the slab finder does this with its `near` outline).
 public struct EdgeChoice: Equatable, Codable {
     public struct Side: Equatable, Codable {
+        /// the settled mode reported for the side
         public var mode: EdgeMode
-        /// a different mode seen on the last `pendingCount` calls in a row; it takes over once seen often enough
+        /// a different mode used on the last `pendingCount` calls in a row; it takes over once used often enough
         public var pending: EdgeMode?
         public var pendingCount: Int
-        /// the visible share of the predicted band, learned from the inner edges seen (1 until one is seen)
+        /// the visible share of the predicted band, learned from the band's two edges seen together (1 until seen)
         public var bandScale: Double
-        /// how many times the inner edge has been seen
+        /// how many times the band's two edges have been seen together
         public var sightings: Int
-        public init(mode: EdgeMode, pending: EdgeMode? = nil, pendingCount: Int = 0, bandScale: Double = 1, sightings: Int = 0) {
-            self.mode = mode; self.pending = pending; self.pendingCount = pendingCount; self.bandScale = bandScale; self.sightings = sightings
+        /// calls in a row on which clear image evidence put the top edge on the other edge than the predicted top line
+        /// did; the evidence wins once this reaches `switchAfter`
+        public var disagreements: Int
+        public init(mode: EdgeMode, pending: EdgeMode? = nil, pendingCount: Int = 0, bandScale: Double = 1, sightings: Int = 0,
+                    disagreements: Int = 0) {
+            self.mode = mode; self.pending = pending; self.pendingCount = pendingCount; self.bandScale = bandScale
+            self.sightings = sightings; self.disagreements = disagreements
         }
     }
     /// per side of `outline` (side i runs from corner i to corner i+1)
     public var sides: [Side]
-    /// the outline (frame pixels) the sides belong to; a new outline is matched to it corner by corner
+    /// the top-face outline (frame pixels) the sides belong to, and where the refiner expects the top edges: the last
+    /// output, or that outline moved by the camera's motion (`moved(to:)`). A new outline is matched to it corner by corner.
     public var outline: [Vec2]
     /// the slab normal last solved (camera axes), for the pose solver's mirror-image hysteresis
     public var normal: Vec3?
 
     public init(sides: [Side], outline: [Vec2], normal: Vec3?) { self.sides = sides; self.outline = outline; self.normal = normal }
 
+    /// The same memory with the top outline moved to where the slab should appear now (e.g. the last pose moved by the
+    /// camera's motion, projected), in either corner order; nil when the two outlines are too far apart to be the same
+    /// slab. The normal is kept (it is only a tie-breaker between mirror-image poses).
+    public func moved(to predicted: [Vec2]) -> EdgeChoice? {
+        guard let s = sides(matching: predicted) else { return nil }
+        return EdgeChoice(sides: s, outline: predicted, normal: normal)
+    }
+
     /// The sides re-indexed to another outline of the same slab (matched corner to corner, either way round); nil when the
     /// outlines are too far apart to be the same sides.
     func sides(matching q: [Vec2]) -> [Side]? {
+        guard let m = correspondence(q) else { return nil }
+        return (0..<4).map { i -> Side in
+            let a = m[i], b = m[(i + 1) % 4]
+            return sides[b == (a + 1) % 4 ? a : b]
+        }
+    }
+
+    /// For each side of `q`, the matching side of `outline` (its two ends): where that side's top edge is expected.
+    func expectedLines(matching q: [Vec2]) -> [(Vec2, Vec2)]? {
+        guard let m = correspondence(q) else { return nil }
+        return (0..<4).map { i in (outline[m[i]], outline[m[(i + 1) % 4]]) }
+    }
+
+    func correspondence(_ q: [Vec2]) -> [Int]? {
         guard sides.count == 4, outline.count == 4, q.count == 4 else { return nil }
         let m = Geometry.bestCorrespondence(q, outline)
         guard m.meanDistance < 0.75 * ShapeCheck.meanSide(q) else { return nil }
-        return (0..<4).map { i -> Side in
-            let a = m.map[i], b = m.map[(i + 1) % 4]
-            return sides[b == (a + 1) % 4 ? a : b]
-        }
+        return m.map
     }
 }
 
 /// Finds the top face's edge on every side of a slab outline, using the slab as a box with thickness.
 ///
-/// On a side whose cut face the camera can see, the image shows two parallel edges: the top face meeting the light cut
-/// face, and (usually the stronger) the cut face meeting the black base. A plain edge search lands on either, from one
-/// frame to the next, which made the near edge flip on the real phone. Here the pose is solved from the outline, the box
-/// model predicts for each side whether its cut face shows and how wide its band is in pixels, and the gradient profiles
-/// across each side are searched for the outer edge (the strongest step from light inside to dark outside) and for a
-/// partner edge about one band-width inside it. The output is always the top edge: the inner partner when it is found
-/// with enough contrast, otherwise the outer edge moved inward by the predicted band. That holds only where the black base
-/// lies just outside the outer edge; where it does not (the cut face in shadow, or overhanging the floor as the slab rocks
-/// in its cradle), the strong edge is the top face's own and is kept. Sides whose cut face is hidden are silhouettes: the
-/// first clear edge from the inside is the top edge (beyond it there may be a sliver of black base and then the floor).
-/// Pose -> bands -> edges is iterated, and each side's choice is kept with hysteresis across calls (`EdgeChoice`).
+/// On a side whose cut face the camera can see, the image shows two parallel edges about one band apart: the top face
+/// meeting the cut face, and the cut face meeting what lies beyond it (usually the black base). A plain edge search
+/// lands on either, from one frame to the next, which made the near edge flip on the real phone. Here the pose is solved
+/// from the outline, the box model predicts for each side whether its cut face shows and how wide its band is in pixels,
+/// and the gradient profiles across each side are searched for the strongest edge and for parallel partner edges about
+/// one band-width inside and outside it. The output is always the top edge:
+/// - an edge one band inside the strongest one (either way: a lit or a shadowed cut face) means the strongest edge is the
+///   band's bottom, and the partner is the top edge;
+/// - a further darkening edge one band outside means the cut face is in shadow with the base darker still: the strongest
+///   edge is the top edge;
+/// - with no partner: if right outside the strongest edge it is darker than the top face but not black (a cut face in
+///   shadow, then the floor or the base's lit rim), the strongest edge is the top edge; if the band just inside it is
+///   clearly darker than the top face (a shadowed cut face fading into the black base), the top edge is where the top
+///   face's own level ends; otherwise (a cut face about as light as the top, on the black base) the strongest edge is the
+///   band's bottom, moved inward by the predicted band.
+/// Sides whose cut face is hidden are silhouettes: the first clear edge from the inside is the top edge (beyond it there
+/// may be a sliver of black base and then the floor). Pose -> bands -> edges is iterated.
+///
+/// Memory (`EdgeChoice`) keeps each side's top line on the same physical edge from call to call. The last output, moved
+/// by the camera's motion when the caller knows it (`EdgeChoice.moved(to:)`), says where each top edge should be. When
+/// this call's evidence is weak (no partner edge, or one barely clear of its threshold) the candidate nearer that
+/// prediction is used, and clear evidence for the other edge must repeat on `switchAfter` calls in a row before it wins.
+/// The memory is a position, not a label: when the strongest edge itself moves from one physical edge to the other (a
+/// cut face about halfway between the top's and the base's luma), each call's reading is applied to the edge it was
+/// made on, and the output stays on the top edge.
 public struct EdgeRefiner {
     public struct Options {
         /// edge readings per side
         public var spokes = 32
-        /// rounds of pose -> bands -> edges
+        /// rounds of pose -> bands -> edges: at least `iterations`, and up to `maxIterations` while a corner still moves by
+        /// more than `settlePixels` (frame pixels) in a round (an outline that starts a few pixels off can make the first
+        /// pose show a band on a side whose cut face is hidden; the next rounds undo that)
         public var iterations = 2
+        public var maxIterations = 4
+        public var settlePixels = 0.25
         /// a cut face whose band is thinner than this (frame pixels) is treated as hidden
         public var minBandPixels = 1.0
-        /// the outer edge sits on the black base when the luma just outside it is below this share of the top face's
+        /// right outside the strongest edge, luma below this share of the top face's counts as black (the base)
         public var darkRatio = 0.4
+        /// ... and at or above this share, as not darker than the top (so the strongest edge cannot be the top's own)
+        public var maxOutsideRatio = 0.9
         /// a reading's outer edge on a side whose cut face shows must step by at least this much (grey levels)
         public var minEdgeStep = 6.0
-        /// the band just inside the outer edge is a cut face in shadow when its luma is below this share of the top face's
+        /// the band just inside the strongest edge is darker than the top face when its luma is below this share of the
+        /// top's (and lighter when above 2 minus this share)
         public var shadowedBandRatio = 0.85
-        /// where the inner partner edge is looked for, as a share of the predicted band
+        /// where partner edges are looked for, as a share of the predicted band
         public var partnerScales: ClosedRange<Double> = 0.5...1.7
         /// a partner edge must step by at least this much (grey levels, averaged along the side) ...
         public var minPartnerContrast = 3.0
         /// ... and stand this many standard errors clear of the side's scatter ...
         public var partnerNoiseFactor = 4.0
-        /// ... and be at least this share of the outer edge's step
+        /// ... and (one inside) be at least this share of the strongest edge's step
         public var innerContrastRatio = 0.08
-        /// a side changes mode only after the new one has been seen on this many calls in a row
+        /// a further darkening edge outside the strongest one must step by at least this much (grey levels)
+        public var minOuterPartnerContrast = 4.0
+        /// where a band is too narrow for its two edges to stand apart: the strongest edge is the top's own when the luma
+        /// right outside it exceeds the base's one band further out by this share of the top's step down to that base
+        public var outerLevelShare = 0.15
+        /// a partner edge at least this many times its threshold is clear evidence: it can overrule the predicted top line
+        /// (after `switchAfter` calls in a row); weaker evidence cannot
+        public var clearFactor = 1.5
+        /// the predicted top line decides between the two candidate edges only when it lies within this share of the
+        /// band (plus a pixel) of one of them, and nearer it by at least this share of the band
+        public var predictionReach = 0.5
+        public var predictionMargin = 0.4
+        /// a side changes its reported mode only after the new one has been used on this many calls in a row; clear
+        /// evidence against the predicted top line must repeat as often before it moves the line
         public var switchAfter = 3
-        /// how fast the visible share of the band is learned from inner edges seen, and its limits
+        /// how fast the visible share of the band is learned from the band's two edges seen together, and its limits
         public var bandScaleRate = 0.25
         public var bandScaleRange: ClosedRange<Double> = 0.6...1.4
         public var pose = PoseSolver.Options()
@@ -131,8 +209,18 @@ public struct EdgeRefiner {
         public var fit: PoseFit
         /// per side (side i runs from corner i to corner i+1)
         public var sides: [SideEdge]
-        /// pass this back in on the next call
+        /// pass this back in on the next call (moved by the camera's motion: `EdgeChoice.moved(to:)`)
         public var choice: EdgeChoice
+    }
+
+    /// What one call's image evidence alone says about a side whose cut face shows.
+    struct Reading {
+        var mode: EdgeMode          // .innerEdge, .outerIsTop or .shiftedOuter
+        var clear: Bool             // a partner edge (or level change) well clear of its threshold
+        var inner: Partner?         // the top edge found inside the strongest one
+        var outerPartner: Partner?  // a further darkening edge found outside it (the band's bottom, the strongest being the top)
+        var ratio: Double           // luma right outside the strongest edge / the top face's
+        var bandRatio: Double       // luma just inside it / the top face's
     }
 
     public var options: Options
@@ -151,8 +239,10 @@ public struct EdgeRefiner {
     ///   - K: the frame's intrinsics (the outline's pixels)
     ///   - luma: the image searched for edges: the frame's luma, or a finer image of the same view (e.g. the camera's
     ///     full-resolution luma, or a crop of it) described by `lumaIntrinsics`
-    ///   - down: gravity in camera axes (for the pose's level prior), if known
-    ///   - choice: the last call's `choice`, if this is the same slab
+    ///   - down: gravity in camera axes (the pose's level prior, and so which cut faces show). Without it the pose can
+    ///     come out as its mirror image, which puts the bands on the wrong sides: pass it whenever it is known.
+    ///   - choice: the last call's `choice` for this slab, moved to where the slab should be now (`moved(to:)`) when the
+    ///     camera has moved
     public func refine(outline: [Vec2], intrinsics K: CameraIntrinsics, luma: Plane, lumaIntrinsics KDIn: CameraIntrinsics? = nil,
                        spec: SlabSpec, down: Vec3?, choice: EdgeChoice? = nil) -> Result? {
         guard outline.count == 4, ShapeCheck.isConvex(outline) else { return nil }
@@ -160,11 +250,14 @@ public struct EdgeRefiner {
         let map = ImageMap(from: K, to: KD)
         let ds = map.scale, unit = max(0.5, ds / 2)
         let prevSides = choice?.sides(matching: outline)
+        let expected = choice?.expectedLines(matching: outline).map { $0.map { (map.forward($0.0), map.forward($0.1)) } }
         var cur = outline.map(map.forward)
         var sides: [SideEdge] = []
         var states: [EdgeChoice.Side] = []
         let h = 1.5 * unit
-        for _ in 0..<max(1, options.iterations) {
+        var round = 0
+        while true {
+            round += 1
             let fit = PoseSolver.solve(corners: cur, intrinsics: KD, spec: spec, down: down, previousNormal: choice?.normal, options: options.pose)
             let bands = fit.map { Geometry.predictBands(pose: $0.pose, outline: cur, intrinsics: KD, spec: spec) }
                 ?? [Band](repeating: Band(visible: false, start: 0, end: 0), count: 4)
@@ -201,76 +294,77 @@ public struct EdgeRefiner {
                 let reach = 1.8 * bmax + margin
                 let sp = SpokeProfiles(luma: luma, a: A, b: B, normal: nrm, inward: reach, outward: reach, unit: unit,
                                        count: options.spokes)
-                // the outer edge: on a side whose cut face shows, the strongest step from light (inside) to dark (outside),
-                // or failing that (a floor lighter than the cut face beyond it) the strongest step to light; on a
-                // silhouette, the first clear step from the inside, either way
+                // the strongest edge: on a side whose cut face shows, the strongest step from light (inside) to dark
+                // (outside), or failing that (a floor lighter than the cut face beyond it) the strongest step to light; on
+                // a silhouette, the first clear step from the inside, either way
                 var outer: (line: Line2, inliers: Int)? = nil
                 var darkening = false
                 if visible {
-                    outer = sp.edgeLine(.strongestDarkening, unit: unit, minStep: options.minEdgeStep)
+                    // one edge, coherently along the side (the band's two edges lie apart by at least its narrower end)
+                    let coh = (window: max(0.75 * ds, 0.4 * min(b0, b1)), maxTilt: max(2 * ds, 0.04 * len))
+                    outer = sp.edgeLine(.strongestDarkening, unit: unit, minStep: options.minEdgeStep, coherent: coh)
                     darkening = outer != nil
-                    if outer == nil { outer = sp.edgeLine(.strongestBrightening, unit: unit, minStep: options.minEdgeStep) }
+                    if outer == nil { outer = sp.edgeLine(.strongestBrightening, unit: unit, minStep: options.minEdgeStep, coherent: coh) }
                 } else {
                     outer = sp.edgeLine(.firstFromInside, unit: unit)
                 }
                 guard let outer = outer else {
                     lines.append(Line2(p: A, d: dir))
-                    let st = Self.update(prev, raw: .unfitted, partnerScale: nil, options: options)
-                    states.append(st)
+                    states.append(Self.update(prev, raw: .unfitted, partnerScale: nil, options: options))
                     sides.append(SideEdge(mode: .unfitted, bandPixels: meanBandFrame, contrast: 0, outerContrast: 0, innerContrast: 0,
-                                          shift: 0, points: 0, outsideRatio: 0))
+                                          shift: 0, points: 0, outsideRatio: 0, observed: .unfitted, used: .unfitted))
                     continue
                 }
                 let offL = sp.offsets(of: outer.line)
                 let muL = sp.mean(at: offL) ?? 0
-                var raw: EdgeMode = .silhouette
-                var inner: Partner? = nil
-                var ratio = 0.0
-                if visible {
-                    // what lies right outside the outer edge (its darkest luma within ~2 px, against the top face's beyond
-                    // where the band could reach): black (the base) or lighter than the top (a lit floor), the outer edge is
-                    // the cut face's bottom; darker than the top but not black, it is a cut face in shadow, and the strong
-                    // edge is the top face's own
-                    ratio = sp.lumaRatio(luma: luma, offsets: offL, outside: [0.75 * ds, 1.25 * ds, 1.75 * ds, 2.25 * ds],
-                                         inside: [-1.6 * bmax - 2 * ds, -1.6 * bmax - 3 * ds], unit: unit)
-                    // the band just inside the outer edge, against the top face: clearly darker means the cut face is in
-                    // shadow and fades into the black base, so the strong edge lies within it; the top edge is then where
-                    // the top face's own level ends
-                    let bandRatio = sp.lumaRatio(luma: luma, offsets: offL, outside: [-0.75 * bmax, -0.5 * bmax, -0.25 * bmax].filter { $0 < -0.5 * ds },
-                                                 inside: [-1.6 * bmax - 2 * ds, -1.6 * bmax - 3 * ds], unit: unit, darkest: false)
-                    if darkening && ratio >= options.darkRatio {
-                        raw = .outerIsTop
-                    } else {
-                        let bandMid = max((b0 + b1) / 2, 1e-9)
-                        if darkening && bandRatio < options.shadowedBandRatio,
-                           let cp = sp.changePoint(offsets: offL, from: -1.7 * bmax - 2 * ds, to: 0, minInner: 2 * h, minOuter: 0.5 * ds),
-                           cp.contrast < 0, abs(cp.contrast) >= max(options.minPartnerContrast, options.partnerNoiseFactor * cp.se),
-                           -cp.offset / bandMid >= options.partnerScales.lowerBound - 0.2, -cp.offset / bandMid <= options.partnerScales.upperBound {
-                            inner = Partner(scale: -cp.offset / bandMid, mu: cp.contrast, se: cp.se)
-                        } else {
-                            inner = sp.partner(offsets: offL, band: (b0, b1), direction: -1, scales: options.partnerScales, minSeparation: 2 * h,
-                                               minContrast: max(options.minPartnerContrast, options.innerContrastRatio * abs(muL)),
-                                               noiseFactor: options.partnerNoiseFactor)
-                        }
-                        raw = inner != nil ? .innerEdge : .shiftedOuter
+                guard visible else {
+                    lines.append(outer.line)
+                    states.append(Self.update(prev, raw: .silhouette, partnerScale: nil, options: options))
+                    sides.append(SideEdge(mode: .silhouette, bandPixels: 0, contrast: abs(muL), outerContrast: muL, innerContrast: 0,
+                                          shift: 0, points: outer.inliers, outsideRatio: 0, observed: .silhouette, used: .silhouette))
+                    continue
+                }
+                let bandMid = max((b0 + b1) / 2, 1e-9)
+                let r = read(sp, luma: luma, offsets: offL, band: (b0, b1), darkening: darkening, strongest: muL, ds: ds, h: h, unit: unit)
+                // the two candidates for the top edge: the strongest edge itself, or the edge one band inside it (the
+                // inner edge seen, or the strongest edge moved in by the learned share of the band)
+                let inK = r.inner?.scale ?? (prev?.bandScale ?? 1)
+                // where the predicted top line lies from the strongest edge, in bands (negative: inside)
+                var predShift: Double? = nil
+                if let ex = expected?[i] {
+                    let po = sp.offsets(of: Line2(p: ex.0, d: (ex.1 - ex.0).normalized))
+                    predShift = zip(po, offL).map { $0 - $1 }.reduce(0, +) / Double(po.count) / bandMid
+                }
+                var preferTop: Bool? = nil
+                if let ps = predShift, inK * bandMid >= 1.5 * ds {
+                    let dTop = abs(ps), dIn = abs(ps + inK)
+                    if abs(dTop - dIn) >= options.predictionMargin * inK && min(dTop, dIn) <= options.predictionReach * inK + ds / bandMid {
+                        preferTop = dTop < dIn
                     }
                 }
-                let st = Self.update(prev, raw: raw, partnerScale: inner?.scale, options: options)
-                states.append(st)
-                // the output: always the top edge
-                var k = 0.0
-                switch st.mode {
-                case .innerEdge: k = inner?.scale ?? st.bandScale
-                case .shiftedOuter: k = st.bandScale
-                default: k = 0
+                var useTop = r.mode == .outerIsTop
+                var disagreements = 0
+                if let pt = preferTop, pt != useTop {
+                    // weak evidence never moves a side off the edge it was on; clear evidence must repeat first
+                    disagreements = r.clear ? (prev?.disagreements ?? 0) + 1 : 0
+                    if !r.clear || disagreements < options.switchAfter { useTop = pt } else { disagreements = 0 }
                 }
-                if !visible { k = 0 }
-                let line = k == 0 ? outer.line : sp.shifted(offsets: offL, by: k, band: (b0, b1))
-                lines.append(line)
-                let usedInner = st.mode == .innerEdge && inner != nil
-                sides.append(SideEdge(mode: visible ? st.mode : .silhouette, bandPixels: visible ? meanBandFrame : 0,
-                                      contrast: usedInner ? abs(inner!.mu) : abs(muL), outerContrast: muL, innerContrast: inner?.mu ?? 0,
-                                      shift: k, points: outer.inliers, outsideRatio: ratio))
+                let used: EdgeMode
+                var k = 0.0
+                if useTop { used = .outerIsTop }
+                else if let p = r.inner { used = .innerEdge; k = p.scale }
+                else { used = .shiftedOuter; k = prev?.bandScale ?? 1 }
+                // the band's two edges seen together teach its visible share
+                let seenScale = used == .innerEdge ? r.inner?.scale : used == .outerIsTop ? r.outerPartner?.scale : nil
+                var st = Self.update(prev, raw: used, partnerScale: seenScale, options: options)
+                st.disagreements = disagreements
+                states.append(st)
+                lines.append(k == 0 ? outer.line : sp.shifted(offsets: offL, by: k, band: (b0, b1)))
+                sides.append(SideEdge(mode: st.mode, bandPixels: meanBandFrame,
+                                      contrast: used == .innerEdge ? abs(r.inner!.mu) : abs(muL), outerContrast: muL,
+                                      innerContrast: r.inner?.mu ?? 0, shift: k, points: outer.inliers, outsideRatio: r.ratio,
+                                      observed: r.mode, used: used, outerPartnerContrast: r.outerPartner?.mu ?? 0,
+                                      predictedShift: predShift))
             }
             // corners where the new lines cross (a corner that would jump implausibly far keeps its place)
             var next = cur
@@ -281,7 +375,9 @@ public struct EdgeRefiner {
                 if p.distance(to: cur[i]) < 0.2 * side + 2 * maxBand + 2 * ds { next[i] = p }
             }
             guard ShapeCheck.isConvex(next) else { return nil }
+            let moved = zip(next, cur).map { $0.distance(to: $1) }.max() ?? 0
             cur = next
+            if round >= max(1, options.iterations) && (moved <= options.settlePixels * ds || round >= max(options.iterations, options.maxIterations)) { break }
         }
         let out = cur.map(map.inverse)
         guard let fit = PoseSolver.solve(corners: out, intrinsics: K, spec: spec, down: down, previousNormal: choice?.normal, options: options.pose) else { return nil }
@@ -289,7 +385,73 @@ public struct EdgeRefiner {
         return Result(outline: out, fit: fit, sides: sides, choice: newChoice)
     }
 
-    /// One side's memory after this call's observation: a new mode takes over only once seen `switchAfter` times in a row.
+    /// Read a side whose cut face shows: is the strongest edge the top face's own edge or the band's bottom? (`offL`:
+    /// each reading's offset to the strongest edge; `band`: the predicted band at the side's two ends, edge-image pixels)
+    func read(_ sp: SpokeProfiles, luma: Plane, offsets offL: [Double], band: (Double, Double), darkening: Bool, strongest muL: Double,
+              ds: Double, h: Double, unit: Double) -> Reading {
+        let bmax = max(band.0, band.1), bandMid = max((band.0 + band.1) / 2, 1e-9)
+        // the top face, beyond where the band could reach
+        let top = [-1.6 * bmax - 2 * ds, -1.6 * bmax - 3 * ds]
+        // right outside the strongest edge: its darkest luma (so a thin strip of black base before the floor still counts),
+        // no further out than most of a band (beyond that lies whatever is past the band's bottom)
+        let outEnd = min(2.25 * ds, max(1.25 * ds, 0.8 * bmax))
+        let outside = Array(stride(from: 0.75 * ds, through: outEnd + 1e-9, by: 0.5 * ds))
+        let ratio = sp.lumaRatio(luma: luma, offsets: offL, outside: outside, inside: top, unit: unit)
+        // the band just inside the strongest edge, against the top face
+        let bandRatio = sp.lumaRatio(luma: luma, offsets: offL, outside: [-0.75 * bmax, -0.5 * bmax, -0.25 * bmax].filter { $0 < -0.5 * ds },
+                                     inside: top, unit: unit, darkest: false)
+        var r = Reading(mode: .shiftedOuter, clear: false, inner: nil, outerPartner: nil, ratio: ratio, bandRatio: bandRatio)
+        // 1. an edge one band inside, either way (a lit or a shadowed cut face): the strongest edge is the band's bottom
+        let thrIn = max(options.minPartnerContrast, options.innerContrastRatio * abs(muL))
+        if let p = sp.partner(offsets: offL, band: band, direction: -1, scales: options.partnerScales, minSeparation: 2 * h,
+                              minContrast: thrIn, noiseFactor: options.partnerNoiseFactor) {
+            r.mode = .innerEdge; r.inner = p
+            r.clear = abs(p.mu) >= options.clearFactor * max(thrIn, options.partnerNoiseFactor * p.se)
+            return r
+        }
+        // 2. a further darkening edge one band outside: the cut face is in shadow and the base darker still, so the
+        //    strongest edge is the top's own
+        if darkening, let p = sp.partner(offsets: offL, band: band, direction: 1, scales: options.partnerScales, minSeparation: 2 * h,
+                                         minContrast: options.minOuterPartnerContrast, noiseFactor: options.partnerNoiseFactor, sign: -1) {
+            r.mode = .outerIsTop; r.outerPartner = p
+            r.clear = abs(p.mu) >= options.clearFactor * max(options.minOuterPartnerContrast, options.partnerNoiseFactor * p.se)
+            return r
+        }
+        // 2b. the same seen in luma levels, where the band is too narrow for its two edges to stand apart: right outside the
+        //    strongest edge clearly lighter than the base one band further out
+        if darkening {
+            let topLevel = sp.lumaLevel(luma: luma, offsets: offL, at: top, unit: unit)
+            let near = ratio * max(topLevel, 1)
+            let far = sp.lumaLevel(luma: luma, offsets: offL, at: [bmax + ds, bmax + 1.75 * ds, bmax + 2.5 * ds], unit: unit, darkest: true)
+            if near - far >= max(options.minOuterPartnerContrast, options.outerLevelShare * (topLevel - far)) {
+                r.mode = .outerIsTop
+                return r
+            }
+        }
+        // 3. right inside at the top's level, right outside darker than the top but not black (a cut face in shadow, then
+        //    the floor or the base's lit rim): the strongest edge is the top's own. Black there is the base below the
+        //    band's bottom; at least the top's level, a lit floor below it.
+        if darkening && ratio >= options.darkRatio && ratio < options.maxOutsideRatio && abs(bandRatio - 1) <= 1 - options.shadowedBandRatio {
+            r.mode = .outerIsTop
+            return r
+        }
+        // 4. the band just inside clearly darker than the top (a cut face in shadow fading into the black base, its two
+        //    edges merged): the top edge is where the top face's own level ends
+        if darkening && bandRatio < options.shadowedBandRatio,
+           let cp = sp.changePoint(offsets: offL, from: -1.7 * bmax - 2 * ds, to: 0, minInner: 2 * h, minOuter: 0.5 * ds),
+           cp.contrast < 0, abs(cp.contrast) >= max(options.minPartnerContrast, options.partnerNoiseFactor * cp.se),
+           -cp.offset / bandMid >= options.partnerScales.lowerBound - 0.2, -cp.offset / bandMid <= options.partnerScales.upperBound {
+            r.mode = .innerEdge
+            r.inner = Partner(scale: -cp.offset / bandMid, mu: cp.contrast, se: cp.se)
+            r.clear = abs(cp.contrast) >= options.clearFactor * max(options.minPartnerContrast, options.partnerNoiseFactor * cp.se)
+            return r
+        }
+        // 5. otherwise a cut face about as light as the top on the black base: the strongest edge is the band's bottom
+        return r
+    }
+
+    /// One side's memory after this call: the mode used takes over the reported one once used `switchAfter` times in a
+    /// row; a band share seen is learned.
     static func update(_ prev: EdgeChoice.Side?, raw: EdgeMode, partnerScale: Double?, options: Options) -> EdgeChoice.Side {
         var s = prev ?? EdgeChoice.Side(mode: raw)
         if let k = partnerScale {
@@ -494,10 +656,35 @@ struct SpokeProfiles {
     }
 
     /// One edge point per reading by `rule`, and a straight line through them ignoring strays.
-    func edgeLine(_ rule: EdgeRule, unit: Double, minStep: Double = 0) -> (line: Line2, inliers: Int)? {
+    ///
+    /// With `coherent`, the strongest-step rules first find the straight line along which the readings' summed step is
+    /// largest (tilted by up to `maxTilt` across the side), then take on each reading the clear step nearest that line
+    /// (within `window`). Without this, where two parallel edges are about equally strong (a cut face about halfway
+    /// between the top's and the base's luma) each reading picks either, and the line fitted through both sets of points
+    /// lands between the two edges.
+    func edgeLine(_ rule: EdgeRule, unit: Double, minStep: Double = 0, coherent: (window: Double, maxTilt: Double)? = nil) -> (line: Line2, inliers: Int)? {
         var pts: [Vec2] = []
         pts.reserveCapacity(n)
         var mags = [Float](repeating: 0, count: m), sc = [Float](repeating: 0, count: m)
+        var lineK: [Double]? = nil
+        if let coh = coherent, rule != .firstFromInside {
+            let sgn: Float = rule == .strongestDarkening ? -1 : 1
+            let tiltMax = Int((coh.maxTilt / step).rounded()), span = Double(max(1, n - 1)), st = 2
+            var bestS: Float = 0, bestA = -1, bestD = 0
+            for d in stride(from: -tiltMax, through: tiltMax, by: st) {
+                for a in stride(from: 0, to: m, by: st) {
+                    var s: Float = 0
+                    for j in 0..<n {
+                        let k = a + Int((Double(d) * Double(j) / span).rounded())
+                        if k < 0 || k >= m { continue }
+                        s += max(0, sgn * g[j * m + k])
+                    }
+                    if s > bestS { bestS = s; bestA = a; bestD = d }
+                }
+            }
+            if bestA >= 0 { lineK = (0..<n).map { Double(bestA) + Double(bestD) * Double($0) / span } }
+        }
+        let win = coherent.map { $0.window / step } ?? 0
         for j in 0..<n {
             let row = j * m
             var gmax: Float = 0
@@ -520,7 +707,11 @@ struct SpokeProfiles {
             var best = -1
             for k in 1..<(m - 1) where sc[k] >= thr && sc[k] >= sc[k - 1] && sc[k] >= sc[k + 1] {
                 if case .firstFromInside = rule { best = k; break }
-                if best < 0 || sc[k] > sc[best] { best = k }
+                if let lk = lineK {
+                    // the clear step nearest the coherent line
+                    let dk = abs(Double(k) - lk[j])
+                    if dk <= win && (best < 0 || dk < abs(Double(best) - lk[j])) { best = k }
+                } else if best < 0 || sc[k] > sc[best] { best = k }
             }
             guard best > 0 else { continue }
             let sl = Double(sc[best - 1]), s0 = Double(sc[best]), sr = Double(sc[best + 1])
@@ -539,19 +730,26 @@ struct SpokeProfiles {
     /// a share of the mean luma at the `inside` offsets.
     func lumaRatio(luma: Plane, offsets off: [Double], outside: [Double], inside: [Double], unit: Double, darkest: Bool = true) -> Double {
         guard !outside.isEmpty, !inside.isEmpty else { return 1 }
+        return lumaLevel(luma: luma, offsets: off, at: outside, unit: unit, darkest: darkest) / max(lumaLevel(luma: luma, offsets: off, at: inside, unit: unit), 1)
+    }
+
+    /// Per reading, the darkest (or mean) luma at offsets `at` from the line at `off` (each averaged over a short run
+    /// along the side), averaged over the readings.
+    func lumaLevel(luma: Plane, offsets off: [Double], at: [Double], unit: Double, darkest: Bool = false) -> Double {
+        guard !at.isEmpty else { return 0 }
         let along: [Double] = [-2, 0, 2].map { $0 * unit }
-        func at(_ j: Int, _ o: Double) -> Double {
-            var s = 0.0
-            for u in along { s += Double(luma.sample(base[j] + dir * u + normal * (off[j] + o))) }
-            return s / Double(along.count)
-        }
-        var out = 0.0, ins = 0.0
+        var tot = 0.0
         for j in 0..<n {
-            let vs = outside.map { at(j, $0) }
-            out += darkest ? vs.min()! : vs.reduce(0, +) / Double(vs.count)
-            ins += inside.map { at(j, $0) }.reduce(0, +) / Double(inside.count)
+            var lo = Double.infinity, sum = 0.0
+            for o in at {
+                var s = 0.0
+                for u in along { s += Double(luma.sample(base[j] + dir * u + normal * (off[j] + o))) }
+                s /= Double(along.count)
+                lo = min(lo, s); sum += s
+            }
+            tot += darkest ? lo : sum / Double(at.count)
         }
-        return out / max(ins, 1)
+        return tot / Double(n)
     }
 
     /// Where the top face's level ends between offsets `lo` and `hi` from the line at `off`: one change from an inner level
@@ -625,11 +823,12 @@ struct SpokeProfiles {
     }
 
     /// Is there an edge parallel to the line at `off`, `direction` x (0.5-1.7) x the band away (inside: -1, outside: +1)?
+    /// With `sign`, only steps that way count (-1: darker outward).
     /// Every reading's value is averaged along each candidate line, so even a faint step stands out; it counts only if it
     /// is a real peak inside the range searched (not the fading flank of the main edge), clearly above the readings'
     /// scatter, and steps by at least `minContrast`.
     func partner(offsets off: [Double], band: (Double, Double), direction: Double, scales: ClosedRange<Double>,
-                 minSeparation: Double, minContrast: Double, noiseFactor: Double) -> Partner? {
+                 minSeparation: Double, minContrast: Double, noiseFactor: Double, sign: Double? = nil) -> Partner? {
         let bmin = min(band.0, band.1)
         guard bmin > 0 else { return nil }
         var scs: [Double] = [], stats: [(mu: Double, se: Double)] = [], ss: [Double] = [], valid: [Bool] = []
@@ -645,7 +844,7 @@ struct SpokeProfiles {
             let ok = c >= max(8, n / 2) && s * bmin >= minSeparation
             if ok {
                 mu = sum / Double(c); se = (max(0, sq / Double(c) - mu * mu) / Double(c)).squareRoot()
-                sc = abs(mu)
+                sc = sign.map { max(0, $0 * mu) } ?? abs(mu)
             }
             scs.append(sc); stats.append((mu, se)); ss.append(s); valid.append(ok)
             s += 0.05

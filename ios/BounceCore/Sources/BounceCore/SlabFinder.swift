@@ -26,7 +26,8 @@ public struct SlabCandidate: Equatable {
     public var baseFraction: Double
     /// what the edge refiner did on each side (empty when the box model is off)
     public var sides: [SideEdge]
-    /// pass to the next `find` call (with `near`) so each side keeps its edge choice
+    /// pass to the next `find` call (with `near`, the slab moved by the camera's motion) so each side's top line stays on
+    /// the same physical edge
     public var choice: EdgeChoice?
     public var source: Source
     /// colour match tolerance and reference (luma, Cb, Cr, texture) of the region it grew from (0 / empty when tracked)
@@ -64,7 +65,20 @@ public struct SlabFinder {
         public var maxSweepRegions: Int = 48
         /// move the sides to the top face's edges with the box model (off: the web app's plain outline)
         public var useBoxModel: Bool = true
-        public var limits = ShapeCheck.Limits()
+        /// what an outline must satisfy to be the slab. With the box model the corners fit the slab's square within 1.5%
+        /// of its side (measured on the fixtures' slab finds: at most 0.8%; the web app allowed 1% with its guessed lens);
+        /// the plain outline (`useBoxModel` off), which rests on the cut face's bottom on some sides, within 2% (measured:
+        /// up to 1.5%; a sheet of paper beside the clutter fixture's box fits within 2.4%)
+        public var limits: ShapeCheck.Limits = {
+            var l = ShapeCheck.Limits(); l.maxMisfitFraction = 0.015; return l
+        }()
+        public var plainLimits: ShapeCheck.Limits = {
+            var l = ShapeCheck.Limits(); l.maxMisfitFraction = 0.02; return l
+        }()
+        /// the web app's shape test, with the real lens: the outline seen square-on (through the homography to the slab's
+        /// plane) must have sides in the slab's proportion within this |log ratio| and corners square within this |cos|
+        public var maxAspectLog: Double = 0.3
+        public var maxSkewCos: Double = 0.25
         public var edges = EdgeRefiner.Options()
         public init() {}
     }
@@ -76,18 +90,25 @@ public struct SlabFinder {
     /// - Parameters:
     ///   - frame: colour frame (luma and colour differences) at processing size
     ///   - intrinsics: the frame's intrinsics (ARKit's, scaled to the frame)
-    ///   - down: gravity in camera axes (the pose's level prior and tilt limit, and so which cut faces show), if known
+    ///   - down: gravity in camera axes (the pose's level prior and tilt limit, and so which cut faces show). Pass it
+    ///     whenever it is known (ARKit gives it every frame): without it the pose can come out as its mirror image, which
+    ///     puts the cut faces' bands on the wrong sides
     ///   - seed: a tapped point (frame pixels): grow the slab from there, base not required
     ///   - near: an outline predicted by tracking (frame pixels): follow its edges, and grow a region from its middle,
     ///     instead of searching the whole view
     ///   - detail: a finer luma image of the same view for the edge steps (the frame's own luma if nil)
-    ///   - choice: the edge choice from the last call's best candidate (same slab), for per-side hysteresis
+    ///   - choice: the edge choice from the last call's best candidate (same slab), for per-side hysteresis; with `near`,
+    ///     its top edges are expected where `near` puts them (so `near` should be the last outline moved by the camera's
+    ///     motion); without, where they were last time
     /// - Returns: outlines that passed every check, best first: with `seed` the best colour tolerance; with `near` the
     ///   edge-tracked outline, then the colour region; otherwise the sweep's finds, largest first.
     public func find(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2? = nil,
                      near: [Vec2]? = nil, detail: DetailImage? = nil, choice: EdgeChoice? = nil) -> [SlabCandidate] {
         guard frame.width >= 16, frame.height >= 16 else { return [] }
-        let run = FinderRun(options: options, frame: frame, intrinsics: intrinsics, spec: spec, down: down, detail: detail, choice: choice)
+        // the edge memory expects each side's top edge where the predicted outline puts it
+        var ch = choice
+        if let c = choice, let q = near, q.count == 4 { ch = c.moved(to: q) ?? c }
+        let run = FinderRun(options: options, frame: frame, intrinsics: intrinsics, spec: spec, down: down, detail: detail, choice: ch)
         if let s = seed { return run.tapped(s) }
         if let q = near, q.count == 4 { return run.tracked(q) }
         return run.sweep()
@@ -292,18 +313,23 @@ final class FinderRun {
             }
         }
         let far = UInt16(min(Double(big), Double(max(w, h)) * 0.12 * 3))
-        let step = max(4, opt.sweepStep), cols = w / step, rows = h / step
-        var seeds: [(d: UInt16, j: Int, x: Int, y: Int)] = []
+        // the grid is centred in the view, and points equally near the dark are taken nearest the middle first, so the
+        // order (which decides which region a point is grown into) does not depend on which way up the image is
+        let step = max(4, opt.sweepStep), cols = max(1, w / step), rows = max(1, h / step)
+        let gx0 = (w - 1 - (cols - 1) * step) / 2, gy0 = (h - 1 - (rows - 1) * step) / 2
+        let mx = Double(w - 1) / 2, my = Double(h - 1) / 2
+        var seeds: [(d: UInt16, r2: Double, j: Int, x: Int, y: Int)] = []
         for r in 0..<rows {
             for c in 0..<cols {
-                let x = Int(((Double(c) + 0.5) * Double(step)).rounded()), y = Int(((Double(r) + 0.5) * Double(step)).rounded())
-                guard x < w, y < h else { continue }
+                let x = gx0 + c * step, y = gy0 + r * step
+                guard x >= 0, y >= 0, x < w, y < h else { continue }
                 let j = y * w + x
                 if Y[j] < lim || Tx[j] / (Y[j] + 10) > Float(opt.maxTexture) || D[j] > far { continue }
-                seeds.append((D[j], j, x, y))
+                let dx = Double(x) - mx, dy = Double(y) - my
+                seeds.append((D[j], dx * dx + dy * dy, j, x, y))
             }
         }
-        seeds.sort { $0.d != $1.d ? $0.d < $1.d : $0.j < $1.j }
+        seeds.sort { $0.d != $1.d ? $0.d < $1.d : $0.r2 != $1.r2 ? $0.r2 < $1.r2 : $0.j < $1.j }
         var found: [SlabCandidate] = []
         var grown = 0
         for s in seeds {
@@ -593,20 +619,27 @@ final class FinderRun {
 
     /// Try several colour tolerances and keep the outline whose weakest side still sits on the clearest image edge. Too
     /// tight a match stops at a lighting gradient and too loose a one leaks; either way one side has no real edge under it.
+    ///
+    /// The regions are grown and screened first (cheap), then refined and checked clearest first until one passes: the
+    /// same outline the web app's one-pass ladder keeps (the clearest that passes; the tighter on a tie), with usually
+    /// one refinement instead of one per tolerance.
     func detectSeed(_ p: Vec2, needBase: Bool, roi: ROI, markRegions: Bool, source: SlabCandidate.Source, align: [Vec2]? = nil) -> SlabCandidate? {
-        var best: SlabCandidate? = nil
-        var bestEdge = needBase ? opt.minSideEdge : -1
+        let minEdge = needBase ? opt.minSideEdge : -1
         guard roi.isUsable else { return nil }
         let (sx, sy) = seedPixel(p, roi: roi)
         let ref = patchMean(Vec2(Double(sx), Double(sy)))
         fillColourDistance(ref: ref, roi: roi)
-        for m in opt.toleranceLadder.sorted() {
+        let ladder = opt.toleranceLadder.sorted()
+        var screened: [(edge: Double, m: Double, region: Region, quad: [Vec2], base: Double)] = []
+        for m in ladder {
             regionsTried += 1
-            guard let r = detectAt(sx: sx, sy: sy, ref: ref, tol: opt.tolerance * m, roi: roi, markRegion: markRegions) else {
+            // only the tightest match is recorded for the sweep: a looser one can leak from the floor into a slab of the same
+            // tone, and would then keep the slab's own points from being grown
+            guard let r = detectAt(sx: sx, sy: sy, ref: ref, tol: opt.tolerance * m, roi: roi, markRegion: markRegions && m == ladder.first) else {
                 trace?("seed (\(sx), \(sy)) tol x\(m): no region\(lastRegionTooBig ? " (covers most of the view)" : "") \(lastFailure)")
                 // a looser match would only grow a region that already covers most of the view, or already runs out of it
                 if lastRegionTooBig {
-                    if m == opt.toleranceLadder.min() { background.append(ref) }
+                    if m == ladder.first { background.append(ref) }
                     break
                 }
                 if lastRegionAtEdge && roi.x0 == 0 && roi.y0 == 0 && roi.x1 == w && roi.y1 == h { break }
@@ -614,23 +647,27 @@ final class FinderRun {
             }
             regionsKept += 1
             let edge = r.edges.min() ?? 0
-            if edge <= bestEdge { trace?("seed (\(sx), \(sy)) tol x\(m): weakest edge \(edge) <= \(bestEdge)"); continue } // could not beat the outline already kept
+            if edge <= minEdge { trace?("seed (\(sx), \(sy)) tol x\(m): weakest edge \(edge) <= \(minEdge)"); continue }
             // when searching unprompted, the patch must also be smooth like cement and sit on the black base
             if needBase && r.cv > opt.maxTexture { trace?("seed (\(sx), \(sy)) tol x\(m): textured \(r.cv)"); continue }
             var quad = r.quad
             if let a = align { quad = Geometry.aligned(quad, to: a) }
             let bf = baseFraction(quad, refY: r.ref[0])
             if needBase && bf < opt.minBaseFraction { trace?("seed (\(sx), \(sy)) tol x\(m): base \(bf)"); continue }
-            refined += 1
-            let plain = plainRefine(quad)
-            guard var c = candidate(plain: plain.quad, plainContrast: plain.contrast, source: source) else {
-                trace?("seed (\(sx), \(sy)) tol x\(m): rejected outline \(quad) plain \(plain.quad)"); continue
-            }
-            trace?("seed (\(sx), \(sy)) tol x\(m): candidate \(c.quad)")
-            c.baseFraction = bf; c.tolerance = r.tol; c.reference = r.ref.map { Double($0) }
-            bestEdge = edge; best = c
+            screened.append((edge, m, r, quad, bf))
         }
-        return best
+        // clearest first; the tighter match first on a tie
+        for s in screened.enumerated().sorted(by: { $0.element.edge != $1.element.edge ? $0.element.edge > $1.element.edge : $0.offset < $1.offset }).map({ $0.element }) {
+            refined += 1
+            let plain = plainRefine(s.quad)
+            guard var c = candidate(plain: plain.quad, plainContrast: plain.contrast, source: source) else {
+                trace?("seed (\(sx), \(sy)) tol x\(s.m): rejected outline \(s.quad) plain \(plain.quad)"); continue
+            }
+            trace?("seed (\(sx), \(sy)) tol x\(s.m): candidate \(c.quad)")
+            c.baseFraction = s.base; c.tolerance = s.region.tol; c.reference = s.region.ref.map { Double($0) }
+            return c
+        }
+        return nil
     }
 
     /// The checks every outline must pass, and the box model's top-edge step.
@@ -646,10 +683,28 @@ final class FinderRun {
                                            options: opt.edges.pose) else { return nil }
             fit = f
         }
-        guard ShapeCheck.check(fit, outline: quad, down: down, limits: opt.limits) == .ok else { return nil }
+        guard ShapeCheck.check(fit, outline: quad, down: down, limits: opt.useBoxModel ? opt.limits : opt.plainLimits) == .ok,
+              let shape = FinderRun.aspectAndSkew(quad, K: K, spec: spec), shape.aspectLog <= opt.maxAspectLog,
+              shape.skewCos <= opt.maxSkewCos else { return nil }
         let score = sides.isEmpty ? (plainContrast.min() ?? 0) : sides.map { abs($0.outerContrast) }.min() ?? 0
         return SlabCandidate(quad: quad, plainQuad: plain, fit: fit, score: score, area: abs(Geometry.signedArea(quad)), baseFraction: 0,
                              sides: sides, choice: newChoice, source: source, tolerance: 0, reference: [])
+    }
+
+    /// The web app's shape measure with the real lens: the homography from the slab's top face to the outline, as two
+    /// scaled rotation columns; for the slab they are equally long (|log ratio| near 0) and square (|cos| near 0). The
+    /// better of the two ways the slab's sides can lie along the outline's (they differ only for a rectangular slab).
+    static func aspectAndSkew(_ q: [Vec2], K: CameraIntrinsics, spec: SlabSpec) -> (aspectLog: Double, skewCos: Double)? {
+        var best: (aspectLog: Double, skewCos: Double)? = nil
+        for (hu, hv) in [(spec.halfU, spec.halfV), (spec.halfV, spec.halfU)] {
+            guard let (c0, c1, _) = PoseSolver.homography(q, K: K, hu: hu, hv: hv) else { continue }
+            let a = c0.length, b = c1.length
+            guard a > 0, b > 0 else { continue }
+            let m = (abs(log(a / b)), abs(c0.dot(c1)) / (a * b))
+            if best == nil || m.0 < best!.aspectLog { best = m }
+            if spec.sideU == spec.sideV { break }
+        }
+        return best
     }
 
     /// The outline turned to run clockwise on screen from the corner nearest the top-left (for searches with no
