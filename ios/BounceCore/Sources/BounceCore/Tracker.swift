@@ -9,13 +9,84 @@ public protocol SlabDetecting {
 }
 
 /// One outline a detector found.
-public struct DetectedOutline: Equatable {
+public struct DetectedOutline: Equatable, Codable {
     public var quad: [Vec2]
     /// detector's own confidence, higher is better (only compared between outlines of one frame)
     public var score: Double
     /// per-side edge modes, for diagnostics (e.g. "top", "fromCutBottom", "silhouette"); side j runs from quad[j] to [j+1]
     public var sideModes: [String]
     public init(quad: [Vec2], score: Double = 1, sideModes: [String] = []) { self.quad = quad; self.score = score; self.sideModes = sideModes }
+
+    // JSON (recordings): {"quad": [[x, y], ...] (pixels of the frame the detector ran on), "score": s, "sideModes": [...]}
+    enum CodingKeys: String, CodingKey { case quad, score, sideModes }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        quad = try c.decode([[Double]].self, forKey: .quad).map { Vec2($0[0], $0[1]) }
+        score = try c.decodeIfPresent(Double.self, forKey: .score) ?? 1
+        sideModes = try c.decodeIfPresent([String].self, forKey: .sideModes) ?? []
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(quad.map { [$0.x, $0.y] }, forKey: .quad)
+        try c.encode(score, forKey: .score)
+        if !sideModes.isEmpty { try c.encode(sideModes, forKey: .sideModes) }
+    }
+}
+
+/// Something done to the tracker between frames besides handing it a frame (making it, changing its settings, a reset,
+/// a world-frame discontinuity). The tracker reports them with the next frame (`TrackerOutput.controls`), so a
+/// recording can store them and a replay can do the same at the same moment.
+public struct TrackerControl: Codable, Equatable {
+    public enum Kind: String, Codable {
+        /// the tracker was made, with `settings`
+        case start
+        /// its settings were replaced by `settings`
+        case settings
+        /// `SlabTracker.reset()`
+        case reset
+        /// `SlabTracker.noteWorldDiscontinuity(reason)`
+        case worldDiscontinuity
+    }
+    public var kind: Kind
+    public var settings: TrackerSettings?
+    public var reason: String?
+    public init(kind: Kind, settings: TrackerSettings? = nil, reason: String? = nil) {
+        self.kind = kind; self.settings = settings; self.reason = reason
+    }
+}
+
+/// One run of the slab detector as the tracker saw it, for diagnostics (`SlabTracker.detectionLog`). Poses are in world
+/// coordinates (ARKit's gravity-aligned world: metres, y up); pixels are the processing frame's.
+public struct DetectionRecord: Codable, Equatable {
+    /// frame timestamp (s, the camera's clock)
+    public var time: Double
+    /// the tracker's state when it ran
+    public var state: TrackerState
+    /// outlines the detector returned, and the shape-check verdicts (`ShapeCheck.Verdict.key`) of those it rejected
+    public var found: Int
+    public var rejected: [String]
+    /// what it led to: the counters it bumped (`SlabTracker.counts` keys), e.g. "recheckAgree", "recheckDisagree",
+    /// "relocks", "locks", "confirmRestarts", "cutFlips", "recheckMiss"
+    public var outcome: [String]
+    /// the outline the tracker used, if any: its pose's centre and normal (world), tilt from level (degrees), the
+    /// normal's standard deviation at 1 px corner noise (degrees), the fit's rms corner misfit (pixels), the distance
+    /// from the camera to the centre (m)
+    public var center: [Double]?
+    public var normal: [Double]?
+    public var tiltDegrees: Double?
+    public var sigmaDegrees: Double?
+    public var rmsPixels: Double?
+    public var distance: Double?
+    /// its side lengths in the image (pixels, pose order: side i runs from corner i to i+1) and their aspect (mean of
+    /// sides 0 and 2 over mean of sides 1 and 3)
+    public var sidesPixels: [Double]?
+    public var aspect: Double?
+    /// the detector's per-side edge modes, in pose order
+    public var sideModes: [String]?
+
+    public init(time: Double, state: TrackerState, found: Int, rejected: [String] = [], outcome: [String] = []) {
+        self.time = time; self.state = state; self.found = found; self.rejected = rejected; self.outcome = outcome
+    }
 }
 
 /// Finds the ball above the slab. The real one is BallLocator; tests can plug in others.
@@ -217,6 +288,14 @@ public struct TrackerOutput {
     public var lockSigmaDegrees: Double? = nil
     /// advice for the owner while it cannot lock, e.g. `SlabTracker.overheadHint`
     public var hint: String? = nil
+    /// what was done to the tracker since the previous frame, in order (see `TrackerControl`); a recording stores these
+    public var controls: [TrackerControl] = []
+    /// the slab detector's own outlines on this frame (pixels of the processing frame, as the detector returned them,
+    /// before any checks), or nil if the detector did not run on this frame
+    public var detections: [DetectedOutline]? = nil
+    /// the ball finder ran on this frame (`ball` is then its result, nil if it found none; otherwise `ball` is the last
+    /// result, kept)
+    public var ballSearched: Bool = false
 }
 
 /// The per-frame logic shared by the app and the replay tests: search, confirm, lock the slab in world space so its
@@ -228,7 +307,10 @@ public struct TrackerOutput {
 /// they can move it: a side taken at the bottom of its cut face (the box model), a far-away lookalike, a jump that LiDAR
 /// contradicts, or a tilt change the cradle cannot make, are not moves.
 public final class SlabTracker {
-    public var settings: TrackerSettings
+    /// Changing the settings is reported with the next frame (`TrackerOutput.controls`).
+    public var settings: TrackerSettings {
+        didSet { if settings != oldValue { pendingControls.append(TrackerControl(kind: .settings, settings: settings)) } }
+    }
     public let detector: SlabDetecting
     public let ballLocator: BallLocating?
     public private(set) var state: TrackerState = .searching
@@ -251,6 +333,9 @@ public final class SlabTracker {
     public var seedPoint: Vec3? { seed?.world }
     /// after a world-frame discontinuity, until the lock is seen again where it should be
     public var lockUnconfirmed: Bool { unconfirmed != nil }
+    /// the last `detectionLogSize` runs of the slab detector, oldest first (for diagnostics)
+    public private(set) var detectionLog: [DetectionRecord] = []
+    public static let detectionLogSize = 20
 
     /// The advice shown while views from nearly straight above cannot pin the tilt.
     public static let overheadHint = "Hard to see the tilt from straight above: view the slab at more of an angle"
@@ -274,6 +359,8 @@ public final class SlabTracker {
         var quad: [Vec2]
         var sideModes: [String]
         var time: Double
+        /// the fit's rms corner misfit (pixels)
+        var rms: Double = 0
         var pose: SlabPose { est.pose }
         mutating func swapSides() { if let a = alt { alt = est; est = a } }
     }
@@ -304,14 +391,22 @@ public final class SlabTracker {
     private var lastRecheckKind = "ok"
     private var lastHintTime = -Double.infinity
     private var weakRejections = 0                         // outlines rejected as ill-conditioned in this detection
+    private var pendingControls: [TrackerControl] = []     // since the last frame (see TrackerOutput.controls)
+    private var detectionBumps: [String]? = nil            // counters bumped by the detection running now
+    private var rejectedNow: [String] = []                 // verdict keys rejected by the detection running now
 
     public init(settings: TrackerSettings = TrackerSettings(), detector: SlabDetecting, ballLocator: BallLocating? = nil) {
         self.settings = settings; self.detector = detector; self.ballLocator = ballLocator
+        pendingControls = [TrackerControl(kind: .start, settings: settings)]
     }
 
-    func bump(_ k: String) { counts[k, default: 0] += 1 }
+    func bump(_ k: String) {
+        counts[k, default: 0] += 1
+        detectionBumps?.append(k)
+    }
 
-    /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image).
+    /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image). With a
+    /// tap on that frame it runs anyway. (These two decide it exactly, which a replay relies on.)
     public func detectionDue(at t: Double) -> Bool {
         t - lastCheck >= (state == .locked && !sidesUndecided ? settings.recheckInterval : settings.searchInterval)
     }
@@ -331,6 +426,7 @@ public final class SlabTracker {
         forget()
         seed = nil; tapResetPending = false; noiseSamples = []
         bump("reset")
+        pendingControls.append(TrackerControl(kind: .reset))
     }
 
     /// ARKit's world frame may have moved under the lock: call when an interruption ends, when ARKit relocalises, or on
@@ -341,6 +437,7 @@ public final class SlabTracker {
     public func noteWorldDiscontinuity(_ reason: String = "world-frame") {
         pendingDiscontinuity = reason
         lastCheck = -.infinity
+        pendingControls.append(TrackerControl(kind: .worldDiscontinuity, reason: reason))
     }
 
     /// The detector's corner noise (pixels of the processing frame) as the re-checks show it: how far each one's
@@ -472,6 +569,9 @@ public final class SlabTracker {
         let downW = ARKitConvention.worldDown
         let downCam = f.view.directionToCamera(downW)
         var measurementQuad: [Vec2]? = nil
+        let controls = pendingControls
+        pendingControls = []
+        var detections: [DetectedOutline]? = nil
 
         // a tap: look for the slab there until it locks; with tracking limited, start over once it is normal again
         if let tp = f.tap {
@@ -525,7 +625,7 @@ public final class SlabTracker {
 
         if due && f.trackingNormal {
             lastCheck = t
-            detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
+            detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
         }
 
         // LiDAR: the depth plane, averaged in world space over frames that pass its gates, folded into the image lock
@@ -557,12 +657,15 @@ public final class SlabTracker {
         out.lockUnconfirmed = state == .locked && unconfirmed != nil
         out.lockSigmaDegrees = state == .locked ? lockSigmaDegrees : nil
         out.hint = state != .locked && t - lastHintTime < 2 ? SlabTracker.overheadHint : nil
+        out.controls = controls
+        out.detections = detections
         guard state == .locked, let s = slab else { return out }
         out.outline = project(s, f.view)
 
         // the ball
         if let loc = ballLocator, let img = f.ballImage, let bk = f.ballIntrinsics, f.timestamp - lastBall >= settings.ballInterval {
             lastBall = f.timestamp
+            out.ballSearched = true
             let sc = s.transformed(by: f.view.cameraFromWorld)
             if let b = loc.locate(image: img, intrinsics: bk, slab: sc, spec: settings.spec, ball: settings.ball, down: downCam) {
                 ballState = (f.view.toWorld(b.center), b.circle, b.radius); bump("ballFrames"); lastBallSeen = t
@@ -582,9 +685,32 @@ public final class SlabTracker {
 
     // MARK: detection
 
+    /// Runs the detector and acts on what it found; returns the detector's raw outlines.
     private func detect(_ f: TrackerFrame, _ downCam: Vec3, _ chk: DepthCheck?, _ depthCheck: (SlabPose) -> DepthCheck?,
-                        _ events: inout [String], _ measurementQuad: inout [Vec2]?) {
+                        _ events: inout [String], _ measurementQuad: inout [Vec2]?) -> [DetectedOutline] {
         let t = f.timestamp
+        var record = DetectionRecord(time: t, state: state, found: 0)
+        detectionBumps = []; rejectedNow = []
+        var used: Measurement? = nil
+        var found: [DetectedOutline] = []
+        defer {
+            record.found = found.count
+            record.rejected = rejectedNow
+            record.outcome = (detectionBumps ?? []).filter { !["searches", "rechecks", "detections"].contains($0) && !$0.hasPrefix("reject:") }
+            if let m = used {
+                let p = m.pose, sides = (0..<4).map { m.quad[$0].distance(to: m.quad[($0 + 1) % 4]) }
+                record.center = p.center.array; record.normal = p.normal.array
+                record.tiltDegrees = Units.degrees(p.tilt(down: ARKitConvention.worldDown))
+                record.sigmaDegrees = Units.degrees(m.est.sigma); record.rmsPixels = m.rms
+                record.distance = p.center.distance(to: f.view.position)
+                record.sidesPixels = sides
+                record.aspect = (sides[0] + sides[2]) / max(sides[1] + sides[3], 1e-9)
+                record.sideModes = m.sideModes.isEmpty ? nil : m.sideModes
+            }
+            detectionLog.append(record)
+            if detectionLog.count > SlabTracker.detectionLogSize { detectionLog.removeFirst(detectionLog.count - SlabTracker.detectionLogSize) }
+            detectionBumps = nil
+        }
         let lockQ = imageSlab.flatMap { project($0, f.view) }
         let inView = lockQ.map { q in q.allSatisfy { f.view.intrinsics.contains($0, margin: 2) } } ?? false
         var near: [Vec2]? = state == .locked ? lockQ : nil
@@ -595,7 +721,7 @@ public final class SlabTracker {
             if !inView || u.rechecks % 2 == 0 { near = nil }
         }
         let seedPx: Vec2? = state == .locked ? nil : seed.flatMap { f.view.project(world: $0.world) }.flatMap { f.view.intrinsics.contains($0) ? $0 : nil }
-        let found = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: seedPx, near: near)
+        found = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: seedPx, near: near)
         bump(state == .locked ? "rechecks" : "searches")
         let reference = referenceNormal(t).map { f.view.directionToCamera($0) }
         weakRejections = 0
@@ -610,9 +736,10 @@ public final class SlabTracker {
                 miss(f, inView: inView, chk: chk, found: found, lockQ: lockQ, &events)
             case .searching: break
             }
-            return
+            return found
         }
         bump("detections")
+        used = chosen
         measurementQuad = chosen.quad
         lastSideModes = chosen.sideModes
         switch state {
@@ -626,6 +753,7 @@ public final class SlabTracker {
         case .locked:
             recheck(chosen, f, inView: inView, chk: chk, depthCheck: depthCheck, found: found, lockQ: lockQ, &events)
         }
+        return found
     }
 
     /// A detected outline's pose(s), checked; nil (and counted) if it fails the shape check.
@@ -656,11 +784,13 @@ public final class SlabTracker {
                             cov: R * p.centreCovariance * Rt, cost: p.bestCost)
         }
         return Measurement(est: est(fit), alt: other.map(est), quad: fit.cornersInPoseOrder(o.quad),
-                           sideModes: o.sideModes.count == 4 ? fit.sidesInPoseOrder(o.sideModes) : o.sideModes, time: f.timestamp)
+                           sideModes: o.sideModes.count == 4 ? fit.sidesInPoseOrder(o.sideModes) : o.sideModes, time: f.timestamp,
+                           rms: fit.rmsPixels)
     }
 
     private func reject(_ v: ShapeCheck.Verdict, _ t: Double) {
         bump("reject:" + v.key)
+        rejectedNow.append(v.key)
         if let x = v.value { rejectionValues[v.key, default: ValueSummary()].add(x) }
         if case .illConditioned = v { lastHintTime = t; weakRejections += 1 }
     }

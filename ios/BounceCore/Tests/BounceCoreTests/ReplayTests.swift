@@ -44,16 +44,27 @@ final class ReplayTests: XCTestCase {
     }
 
     /// Replays a recording named by the BOUNCE_RECORDING environment variable (e.g. one sent from the phone) with the
-    /// detector the app uses, and prints what happened frame by frame. Skipped when the variable is not set.
+    /// detector the app uses, and prints what happened frame by frame beside what the phone recorded (version 2), with
+    /// the frames where they differ and a summary. Skipped when the variable is not set. BOUNCE_REPLAY_RECORDED=1 replays
+    /// the tracker alone on the phone's own detections.
     func testReplayRecordingFromEnvironment() throws {
         guard let path = ProcessInfo.processInfo.environment["BOUNCE_RECORDING"] else { throw XCTSkip("set BOUNCE_RECORDING=/path/to/x.bouncerec") }
         let rec = try RecordingReader(folder: URL(fileURLWithPath: path))
-        let (steps, tracker) = try ReplayRunner(reader: rec).run(detector: AppDetectors.slab(), ballLocator: AppDetectors.ball())
-        for st in steps {
-            let o = st.output
-            print(String(format: "%6.2f  %@  tilt %@  events %@", st.frame.timestamp, o.state.rawValue,
-                         o.readouts.map { String(format: "%.2f", $0.tiltDegrees) } ?? "-", o.events.joined(separator: ",")))
+        var options = ReplayRunner.Options()
+        if ProcessInfo.processInfo.environment["BOUNCE_REPLAY_RECORDED"] == "1" { options.detections = .recorded; options.ball = .recorded }
+        let r = try ReplayRunner(reader: rec).replay(detector: AppDetectors.slab(), ballLocator: AppDetectors.ball(), options: options)
+        func tilt(_ v: Double?) -> String { v.map { String(format: "%5.2f", $0) } ?? "    -" }
+        print("  time  phone              replay             events (replay)")
+        for st in r.steps {
+            let o = st.output, p = st.phone
+            print(String(format: "%6.2f  %@ %@  %@ %@  %@", st.frame.timestamp,
+                         (p?.state.rawValue ?? "-").padding(toLength: 10, withPad: " ", startingAt: 0), tilt(p?.tiltDegrees),
+                         o.state.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0), tilt(o.readouts?.tiltDegrees),
+                         o.events.joined(separator: ",")))
+            for d in st.differences { print("        differs: " + d) }
+            for s in st.substitutions { print("        used: " + s) }
         }
-        print("counts:", tracker.counts.sorted { $0.key < $1.key })
+        print("counts:", r.tracker.counts.sorted { $0.key < $1.key })
+        print(r.report)
     }
 }
