@@ -1,5 +1,17 @@
-# Private photos, crops, textures and renders made from them. Never commit.
+# Private photos, crops, textures and renders made from them, and recordings from the owner's phone. Never commit.
+web/tests/private/
 tests/private/
+private/
+*.bouncerec
+*.bouncerec.zip
 # Generated clips and run outputs
+web/tests/out/
 tests/out/
 node_modules/
+# Swift / Xcode build products
+.build/
+ios/**/.build/
+ios/*.xcodeproj/
+ios/**/*.xcodeproj/
+xcuserdata/
+DerivedData/

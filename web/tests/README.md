@@ -4,7 +4,7 @@ Synthetic phone-camera clips of the slab, fed to `index.html` through Chrome's f
 against ground truth. Everything runs headless in this folder.
 
 ```
-cd tests
+cd web/tests                       # the app and its test bed live in web/; paths below are relative to web/
 npm install                       # three.js (the renderer); Playwright's Chromium must already be installed
 node render.js                    # render all clips into out/clips/ (cached; --force to redo, --filter to pick)
 node run.js --label base          # score index.html on every clip, save out/results/base.json
