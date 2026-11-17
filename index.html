@@ -94,6 +94,8 @@ details .row{margin-top:8px}
       <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
     <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
       <input id="fov" type="range" min="45" max="85" step="1" value="65"></div>
+    <div class="btns" style="margin-top:12px"><button class="btn" id="diag" type="button">Copy diagnostics</button></div>
+    <textarea id="diagOut" readonly hidden rows="5" style="width:100%;margin-top:8px;background:var(--ink-2);color:var(--chalk);border:1px solid var(--line);border-radius:8px;font:12px ui-monospace,monospace;padding:8px"></textarea>
     <p class="note" id="sens"></p>
     <p class="note" id="gnote">The dashed line is perpendicular to the slab face. The arc's bend depends on which way is down: with the camera running that comes from the phone's tilt sensor, otherwise set how steeply the phone is aimed at the floor.</p>
   </details>
@@ -107,6 +109,9 @@ const cv=$("cv"), ctx=cv.getContext("2d");
 const G=32.174; // ft/s^2
 const P={drop:3,reb:70,ball:35,size:12,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
+try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
+const BUILD="b8";
+const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
 /* ---------- vector helpers ---------- */
@@ -117,7 +122,8 @@ const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l]};
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const focal=()=> (Math.max(S.sw,S.sh)/2)/Math.tan(P.fov*Math.PI/360);
+const focalFor=fov=>(Math.max(S.sw,S.sh)/2)/Math.tan(fov*Math.PI/360);
+const focal=()=>focalFor(P.fov);
 
 /* ---------- image preparation ---------- */
 function blur3(a,w,h){
@@ -323,11 +329,15 @@ const MISFIT=.01,MAXTILT=35;
 function plausible(q){
   const f=focal(),h=homog(q,f,S.sw/2,S.sh/2,.5);if(!h)return false;
   const a=Math.hypot(...h.c0),b=Math.hypot(...h.c1);
-  if(Math.abs(Math.log(a/b))>.3||Math.abs(dot(h.c0,h.c1)/(a*b))>.25)return false;
+  if(Math.abs(Math.log(a/b))>.3||Math.abs(dot(h.c0,h.c1)/(a*b))>.25){bump('rejShape');return false;}
   const ps=solvePose(q,f,S.sw/2,S.sh/2,P.size/24,null);if(!ps)return false;
   let side=0;for(let i=0;i<4;i++)side+=Math.hypot(q[(i+1)%4].x-q[i].x,q[(i+1)%4].y-q[i].y)/4;
-  if(ps.err>side*MISFIT||ps.c[2]<.4||ps.c[2]>12)return false;
-  if(S.live&&S.grav&&-dot(ps.n,S.grav)<Math.cos(MAXTILT*Math.PI/180))return false;
+  // the lens angle is only an estimate, so accept the outline if it is a square under any nearby lens angle
+  let err=ps.err;
+  for(const d of [-8,8]){const p2=solvePose(q,focalFor(P.fov+d),S.sw/2,S.sh/2,P.size/24,null);if(p2&&p2.err<err)err=p2.err;}
+  S.lastMisfit=err/side;
+  if(err>side*MISFIT||ps.c[2]<.4||ps.c[2]>12){bump('rejMisfit');return false;}
+  if(S.live&&S.grav&&-dot(ps.n,S.grav)<Math.cos(MAXTILT*Math.PI/180)){bump('rejTilt');return false;}
   return true;
 }
 // the cement always sits on its black base: how much of the strip just outside one side of the outline is black?
@@ -354,7 +364,10 @@ function detectSeed(px,py,needBase,ref){
   for(const m of TOLS){
     const r=detectAt(px,py,P.tol*m,ref);
     // when searching unprompted, the patch must also be smooth like cement, not patterned
-    if(!r||!plausible(r.q)||(needBase&&(r.cv>.075||baseFrac(r)<.07)))continue;
+    if(!r){bump('noRegion');continue;}
+    if(!plausible(r.q))continue;
+    if(needBase&&r.cv>.075){bump('rejTexture');continue;}
+    if(needBase&&baseFrac(r)<.07){bump('rejNoBase');continue;}
     r.edge=Math.min(...r.edges);
     if(r.edge>bs){bs=r.edge;best=r;}
   }
@@ -367,6 +380,18 @@ function detect(seed){
   const seeds=[[0,0],[-.12,0],[.12,0],[0,-.12],[0,.12],[-.12,-.12],[.12,-.12],[-.12,.12],[.12,.12]].map(o=>[pw/2+o[0]*pw,ph/2+o[1]*ph]);
   for(const b of [true,false])for(const s of seeds){const r=detectSeed(s[0],s[1],b);if(r)return r;}
   return null;
+}
+// The slab is a known square, so its outline also reveals the camera's true lens angle: nudge the
+// setting toward whichever value lets a square fit best. Only angled views carry this information.
+function tuneFov(){
+  const e=fov=>{const p=solvePose(S.quad,focalFor(fov),S.sw/2,S.sh/2,P.size/24,null);return p?p.err:Infinity;};
+  const p0=solvePose(S.quad,focal(),S.sw/2,S.sh/2,P.size/24,null);
+  if(!p0||-dot(p0.n,norm(p0.c))>Math.cos(25*Math.PI/180))return; // looking nearly straight at the face: no information
+  const e0=p0.err,lo=e(P.fov-2),hi=e(P.fov+2);let d=0;
+  if(lo<e0*.85&&lo<=hi)d=-.5;else if(hi<e0*.85)d=.5;
+  if(!d)return;
+  P.fov=clamp(P.fov+d,50,80);$("fov").value=P.fov;
+  try{localStorage.setItem("slabFov",String(P.fov));}catch(_){}
 }
 /* live tracking: follow the slab from frame to frame and smooth its corners */
 function track(){
@@ -394,12 +419,12 @@ function track(){
       if(S.si%24===0){r=S.cand;S.cand=null;if(r)break;}
     }
   }
-  if(!r){if(S.quad&&++S.lost>12){S.quad=null;S.nS=null;S.lost=0;}return;}
+  if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;bump('unlocks');}}return;}
   const q=r.q;
   if(!S.quad){
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
     S.seed=null;S.lost=0;
-    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.nS=null;return;
+    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.nS=null;bump('locks');return;
   }
   S.lost=0;
   let bk=0,bd=Infinity;
@@ -407,15 +432,16 @@ function track(){
   const d=bd/4,side=Math.hypot(S.quad[1].x-S.quad[0].x,S.quad[1].y-S.quad[0].y);
   if(d>side*.15){
     // debounce: a sudden different outline has to persist before it replaces the current one
-    if(++S.far<8)return;
+    bump('farFrames');if(++S.far<8)return;bump('jumps');
     S.quad=q.map((_,i)=>q[(i+bk)%4]);S.far=0;S.nS=null;return;
   }
-  S.far=0;
+  S.far=0;S.jit=S.jit==null?d:S.jit*.9+d*.1;S.lastEdges=r.edges;S.lastArea=r.area;
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
   // (the gyroscope says when the phone is being held still, which allows much heavier averaging)
   const a=clamp(d/(side*.05),S.rot!=null&&S.rot<4?.04:.1,.6);
   S.quad=S.quad.map((p,i)=>({x:p.x+(q[(i+bk)%4].x-p.x)*a,y:p.y+(q[(i+bk)%4].y-p.y)*a}));
   S.ref=S.ref.map((v,i)=>v+(r.seen[i]-v)*.08); // follow gradual lighting changes
+  if(S.fid%10===0)tuneFov();
 }
 
 /* ---------- ball: a round outline of the expected size anywhere in view ---------- */
@@ -573,7 +599,7 @@ function update(){
   $("oPitch").textContent=P.pitch+"°";
   $("oSize").textContent=P.size+" in";
   $("oTol").textContent=P.tol;
-  $("oFov").textContent=P.fov+"°";
+  $("oFov").textContent=P.fov+"°"+(S.live?" (self-adjusting)":"");
   const st=$("status");
   S.tr=null;
   const sensor=S.live&&S.grav;
@@ -611,7 +637,8 @@ function update(){
   const end=sub(at(T),start),hz=sub(end,mul(g,dot(end,g)));
   const apex=vup>0?vup*vup/(2*G):0;
   S.tr={pose,T,at,from,start,ta:vup>0?Math.min(T,vup/G):0,apex};
-  $("rTilt").textContent=Math.round(Math.acos(clamp(-dot(n,g),-1,1))*180/Math.PI)+"°";
+  S.tilt=Math.acos(clamp(-dot(n,g),-1,1))*180/Math.PI;S.dist=c[2];S.nrm=n;
+  $("rTilt").textContent=Math.round(S.tilt)+"°";
   $("rApex").textContent=apex.toFixed(1)+" ft";
   $("rRange").textContent=Math.hypot(...hz).toFixed(1)+" ft";
   $("rAir").textContent=T.toFixed(2)+" s";
@@ -635,6 +662,8 @@ function frame(now){
     const v=S.video;if(v.readyState<2||!v.videoWidth)return;
     S.sw=v.videoWidth;S.sh=v.videoHeight;
     prepare();track();if(S.fid%2===0)scanBall();update();
+    const now=performance.now();S.fps=S.tPrev?(S.fps||30)*.9+.1*1000/(now-S.tPrev):30;S.tPrev=now;
+    if(S.fid%30===0){HIST.push([Math.round(now/100)/10,S.quad?1:0,S.tilt==null?null:+S.tilt.toFixed(1),S.lastMisfit==null?null:+S.lastMisfit.toFixed(4),P.fov,S.jit==null?null:+S.jit.toFixed(2),Math.round(S.fps),S.ball?1:0]);if(HIST.length>40)HIST.shift();}
   }
   if(!S.src||!S.W)return;
   ctx.clearRect(0,0,S.W,S.H);
@@ -690,6 +719,7 @@ function stopLive(){
   S.stream=null;S.live=false;$("live").textContent="Start camera";
 }
 function onMotion(e){
+  bump('motion');
   const rr=e.rotationRate;
   if(rr&&rr.alpha!=null){const m=Math.hypot(rr.alpha,rr.beta,rr.gamma);S.rot=S.rot==null?m:S.rot*.8+m*.2;}
   const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
@@ -760,6 +790,25 @@ function loadFile(file){
   img.src=url;
 }
 
+/* ---------- diagnostics ---------- */
+function diag(){
+  const r=(v,d=2)=>v==null?null:Array.isArray(v)?v.map(x=>r(x,d)):+(+v).toFixed(d);
+  return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],view:[Math.round(S.W),Math.round(S.H)],
+    screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
+    sensor:{gravity:r(S.grav,3),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
+    set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
+    status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[Math.round(p.x),Math.round(p.y)]),
+    tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),
+    tilt:r(S.tilt,1),distFt:r(S.dist,2),normal:r(S.nrm,3),jitterPx:r(S.jit,2),fps:r(S.fps,0),
+    ball:S.ball&&{x:Math.round(S.ball.x),y:Math.round(S.ball.y),r:r(S.ball.r,1),dropFt:S.tr&&S.tr.from?r(S.tr.from.drop,2):null},
+    counts:K,histCols:"t,locked,tilt,misfit,fov,jitterPx,fps,ball",hist:HIST};
+}
+$("diag").addEventListener("click",()=>{
+  const text=JSON.stringify(diag()),b=$("diag"),out=$("diagOut");
+  const show=()=>{out.hidden=false;out.value=text;out.focus();out.select();b.textContent="Select all and copy the text below";};
+  try{navigator.clipboard.writeText(text).then(()=>{b.textContent="Copied. Paste it into the chat";setTimeout(()=>{b.textContent="Copy diagnostics";},2500);},show);}catch(_){show();}
+});
+
 /* ---------- wiring ---------- */
 $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
@@ -775,6 +824,7 @@ cv.addEventListener("click",e=>{
   S.seed={x,y};S.seedAge=0;if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;scanBall();update();}
 });
 new ResizeObserver(resize).observe(cv);
+$("fov").value=P.fov;
 resize();
 setSource(exampleScene(),true);
 requestAnimationFrame(frame);
