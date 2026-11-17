@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in the app and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n3"
+let appBuild = "n4"
 
 /// The owner's settings, in the owner's units, stored in UserDefaults.
 struct AppSettings: Equatable {
