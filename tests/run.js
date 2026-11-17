@@ -14,6 +14,8 @@ const { scoreClip, summarize, cornerErr } = require("./score");
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf("--" + k); return i < 0 ? d : (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : true); };
 const LABEL = opt("label", "run"), MODE = opt("mode", "step"), WORKERS = +opt("workers", 3), APP = opt("app", "index.html");
+// --store key=value[,key=value]: localStorage entries set before the app loads (e.g. slabCutEdge=1 to test an option)
+const STORE = Object.fromEntries(String(opt("store", "") || "").split(",").filter(Boolean).map((kv) => kv.split("=")));
 const PHASE = +opt("phase", 0); // start the camera this many 60 Hz ticks later (a small, realistic perturbation)
 const FILTER = opt("filter", null), PRIVATE = !!opt("private", false), STILLS = !!opt("stills", false), QUIET = !!opt("quiet", false);
 const HARNESS = fs.readFileSync(path.join(__dirname, "harness.js"), "utf8");
@@ -39,7 +41,7 @@ async function runStep(srv, clip, gt) {
   try {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
     await context.grantPermissions(["camera"], { origin: srv.url });
-    await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "step", fov: FOV })) });
+    await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "step", fov: FOV, store: STORE })) });
     const page = await context.newPage(); const errs = []; page.on("pageerror", (e) => errs.push(e.message));
     await page.goto(`${srv.url}/${APP}`);
     const rel = "/" + path.relative(ROOT, path.join(clip.dir, "clip.mjpeg")).split(path.sep).join("/");
@@ -66,7 +68,7 @@ async function runLive(srv, clip, gt) {
   try {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
     await context.grantPermissions(["camera"], { origin: srv.url });
-    await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "live", fov: FOV })) });
+    await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "live", fov: FOV, store: STORE })) });
     const page = await context.newPage(); const errs = []; page.on("pageerror", (e) => errs.push(e.message));
     await page.goto(`${srv.url}/${APP}`);
     const rel = "/" + path.relative(ROOT, path.join(clip.dir, "clip.mjpeg")).split(path.sep).join("/");
@@ -108,7 +110,7 @@ async function runStills(srv) {
   try {
     for (const s of list) {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
-      await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "photo", fov: FOV })) });
+      await context.addInitScript({ content: HARNESS.replace("__CFG__", JSON.stringify({ mode: "photo", fov: FOV, store: STORE })) });
       const page = await context.newPage(); await page.goto(`${srv.url}/${APP}`);
       await page.setInputFiles("#pick", path.join(__dirname, "private", s.file));
       await page.waitForFunction(() => window.slabDiagnostics().src[0] !== 900, null, { timeout: 15000, polling: 50 });

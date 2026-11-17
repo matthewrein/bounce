@@ -90,6 +90,9 @@ details .row{margin-top:8px}
       <input id="pitch" type="range" min="0" max="90" step="1" value="50"></div>
     <div class="row"><label for="size">Slab side</label><output id="oSize" for="size"></output>
       <input id="size" type="range" min="4" max="24" step="0.25" value="7"></div>
+    <div class="row"><label for="cutEdge">Correct for the slab's cut edge (experimental)</label><input id="cutEdge" type="checkbox" style="grid-column:auto;width:22px;height:22px"></div>
+    <div class="row"><label for="thick">Slab thickness (used by the correction above)</label><output id="oThick" for="thick"></output>
+      <input id="thick" type="range" min="0.25" max="2" step="0.05" value="0.9"></div>
     <div class="row"><label for="tol">Color match looseness</label><output id="oTol" for="tol"></output>
       <input id="tol" type="range" min="8" max="60" step="1" value="26"></div>
     <div class="row"><label for="fov">Lens field of view</label><output id="oFov" for="fov"></output>
@@ -107,10 +110,11 @@ details .row{margin-top:8px}
 const $=id=>document.getElementById(id);
 const cv=$("cv"), ctx=cv.getContext("2d");
 const G=32.174; // ft/s^2
-const P={drop:3,reb:70,ball:35,size:7,tol:26,pitch:50,fov:65};
+const P={drop:3,reb:70,ball:35,size:7,thick:.9,cutEdge:false,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b14";
+try{P.cutEdge=localStorage.getItem("slabCutEdge")==="1";const t=parseFloat(localStorage.getItem("slabThick"));if(t>=.25&&t<=2)P.thick=t;}catch(_){}
+const BUILD="b15";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -306,10 +310,70 @@ function detectAt(sx,sy,tol,ref,mark){
   if(fill<.6||fill>1.5)return null; // loose: the rigid-square test after edge refinement is the real gate
   return {q:refineQuad(q.map(p=>({x:(p.x+.5)/k,y:(p.y+.5)/k})),.09),score:Math.abs(1-fill),area,tol,ref:[y0,b0,r0,x0],seen,edges,cv:tsum/count/(y0+10)};
 }
+// Optional (Tune: "Correct for the slab's cut edge", off by default; see tests/LOG.md attempt 4 for why).
+// The slab is P.thick inches thick (a Tune setting). On a side whose cut face the camera can see,
+// that face shows as a band just outside the top face's edge, ending at the black base. For each side of outline q:
+// null if its cut face is hidden, else how wide the band should look (fine-image px) at the first and last spoke.
+function cutBands(q,k2){
+  if(!P.cutEdge)return null;
+  const f=focal(),cx=S.sw/2,cy=S.sh/2,ps=solvePose(q,f,cx,cy,P.size/24,S.live&&S.grav?S.grav:null,S.live?S.nS:null);if(!ps)return null;
+  const T=P.thick/12,pr=p=>[f*p[0]/p[2]+cx,f*p[1]/p[2]+cy];
+  const C=MODEL.map(m=>add(ps.c,add(mul(ps.r1,m[0]*ps.hs),mul(ps.r2,m[1]*ps.hs))));
+  const band=p=>{const b=sub(p,mul(ps.n,T));if(b[2]<.05||p[2]<.05)return 0;const a=pr(p),c=pr(b);return Math.hypot(c[0]-a[0],c[1]-a[1])*k2;};
+  return C.map((A,i)=>{const B=C[(i+1)%4],m=mul(add(A,B),.5),u=sub(m,ps.c); // u: outward along the slab
+    if(dot(u,m)>=0)return null; // the camera is inside this face's plane: the cut face is out of sight
+    const bA=band(A),bB=band(B),b0=bA+(bB-bA)*.08,b1=bA+(bB-bA)*.92;return Math.min(b0,b1)>=1.5?{b0,b1}:null;});
+}
+// Along one side, given its strongest-found edge L: is there a parallel partner edge about one band-width away
+// (inside if dir=-1, outside if +1)? Every spoke's gradient profile is read along each candidate line (band width
+// scaled by s, 0.5-1.7), so even a faint step stands out once averaged; it counts only if clearly above the spokes'
+// scatter. Returns {s, mu} for the best one or null.
+function partnerEdge(prof,L,nx,ny,w,b,dir){
+  const K=prof.length;if(K<10)return null;
+  const off=prof.map(sp=>(sp.bx-L.px)*nx+(sp.by-L.py)*ny); // each spoke's base point, measured outward from L
+  const val=(k,d)=>{const sp=prof[k],f=(d-off[k]+w)/.5,i=Math.floor(f);if(i<0||i>=sp.g.length-1)return null;return sp.g[i]+(sp.g[i+1]-sp.g[i])*(f-i);};
+  const line=s=>{let n=0,sum=0,sq=0;for(let k=0;k<K;k++){const t=prof[k].j/31,v=val(k,dir*s*(b.b0+(b.b1-b.b0)*t));if(v==null)continue;n++;sum+=v;sq+=v*v;}
+    if(n<10)return null;const mu=sum/n;return {mu,se:Math.sqrt(Math.max(0,sq/n-mu*mu)/n)};};
+  let at0=0,n0=0;for(let k=0;k<K;k++){const v=val(k,0);if(v!=null){at0+=Math.abs(v);n0++;}}at0/=Math.max(1,n0);
+  let best=null,bv=0;const sc=[];
+  for(let s=.5;s<=1.7001;s+=.05){const r=line(s);sc.push(r?Math.abs(r.mu):0);if(r&&Math.abs(r.mu)>bv&&Math.min(b.b0,b.b1)*s>=3){bv=Math.abs(r.mu);best={s,r};}}
+  if(!best)return null;
+  // a real peak inside the range searched, not the fading flank of L or a slope running off the end of the range
+  const m=Math.round((best.s-.5)/.05);if(m<=0||m>=sc.length-1||sc[m-1]>=bv||sc[m+1]>=bv)return null;
+  return bv>=Math.max(2.5,4*best.r.se,.05*at0)?{s:best.s,mu:best.r.mu}:null;
+}
+// The top face's edge on a side whose cut face shows (see cutBands). L is the edge the usual rule found. The slab sits
+// on a black base: if it's dark just outside L *and* a faint parallel edge shows about one band-width inside L (where
+// the top face meets the cut face), L is the bottom of the cut face and the top edge is one band-width further in
+// (the band's width follows from the pose and the thickness setting). A cut face in shadow is also dark, but then L is
+// already the top edge and there is no such edge inside it (the top face is plain), so nothing moves. While tracking,
+// each side keeps a confidence (st[i]) that rises quickly when that inner edge is seen and fades slowly when it isn't,
+// and the shift is scaled by it, so a side doesn't flip between two places from one frame to the next.
+function topEdge(prof,L,nx,ny,w,b,smp,st,i){
+  let out=0,ins=0,c=0;const bb=(b.b0+b.b1)/2;
+  for(const sp of prof){const p=(sp.bx-L.px)*nx+(sp.by-L.py)*ny;
+    for(const o of [1.5,2.5])out+=smp(sp.bx+nx*(o-p),sp.by+ny*(o-p));
+    for(const o of [-1.6*bb-3,-1.6*bb-5])ins+=smp(sp.bx+nx*(o-p),sp.by+ny*(o-p));c+=2;}
+  const dark=c&&ins>0?clamp((.55-out/ins)/.25,0,1):0;
+  const e=dark?partnerEdge(prof,L,nx,ny,w,b,-1):null;
+  if(e&&dark===1&&S.live)S.thkSeen=S.thkSeen==null?e.s:S.thkSeen*.95+e.s*.05;
+  // the side's memory: k (how sure), s (the band's measured width as a share of the expected one). It is left alone
+  // on frames where it isn't dark outside L, and only learns when it is clearly dark there
+  let k,sc=1;
+  if(!dark)return L; // L is the top edge itself this frame
+  if(st){const m=st[i]||(st[i]={k:0,s:1});if(e&&dark===1){m.s=m.k?m.s+(e.s-m.s)*.2:e.s;m.k=Math.min(1,m.k+.25);}else if(!e)m.k=Math.max(0,m.k-.03);k=m.k;sc=m.s;}
+  else{k=e?1:0;sc=e?e.s:1;}
+  k*=dark;if(!k)return L;
+  const sp0=prof[0],sp1=prof[prof.length-1],pa=(sp0.bx-L.px)*nx+(sp0.by-L.py)*ny,pb=(sp1.bx-L.px)*nx+(sp1.by-L.py)*ny;
+  const da=-k*sc*(b.b0+(b.b1-b.b0)*sp0.j/31),db=-k*sc*(b.b0+(b.b1-b.b0)*sp1.j/31);
+  const ax=sp0.bx-nx*(pa-da),ay=sp0.by-ny*(pa-da),bx=sp1.bx-nx*(pb-db),by=sp1.by-ny*(pb-db),l=Math.hypot(bx-ax,by-ay);
+  return l>1?{px:ax,py:ay,dx:(bx-ax)/l,dy:(by-ay)/l}:L;
+}
 // Sharpen the outline on the double-resolution image: find the edge at many points along each side,
 // fit a straight line through them ignoring strays, and take the corners where those lines cross.
-function refineQuad(q,wf){
+function refineQuad(q,wf,st){
   const H=S.proc.hi,hY=H.Y,hw=H.w,hh=H.h,k2=H.s,P=q.map(p=>({x:(p.x-H.ox)*k2,y:(p.y-H.oy)*k2}));
+  const bands=cutBands(q,k2);
   const cx=(P[0].x+P[1].x+P[2].x+P[3].x)/4,cy=(P[0].y+P[1].y+P[2].y+P[3].y)/4;
   const smp=(x,y)=>{x=clamp(x,0,hw-1.001);y=clamp(y,0,hh-1.001);const xi=x|0,yi=y|0,fx=x-xi,fy=y-yi,j=yi*hw+xi;
     return (hY[j]*(1-fx)+hY[j+1]*fx)*(1-fy)+(hY[j+hw]*(1-fx)+hY[j+hw+1]*fx)*fy;};
@@ -318,13 +382,15 @@ function refineQuad(q,wf){
     const A=P[i],B=P[(i+1)%4],len=Math.hypot(B.x-A.x,B.y-A.y);
     let dx=(B.x-A.x)/len,dy=(B.y-A.y)/len,nx=-dy,ny=dx;
     if(nx*((A.x+B.x)/2-cx)+ny*((A.y+B.y)/2-cy)<0){nx=-nx;ny=-ny;}
-    const w=Math.max(5,len*(wf||.035)),pts=[];
+    const w=Math.max(5,len*(wf||.035)),pts=[],prof=[];
     for(let j=0;j<32;j++){
       const t=len*(.08+.84*j/31),bx=A.x+dx*t,by=A.y+dy*t,gs=[];let gmax=0;
       // each reading averages a short run along the edge so cement speckle and sensor noise don't register as edges
+      const sg=bands?[]:null; // signed profiles, only needed for the cut-edge correction
       for(let o=-w;o<=w;o+=.5){let g=0;
         for(let u=-4;u<=4;u+=2)g+=smp(bx+dx*u+nx*(o+1.5),by+dy*u+ny*(o+1.5))-smp(bx+dx*u+nx*(o-1.5),by+dy*u+ny*(o-1.5));
-        g=Math.abs(g/5);gs.push(g);if(g>gmax)gmax=g;}
+        if(sg)sg.push(g/5);g=Math.abs(g/5);gs.push(g);if(g>gmax)gmax=g;}
+      if(sg)prof.push({j,bx,by,g:sg});
       // an edge must stand clear of this spoke's own background ripple (cement speckle, sensor noise)
       const thr=Math.max(.25*gmax,2.5*gs.slice().sort((a,b)=>a-b)[gs.length>>1]+2);
       if(gmax<thr)continue;
@@ -342,6 +408,7 @@ function refineQuad(q,wf){
         const res=pts.map(p=>Math.abs((p.x-mx)*L.dy-(p.y-my)*L.dx)),med=res.slice().sort((a,b)=>a-b)[res.length>>1],lim=Math.max(.75,2.5*med);
         const keep=pts.filter((p,n)=>res[n]<=lim);if(keep.length<8||keep.length===use.length)break;use=keep;
       }
+      if(bands&&bands[i])L=topEdge(prof,L,nx,ny,w,bands[i],smp,st,i);
     }
     lines.push(L);
   }
@@ -468,7 +535,7 @@ function track(){
     const px=c.x*S.proc.k,py=c.y*S.proc.k;
     // Normal case: follow the four edges directly from where they were last frame. This is far steadier than
     // re-finding the slab by colour every frame, which can hop between slightly different outlines.
-    const tq=refineQuad(S.quad,.09);
+    const tq=refineQuad(S.quad,.09,S.cut||(S.cut=[null,null,null,null]));
     // (three clearly found sides are enough: the fourth keeps its previous line and the rigid-square fit ties them together)
     if(tq.fitted<3)bump('trkFewSides');
     if(tq.fitted>=3&&plausible(tq)){
@@ -480,7 +547,7 @@ function track(){
           S.ref=S.ref.map((v,i)=>v+(rr.seen[i]-v)*.3);
           let d=Infinity;for(let k=0;k<4;k++){let t=0;for(let i=0;i<4;i++)t+=Math.hypot(rr.q[(i+k)%4].x-tq[i].x,rr.q[(i+k)%4].y-tq[i].y)/4;d=Math.min(d,t);}
           const side=Math.hypot(tq[1].x-tq[0].x,tq[1].y-tq[0].y);
-          if(d>side*.06){if(++S.dis>=3){r=rr;S.dis=0;bump('relock');}}else S.dis=0;
+          if(d>side*.06){if(++S.dis>=3){r=rr;S.dis=0;S.cut=null;bump('relock');}}else S.dis=0;
         }
       }
     }
@@ -499,13 +566,13 @@ function track(){
   }else{
     if(S.fid%2===0)r=sweep(); // every other frame, so the picture stays smooth while searching
   }
-  if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;bump('unlocks');}}return;}
+  if(!r){if(S.quad){bump('heldFrames');if(++S.lost>12){S.quad=null;S.nS=null;S.lost=0;S.cut=null;bump('unlocks');}}return;}
   const q=squareUp(r.q);
   if(!S.quad){
     S.gyPrev=null;
     // a softly angled slab can't be steeply tilted from level; anything that is, is some other surface
     S.seed=null;S.lost=0;
-    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.dis=0;S.nS=null;bump('locks');return;
+    S.quad=q;S.ltol=r.tol;S.ref=r.ref.slice();S.far=0;S.dis=0;S.nS=null;S.cut=null;bump('locks');return;
   }
   S.lost=0;
   let turn=gyroStep(q,turned);
@@ -520,7 +587,7 @@ function track(){
   if(d>side*.15){
     // debounce: a sudden different outline has to persist before it replaces the current one
     bump('farFrames');if(++S.far<8)return;bump('jumps');
-    S.quad=q.map((_,i)=>q[(i+bk)%4]);S.far=0;S.nS=null;return;
+    S.quad=q.map((_,i)=>q[(i+bk)%4]);S.far=0;S.nS=null;S.cut=null;return;
   }
   S.far=0;S.jit=S.jit==null?d:S.jit*.9+d*.1;if(r.edges){S.lastEdges=r.edges;S.lastArea=r.area;}
   // heavy smoothing when nearly still, lighter when the slab or phone is really moving
@@ -707,6 +774,7 @@ function update(){
   $("oBall").textContent=P.ball+" mm";
   $("oPitch").textContent=P.pitch+"°";
   $("oSize").textContent=P.size+" in";
+  $("oThick").textContent=P.thick.toFixed(2)+" in";
   $("oTol").textContent=P.tol;
   $("oFov").textContent=P.fov+"°"+(S.live?" (self-adjusting)":"");
   const st=$("status");
@@ -918,9 +986,9 @@ function diag(){
   return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],liveSrc:S.liveSrc||null,view:[Math.round(S.W),Math.round(S.H)],
     screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
     sensor:{gravity:r(S.grav,4),gravityClean:r(S.gravC,4),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
-    set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
+    set:{fov:P.fov,size:P.size,thick:P.thick,cutEdge:P.cutEdge,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
     status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[r(p.x,1),r(p.y,1)]),ms:r(S.ms,1),msAvg:r(S.msAvg,1),
-    tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),
+    tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),thicknessSeen:S.thkSeen==null?null:r(S.thkSeen*P.thick,2),
     gyro:S.gy?{sign:S.gy.sign,gain:r(S.gy.xy/(S.gy.xx+1e-9),2)}:null,
     tilt:r(S.tilt,2),distFt:r(S.dist,2),normal:r(S.nrm,4),jitterPx:r(S.jit,2),fps:r(S.fps,0),
     ball:S.ball&&{x:Math.round(S.ball.x),y:Math.round(S.ball.y),r:r(S.ball.r,1),dropFt:S.tr&&S.tr.from?r(S.tr.from.drop,2):null},
@@ -936,8 +1004,9 @@ $("diag").addEventListener("click",()=>{
 /* ---------- wiring ---------- */
 $("live").addEventListener("click",startLive);
 for(const id of ["pick"])$(id).addEventListener("change",e=>{loadFile(e.target.files[0]);e.target.value="";});
-for(const key of ["drop","reb","ball","pitch","size","tol","fov"])$(key).addEventListener("input",e=>{
+for(const key of ["drop","reb","ball","pitch","size","thick","tol","fov"])$(key).addEventListener("input",e=>{
   P[key]=parseFloat(e.target.value);
+  if(key==="thick")try{localStorage.setItem("slabThick",String(P.thick));}catch(_){}
   if(key==="tol"&&!S.live){const r=detect(S.seed);S.quad=r&&r.q;}
   update();
 });
@@ -948,7 +1017,9 @@ cv.addEventListener("click",e=>{
   S.seed={x,y};S.seedAge=0;if(S.live){S.quad=null;S.nS=null;S.lost=0;}else{const r=detect(S.seed);S.quad=r&&r.q;scanBall();update();}
 });
 new ResizeObserver(resize).observe(cv);
-$("fov").value=P.fov;
+$("fov").value=P.fov;$("thick").value=P.thick;$("cutEdge").checked=P.cutEdge;
+$("cutEdge").addEventListener("change",e=>{P.cutEdge=e.target.checked;S.cut=null;try{localStorage.setItem("slabCutEdge",P.cutEdge?"1":"0");}catch(_){}
+  if(!S.live){const r=detect(S.seed);S.quad=r&&r.q;scanBall();}update();});
 resize();
 setSource(exampleScene(),true);
 requestAnimationFrame(frame);

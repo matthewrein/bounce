@@ -24,6 +24,8 @@ frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking
 | b12 baseline (2 phases) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | 0.579 | 2.3 | 0 | 21.8 | 68 | 1.3 / 0.5 / 0.2 |
 | b13 clean gravity (kept) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | **0.219** | 2.3 | 0 | 23.5 | 74 | 1.3 / 0.5 / 0.2 |
 | b14 gyro-steadied smoothing (kept; 49 clips) | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | **0.276** | **0.178** | 2.3 | 0 | 22.7 | 72 | 1.3 / 0.5 / 0.2 |
+| b15 default (cut-edge correction off) = b14 | 82.3 | 4 | 6 | 4.80 | 5.21 | 13.21 | 36/44 | 0.276 | 0.178 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
+| b15 with "Correct for the slab's cut edge" on | 82.7 | 4 | 7 | **2.63** | **1.30** | 13.2 | 15/42 | 0.345 | 0.241 | 2.3 | 0 | - | - | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
 
@@ -147,3 +149,24 @@ turning both consistently.
 Result (2 phases vs b13, 49 clips): no clip worse, 53 metrics better. Median wobble while still 0.361 -> 0.276 deg
 (normal) and 0.223 -> 0.178 deg (tilt reading), e.g. 4 ft mat clip 0.22 -> 0.13 deg. Tilt accuracy unchanged (still
 biased by the cut edge; see attempt 4).
+
+## b15 - the cut-edge correction as an opt-in setting (kept, off by default)
+
+Attempt 4 rebuilt on top of b14, then tuned: the width of the band is learned only from edges seen *inside* the
+side (seen from outside, the black base's own far edge looks just like the band's bottom and taught it a 1.3x
+width), and a side's confidence fades three times faster when the inner edge stops showing.
+
+With it on, against b14 (2 phases, 49 clips): median tilt error 5.21 -> **1.30 deg**, corner error 4.80 -> 2.63 px;
+31 of 42 slab clips more than 0.3 deg better, clips under 1.5 deg go from 6 to 27 (e.g. 4 ft mat 5.4 -> 0.5,
+a 1.15 in slab seen low 9.3 -> 2.9, panning clip 5.4 -> 0.9). But: wobble 0.276 -> 0.345 deg (normal) and
+0.178 -> 0.241 deg (tilt reading); the strongly curved slab (0.25 in sag) 0.6 -> 3.4 deg; one more false-lock
+event; 76 clip metrics flagged in all. Photos unchanged. By the "never make a clip worse" rule it cannot be the
+default, so b15 ships it as a Tune switch, "Correct for the slab's cut edge (experimental)", off by default and
+remembered on the phone, with a "Slab thickness" slider (default 0.9 in, also remembered). With it off, b15 matches
+b14 on every accuracy metric of every clip. Diagnostics report `set.cutEdge`, `set.thick` and `thicknessSeen` (the
+band width actually measured, in inches), so real footage can show whether the correction helps and whether the
+thickness setting is right.
+
+Why it isn't simply better: deciding which of two parallel straight edges is the top face's edge is ambiguous in
+three situations the clips cover - a cut face in shadow (dark like the base), the black base's own edge just outside
+the cut face, and a slab whose top edge bows (curved slab). Each fix for one moved error to another.

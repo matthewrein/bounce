@@ -274,6 +274,8 @@ async function build(spec) {
   out.sensorBias = new THREE.Quaternion().setFromAxisAngle(ax, rad(spec.sensor?.bias ?? 0.3));
   out.shake = makeShake(rng(spec.seed * 13 + 5), spec.cam.shake ?? 1);
   out.handSway = [bandSignal(r, 0.2, 1.2), bandSignal(r, 0.2, 1.2), bandSignal(r, 0.2, 1.2)];
+  if (spec.cam.sway) { const wr = rng(spec.seed * 97 + 29), sw = spec.cam.sway; out.sway = [0, 1, 2].map(() => bandSignal(wr, sw.f0 ?? 0.1, sw.f1 ?? 0.5)); }
+  if (spec.cam.wyaw) { const yr = rng(spec.seed * 101 + 37); out.wyaw = bandSignal(yr, spec.cam.wyaw.f0 ?? 0.2, spec.cam.wyaw.f1 ?? 1); }
   out.ae = null; out.rn = rng(spec.seed * 31 + 7);
   return out;
 }
@@ -327,7 +329,21 @@ function cameraAt(ctx, t, withShake = true) {
   const spec = ctx.spec, p = basePose(spec, t), C = ctx.C;
   const el = rad(p.el), az = rad(p.az);
   const pos = new THREE.Vector3(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(p.D * 1).add(C);
-  const m = new THREE.Matrix4().lookAt(pos, C, new THREE.Vector3(0, 1, 0)), q = new THREE.Quaternion().setFromRotationMatrix(m);
+  let aim = C;
+  if (ctx.sway && withShake) {
+    // optional body sway / walking (spec.cam.sway; off by default, own random stream): the phone travels by `amp` ft rms
+    // per axis and is re-aimed at a point `fix` times the slab's distance along the original line of sight
+    // (fix 1: the person keeps the slab where it was in the picture; 2: a point twice as far; 0: no re-aiming)
+    const sw = ctx.spec.cam.sway, ramp = Math.min(1, Math.max(0, (t - (sw.t0 || 0)) / 0.5));
+    const s = new THREE.Vector3(...ctx.sway.map((f, i) => f(t) * sw.amp * ramp * (i === 1 ? (sw.vert ?? 1) : 1)));
+    const k = sw.fix ?? 1;
+    aim = k > 0 ? C.clone().sub(pos).multiplyScalar(k).add(pos) : C.clone().add(s);
+    pos.add(s);
+  }
+  const m = new THREE.Matrix4().lookAt(pos, aim, new THREE.Vector3(0, 1, 0)), q = new THREE.Quaternion().setFromRotationMatrix(m);
+  // optional sway about the world's vertical axis (spec.cam.wyaw = { amp: deg rms, f0, f1 }; off by default, own random
+  // stream): the slow turn of a standing body, which shows on the phone's y and z axes together when it points down
+  if (ctx.wyaw && withShake) q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rad(ctx.wyaw(t) * ctx.spec.cam.wyaw.amp)));
   q.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(rad(p.pitch), rad(p.yaw), rad(p.roll), "YXZ")));
   if (withShake) {
     const sh = ctx.shake(t);
@@ -417,7 +433,8 @@ function groundTruth(ctx, t) {
 function sensorAt(ctx, t) {
   const h = 1 / 240, c0 = cameraAt(ctx, t - h), c1 = cameraAt(ctx, t), c2 = cameraAt(ctx, t + h);
   const acc = c2.pos.clone().add(c0.pos).sub(c1.pos.clone().multiplyScalar(2)).multiplyScalar(1 / (h * h) * M_PER_FT); // m/s^2 world
-  const dq = c1.q.clone().invert().multiply(c2.q); // rotation over h in the device frame
+  let dq = c1.q.clone().invert().multiply(c2.q); // rotation over h in the device frame
+  if (ctx.spec.sensor?.gyroLead) { const L = ctx.spec.sensor.gyroLead, d1 = cameraAt(ctx, t + L), d2 = cameraAt(ctx, t + L + h); dq = d1.q.clone().invert().multiply(d2.q); }
   const ang = 2 * Math.acos(Math.min(1, Math.abs(dq.w))), ax = new THREE.Vector3(dq.x, dq.y, dq.z);
   const w = ax.lengthSq() > 1e-18 ? ax.normalize().multiplyScalar(ang / h * Math.sign(dq.w || 1)) : new THREE.Vector3();
   const inv = c1.q.clone().invert(), rn = ctx.rn, sn = ctx.spec.sensor || {}, an = 0.02 * (sn.noise ?? 1), gn = 0.25 * (sn.noise ?? 1);
@@ -430,7 +447,29 @@ function sensorAt(ctx, t) {
   if (sn.trem || sn.accLag || sn.round || sn.accLpf || sn.accZero || sn.accMissing) [A, U, accNull] = sensorQuirks(ctx, t, sn, A, U, user);
   if (sn.iosSign) { A = A.map((v) => -v); U = U.map((v) => -v); }
   const wd = [deg(w.x) + gauss(rn) * gn, deg(w.y) + gauss(rn) * gn, deg(w.z) + gauss(rn) * gn];
-  return { t: +t.toFixed(4), aig: A.map((v) => +v.toFixed(4)), acc: sn.noAcc || accNull ? null : U.map((v) => +v.toFixed(4)), rot: sn.noGyro ? null : { alpha: +wd[2].toFixed(3), beta: +wd[0].toFixed(3), gamma: +wd[1].toFixed(3) } };
+  const out = { t: +t.toFixed(4), aig: A.map((v) => +v.toFixed(4)), acc: sn.noAcc || accNull ? null : U.map((v) => +v.toFixed(4)), rot: sn.noGyro ? null : { alpha: +wd[2].toFixed(3), beta: +wd[0].toFixed(3), gamma: +wd[1].toFixed(3) } };
+  if (out.rot && (sn.gyroBias || sn.gyroSign || sn.gyroRad || sn.gyroOrder || sn.gyroAxisFlip)) out.rot = gyroQuirks(wd, sn);
+  if (sn.gyroIvSec) out.iv = 1 / 60; // WebKit reports `interval` in seconds (harness.js passes s.iv when present)
+  return out;
+}
+// Optional rotationRate quirks (all off by default, no random draws, so other clips are unchanged):
+//   gyroBias     [x, y, z] deg/s added on the device axes (an uncalibrated / drifting gyro)
+//   gyroSign     -1: every rate negated
+//   gyroRad      rates in rad/s instead of deg/s (old Chrome on Android, before M66)
+//   gyroOrder    "xyz": alpha = x-axis rate, beta = y, gamma = z - what WebKit (iOS), Chromium and Gecko deliver and
+//                what the current W3C draft says; the default is the 2016 CR naming (alpha = z, beta = x, gamma = y)
+//   gyroAxisFlip "alpha" | "beta" | "gamma": that one reported field negated
+//   gyroLead     s: the rotation rate is that of this much later (camera frames reach the page this much later than
+//                the motion events describing the same moment; handled in sensorAt)
+function gyroQuirks(wd, sn) {
+  let v = wd.slice();
+  if (sn.gyroBias) v = v.map((x, i) => x + sn.gyroBias[i]);
+  if (sn.gyroSign) v = v.map((x) => x * sn.gyroSign);
+  if (sn.gyroRad) v = v.map((x) => rad(x));
+  const r = sn.gyroOrder === "xyz" ? { alpha: v[0], beta: v[1], gamma: v[2] } : { alpha: v[2], beta: v[0], gamma: v[1] };
+  if (sn.gyroAxisFlip) r[sn.gyroAxisFlip] = -r[sn.gyroAxisFlip];
+  const d = sn.gyroRad ? 5 : 3;
+  return { alpha: +r.alpha.toFixed(d), beta: +r.beta.toFixed(d), gamma: +r.gamma.toFixed(d) };
 }
 // Optional platform quirks of `acceleration` vs `accelerationIncludingGravity` (all off by default, so clips without
 // them are unchanged; they draw on their own random streams, not ctx.rn):

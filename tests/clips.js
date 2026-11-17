@@ -79,6 +79,31 @@ const LIST = [
   // `acceleration` is a separate sensor read up to one event earlier; without one, Chrome derives it with a light low-pass
   ["android_lag_d4", "sensor", { sensor: { trem: 0.08, accLag: 1 / 60, accLagRand: true, round: 0.1 }, cam: still(4, 50, 15), slab: { tilt: 12, heading: 250 } }],
   ["android_nogyro_d4", "sensor", { sensor: { trem: 0.08, accLpf: 0.5, round: 0.1, noGyro: true }, cam: still(4, 50), slab: { tilt: 10, heading: 140 } }],
+  // Gyro conventions and faults (scene.js gyroQuirks) and translation-heavy hand motion (scene.js cam.sway), added in
+  // the review of b14. WebKit, Chromium and Gecko all report rotationRate alpha/beta/gamma about the x/y/z device axes
+  // (the current W3C draft agrees; the clips above use the 2016 naming alpha = z); WebKit reports `interval` in seconds.
+  ["ios_gyro_real_d4", "sensor gyro", { sensor: { gyroOrder: "xyz", gyroIvSec: true }, cam: still(4, 50, -10), slab: { tilt: 11, heading: 40 } }],
+  ["android_gyro_real_d4", "sensor gyro", { sensor: { gyroOrder: "xyz", trem: 0.08, accLag: 1 / 60, accLagRand: true, round: 0.1 }, cam: { ...still(4, 48, 10), shake: 1.4 }, slab: { tilt: 9, heading: 300 } }],
+  ["gyro_flip_d4", "sensor gyro", { sensor: { gyroSign: -1 }, cam: still(4, 52), slab: { tilt: 10, heading: 170 } }],
+  ["gyro_rad_d4", "sensor gyro", { sensor: { gyroRad: true }, cam: still(4, 50, 5), slab: { tilt: 12, heading: 80 } }],
+  ["gyro_bias_d4", "sensor gyro", { sensor: { gyroBias: [1.2, -0.8, 1.0] }, cam: still(4, 50), slab: { tilt: 10, heading: 220 } }],
+  ["gyro_flipbeta_d4", "sensor gyro", { sensor: { gyroAxisFlip: "beta" }, cam: still(4, 50, -5), slab: { tilt: 13, heading: 120 } }],
+  // standing body sway (mostly travel, the phone re-aimed to keep the slab in place) after 2 s of ordinary holding
+  ["sway_fixate_d4", "motion gyro", { cam: { ...still(4, 50), sway: { amp: 0.03, f0: 0.1, f1: 0.5, fix: 1, t0: 2 } }, frames: 150, slab: { tilt: 10, heading: 30 } }],
+  // stress: a steady hand travelling while aimed at a point twice as far as the slab (image motion opposite to the turn)
+  ["sway_far_d4", "motion gyro hard", { cam: { ...still(4, 50), shake: 0.6, sway: { amp: 0.04, f0: 0.15, f1: 0.6, fix: 2 } }, frames: 150, slab: { tilt: 10, heading: 260 } }],
+  // slow walking bob after 1.5 s of holding, slab kept in place
+  ["walk_d4", "motion gyro", { cam: { ...still(4, 50), sway: { amp: 0.07, f0: 0.8, f1: 2, fix: 1, vert: 1.5, t0: 1.5 } }, frames: 150, slab: { tilt: 11, heading: 150 } }],
+  // camera frames reaching the page ~2 frames after the motion events for the same moment (phone camera pipelines)
+  ["gyro_lead_d4", "sensor gyro", { sensor: { gyroLead: 0.067 }, cam: still(4, 50, 10), slab: { tilt: 10, heading: 60 } }],
+  // Chrome on Android naming with the hand's sway mostly a slow turn about the vertical (couples the phone's y and z rates)
+  ["android_gyro_yaw_d4", "sensor gyro hard", { sensor: { gyroOrder: "xyz", round: 0.1 }, cam: { ...still(4, 45, -5), shake: 0.6, wyaw: { amp: 0.8, f0: 0.2, f1: 1 } }, slab: { tilt: 10, heading: 330 } }],
+  // the same hand with the naming the clips above use (the reference for the one before)
+  ["gyro_yaw_d4", "sensor gyro", { sensor: { round: 0.1 }, cam: { ...still(4, 45, -5), shake: 0.6, wyaw: { amp: 0.8, f0: 0.2, f1: 1 } }, slab: { tilt: 10, heading: 330 } }],
+  // round things behind the slab, so they appear above it in the image (the real phone fired on something with no ball in view)
+  ["fp_tin_behind_d4", "fp", { extras: [{ type: "tin", x: 0.05, z: -1.0 }, { type: "tin", x: -0.45, z: -1.6, lid: "black", r: 0.09 }], cam: still(4, 48), slab: { tilt: 10, heading: 20 } }],
+  ["fp_lid_sticker_behind_d5", "fp", { extras: [{ type: "sticker", x: 0.1, z: -0.8, r: 0.07 }, { type: "coin", x: -0.2, z: -1.2, r: 0.05 }, { type: "tin", x: 0.4, z: -2.2, r: 0.14 }], cam: still(5, 42), slab: { tilt: 12, heading: 200 } }],
+  ["fp_floorball_behind_d4", "fp", { extras: [{ type: "floorball", x: 0.0, z: -0.9 }, { type: "floorball", x: 0.3, z: -1.5 }], cam: still(4, 50), slab: { tilt: 9, heading: 60 } }],
 ];
 
 function clips(filter) {

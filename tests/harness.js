@@ -5,7 +5,7 @@
 // Live mode: nothing is stepped; the fake camera plays in real time and the runner only listens.
 /* eslint-disable no-undef */
 (function (cfg) {
-  try { localStorage.setItem("slabFov", String(cfg.fov)); } catch (_) {}
+  try { localStorage.setItem("slabFov", String(cfg.fov)); for (const [k, v] of Object.entries(cfg.store || {})) localStorage.setItem(k, v); } catch (_) {}
   const H = (window.__harness = { mode: cfg.mode, frames: null, cur: -1 });
   // A phone returns its camera's own portrait frames whatever size the page asks for; Chrome would instead crop the
   // 720x1280 fake camera to the app's requested landscape shape, so ask it to leave the frames alone.
@@ -16,7 +16,7 @@
   H.motion = (s) => window.dispatchEvent(new DeviceMotionEvent("devicemotion", {
     accelerationIncludingGravity: { x: s.aig[0], y: s.aig[1], z: s.aig[2] },
     acceleration: s.acc ? { x: s.acc[0], y: s.acc[1], z: s.acc[2] } : null,
-    rotationRate: s.rot, interval: 16.7 }));
+    rotationRate: s.rot, interval: s.iv ?? 16.7 })); // s.iv: a clip's own interval (WebKit reports seconds)
   H.load = async (url) => {
     const b = new Uint8Array(await (await fetch(url)).arrayBuffer()), st = [];
     for (let i = 0; i < b.length - 1; i++) if (b[i] === 0xff && b[i + 1] === 0xd8 && (i === 0 || (b[i - 2] === 0xff && b[i - 1] === 0xd9))) st.push(i);
