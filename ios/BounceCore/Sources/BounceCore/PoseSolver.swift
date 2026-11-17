@@ -20,8 +20,11 @@ public enum PoseSolver {
     public struct Options {
         /// corner noise (pixels) assumed for the reprojection residuals
         public var cornerSigmaPixels: Double = 2.5
-        /// soft prior on the tilt from level (degrees); nil for none
+        /// soft prior on the tilt from level (degrees); nil for none. By default it only helps choose between the two
+        /// mirror-image solutions; with `levelPriorInFit` it also pulls the fitted normal toward level (as the web app did,
+        /// which biases a real tilt toward 0 when the corners are few pixels apart).
         public var levelPriorSigmaDegrees: Double? = 20
+        public var levelPriorInFit = false
         public var maxIterations: Int = 25
         public init() {}
     }
@@ -119,8 +122,15 @@ public enum PoseSolver {
         let n0 = r1.cross(r2), sg: Double = n0.dot(c) > 0 ? -1 : 1
         let obs = q.map { K.normalized($0) }
         let f = K.focal, sp = opt.cornerSigmaPixels / f
-        let up = opt.levelPriorSigmaDegrees != nil ? down.map { -$0.normalized } : nil
+        let upPrior = opt.levelPriorSigmaDegrees != nil ? down.map { -$0.normalized } : nil
+        let up = opt.levelPriorInFit ? upPrior : nil
         let st = Units.radians(opt.levelPriorSigmaDegrees ?? 20)
+        // the prior's cost of a solution, used to choose between the mirror images when it is not in the fit
+        func priorCost(_ r: Refined) -> Double {
+            guard let u = upPrior, !opt.levelPriorInFit else { return 0 }
+            let n = r.r1.cross(r.r2).normalized * sg
+            return (n - u).lengthSquared / (st * st)
+        }
         // the mirror-image solution: reflect the normal about the line of sight
         let v = c.normalized
         func half(_ a: Vec3, _ x: Vec3) -> Vec3 { a * (2 * a.dot(x)) - x }
@@ -133,9 +143,10 @@ public enum PoseSolver {
         case (let a?, nil): best = a
         case (nil, let b?): best = b
         case (let a?, let b?):
-            best = b.cost < a.cost ? b : a
+            let ca = a.cost + priorCost(a), cb = b.cost + priorCost(b)
+            best = cb < ca ? b : a
             if let prev = prev {
-                let other = b.cost < a.cost ? a : b
+                let other = cb < ca ? a : b
                 let nb = best.r1.cross(best.r2).normalized * sg, no = other.r1.cross(other.r2).normalized * sg
                 if no.dot(prev) > nb.dot(prev) && other.cost < best.cost * 3 + 1 { best = other }
             }
@@ -155,7 +166,7 @@ public enum PoseSolver {
 
 /// Checks that an outline is a shape the slab could make.
 public enum ShapeCheck {
-    public struct Limits {
+    public struct Limits: Equatable {
         /// largest corner misfit allowed, as a fraction of the mean side length in the image
         public var maxMisfitFraction: Double = 0.03
         /// the slab is expected this near / far (metres)
