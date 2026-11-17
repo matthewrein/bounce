@@ -9,6 +9,9 @@ so they are only comparable between runs here, not with the phone.
 The three reference photos are also run as stills; only their aggregate corner error (as % of the slab side)
 is recorded here.
 
+From b13 on, every build is run at two camera phases (the fake camera starting 0 or 1 display tick later) and the
+numbers are averaged; see "Comparing builds" below.
+
 Columns: lock = % of slab-in-view frames with a correct outline; never = clips that never lock; FL = false-lock
 events; cErr = mean corner error px; tilt = median angle between app and true slab normal (deg, median over
 clips of per-clip medians); worst = worst clip's median; >1.5 = clips whose median is 1.5 deg or more;
@@ -17,7 +20,9 @@ frames detected; bFP = false ball events; msT / msS = mean ms per frame tracking
 
 | build | lock | never | FL | cErr | tilt | worst | >1.5 | jit | tJit | ball | bFP | msT | msS | photos cErr % |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| b12 baseline | 81.3 | 4 | 6 | 4.72 | 5.13 | 13.37 | 34/43 | 0.366 | 0.562 | 3.7 | 0 | 23.2 | 72 | 1.3 / 0.5 / 0.2 |
+| b12 baseline (phase 0 only) | 81.3 | 4 | 6 | 4.72 | 5.13 | 13.37 | 34/43 | 0.366 | 0.562 | 3.7 | 0 | 23.2 | 72 | 1.3 / 0.5 / 0.2 |
+| b12 baseline (2 phases) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | 0.579 | 2.3 | 0 | 21.8 | 68 | 1.3 / 0.5 / 0.2 |
+| b13 clean gravity (kept) | 82.0 | 4 | 6 | 4.72 | 5.15 | 13.40 | 34/43 | 0.361 | **0.219** | 2.3 | 0 | 23.5 | 74 | 1.3 / 0.5 / 0.2 |
 
 ## b12 - baseline (instrumentation only)
 
@@ -41,3 +46,53 @@ What the baseline shows:
   about as dark as the cement.
 - **Wobble while still** is 0.37 deg (normal) / 0.56 deg (tilt reading), above the 0.3 deg target.
 - **Frame time**: 23 ms tracking (p95 109 ms, from the slow colour fallback), 72 ms searching.
+
+## Comparing builds: the tracker is chaotic, so compare two camera phases
+
+The first attempts showed that the tracker is very sensitive to tiny input changes: running the *unchanged* b12
+with the camera starting one display tick later (`run.js --phase 1`) moves 54 clip metrics beyond the strict
+allowances (one clip loses lock for 38 ticks in one phase and not the other, and so on). Judging a change on a single
+run would accept or reject it partly by luck. So from here on each build is run at phases 0 and 1,
+`compare.js a+a_p1 b+b_p1` averages them, and each clip's own phase-to-phase spread is added to its allowance.
+A clip whose run fails counts as worse.
+
+## Attempt 1 (reverted, parked): prefer the top edge over the cut edge's bottom
+
+Idea: on the sides where the slab's cut edge shows, the outline should follow the innermost straight edge (where the
+top face ends) rather than the strongest one (where the light cut edge meets the black base).
+Implemented as a search, inside each fitted side, for a weaker parallel edge: first per spoke (too insensitive: the
+top/cut-edge step is about 8 grey levels against 70 for the base), then on gradient profiles averaged over the whole
+side and every candidate line (finds it), gated to the sides whose cut face can be seen from the camera at a depth
+consistent with a ~0.9 in slab, with hysteresis, and with a remembered band width per side.
+Best version: median tilt error 5.13 -> 1.59 deg, corner error 4.72 -> 3.08 px, and the top-down photo's corner
+error 1.3% -> 0.8% of the side. But wobble while still rose 0.37 -> 0.53 deg and some clips got worse (curved slab,
+matched-tone mat, several jitter values): the inner edge is found on some frames and not others, and when it isn't,
+the outline falls back to the outer edge or through the slow colour search, which knows nothing of the band.
+Reverted; parked for after the smoothing work. Two bugs found on the way (sign of the profile alignment; scoring the
+flank of the main edge as an inner edge) are fixed in the parked copy.
+
+## Attempt 2 (reverted): innermost significant straight edge on every side
+
+Same averaged-profile scoring, used for every side and replacing the original "first clear edge from the middle"
+rule. Much worse: lock 82 -> 77%, false locks 7 -> 14, wobble 0.37 -> 0.95 deg, the angled photos' corner errors
+up to 1.6% of the side. Shading and texture on the top face pass the significance test often enough to pull sides
+inward. Reverted.
+
+## Attempt 3 (reverted): keep one side's previous line when the outline fails the shape test
+
+Meant to stop one bad side from throwing the tracker into the slow colour search. Made things worse
+(overhead-light clip 0.6 -> 6.3 deg): a stale side can keep a wrong outline plausible, so it sticks. Reverted.
+
+## b13 - clean gravity for the tilt reading, the drop and the bounce (kept)
+
+`accelerationIncludingGravity` includes the hand's own acceleration (hand sway of a few mm at ~1 Hz is ~0.1-0.3 m/s^2,
+i.e. 1-2 deg of error in "down"). When the browser also provides `acceleration` (iOS does), subtracting it leaves the
+phone's own sensor-fused gravity. b13 uses that for the tilt reading, the ball's drop direction and the bounce; the
+slab finder's weak "roughly level" prior and its tilt sanity check keep the old estimate, so the vision pipeline
+behaves exactly as before (an earlier version that switched everything over perturbed the chaotic tracker and lost
+lock in one clip in both phases). Diagnostics now include `sensor.gravityClean`.
+
+Result (2 phases vs b12): tilt-reading wobble while still 0.579 -> 0.219 deg (median over clips; 35 clips better);
+the one flagged regression is pan_out_back's tilt reading, 4.89 -> 5.28 deg. Checked directly: that clip's gravity
+error drops 1.26 -> 0.36 deg (p90 4.06 -> 1.50); the old gravity's error happened to offset part of the vision
+error (5.4 deg there). Kept. The clip with no `acceleration` (ios_sign_noacc_d4) is unchanged, as expected.

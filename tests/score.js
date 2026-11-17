@@ -25,11 +25,12 @@ function scoreClip(gt, ticks) {
   const F = gt.frames, fps = gt.fps, out = { name: gt.spec.name, tags: gt.spec.tags, ticks: ticks.length };
   let firstVis = null, firstLock = null, lockedSince = null, lastVis = -1e9, inFalse = false;
   let vis = 0, good = 0, falseTicks = 0, falseEvents = 0;
-  const cErr = [], nErr = [], tErr = [], jitN = [], jitT = [], jitC = [], msS = [], msT = [];
+  const gErr = [], cErr = [], nErr = [], tErr = [], jitN = [], jitT = [], jitC = [], msS = [], msT = [];
   let ballCount = 0, ballHit = 0, ballFP = 0, ballFPev = 0, inFP = false; const dropErr = [];
   for (const k of ticks) {
     const g = F[k.fi], t = k.t;
     if (k.ms != null) (k.wasLocked ? msT : msS).push(k.ms);
+    if (k.grav && g.grav && k.t > 0.5) gErr.push(angDeg(k.grav, g.grav));
     const visible = !!g.slabVisible;
     if (visible) { vis++; lastVis = t; if (firstVis == null) firstVis = t; }
     let err = null, correct = false;
@@ -76,6 +77,7 @@ function scoreClip(gt, ticks) {
     falseLockTicks: falseTicks, falseLocks: falseEvents,
     cornerErr: r2(mean(cErr)), cornerErrP90: r2(quantile(cErr, 0.9)),
     tiltErr: r2(quantile(nErr, 0.5)), tiltErrP90: r2(quantile(nErr, 0.9)), tiltErrMax: r2(nErr.length ? Math.max(...nErr) : null),
+    gravErr: r2(quantile(gErr, 0.5)), gravErrP90: r2(quantile(gErr, 0.9)),
     tiltReadErr: r2(quantile(tErr.map(Math.abs), 0.5)), tiltBias: r2(mean(tErr)),
     jitter: r2(spread(jitN), 3), tiltJitter: r2(sd(jitT), 3), cornerJitter: r2(cornerJit(jitC), 3),
     ballTicks: ballCount, ballRate: ballCount ? r2(100 * ballHit / ballCount, 1) : null, ballFalseTicks: ballFP, ballFalse: ballFPev,

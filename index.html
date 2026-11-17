@@ -110,7 +110,7 @@ const G=32.174; // ft/s^2
 const P={drop:3,reb:70,ball:35,size:7,tol:26,pitch:50,fov:65};
 const S={src:null,sw:0,sh:0,proc:null,quad:null,tr:null,seed:null,example:true,W:0,H:0,live:false,grav:null,lost:0,video:null,stream:null,pc:null,mc:null,msg:"",fid:0,seedAge:0,si:0,ball:null,ballLost:0};
 try{const v=parseFloat(localStorage.getItem("slabFov"));if(v>=50&&v<=80)P.fov=v;}catch(_){}
-const BUILD="b12";
+const BUILD="b13";
 const K={},bump=k=>{K[k]=(K[k]||0)+1;},HIST=[]; // diagnostics: counters and a short history
 let C=null; // per-frame cache of the colour mask for a fixed reference
 
@@ -574,7 +574,7 @@ function findBall(rExp){
   }
   return found.sort((a,b)=>b.n-a.n);
 }
-const downVec=()=>{if(S.live&&S.grav)return S.grav;const a=P.pitch*Math.PI/180;return [0,Math.cos(a),Math.sin(a)];};
+const downVec=()=>{if(S.live&&S.grav)return S.gravC||S.grav;const a=P.pitch*Math.PI/180;return [0,Math.cos(a),Math.sin(a)];};
 // where a ball seen at image position b (source pixels) is in space, and where it lands if dropped straight down
 function ballDrop(b,pose,g){
   const R=P.ball/609.6,z=pose.f*R/b.r,B=[(b.x-pose.cx)/pose.f*z,(b.y-pose.cy)/pose.f*z,z];
@@ -694,7 +694,7 @@ function update(){
   }
   if(!S.msg){st.className=S.example?"chip":"chip good";st.textContent=S.example?"Example scene":S.live?"Slab locked":"Slab found";}
   $("hint").textContent="Tap the cement to re-pick it";
-  const a=P.pitch*Math.PI/180,g=sensor?S.grav:[0,Math.cos(a),Math.sin(a)];
+  const a=P.pitch*Math.PI/180,g=sensor?S.gravC||S.grav:[0,Math.cos(a),Math.sin(a)];
   if(S.live){
     // steady the estimated facing direction and position across frames
     if(S.nS){pose.n=S.nS=norm(add(mul(S.nS,.88),mul(pose.n,.12)));pose.c=S.cS=add(mul(S.cS,.7),mul(pose.c,.3));}
@@ -803,13 +803,17 @@ function onMotion(e){
   const rr=e.rotationRate;
   if(rr&&rr.alpha!=null){const m=Math.hypot(rr.alpha,rr.beta,rr.gamma);S.rot=S.rot==null?m:S.rot*.8+m*.2;}
   const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
-  let g=[-a.x,-a.y,-a.z];
   // phones disagree on the sign; in use, down is toward the phone's bottom edge or its back
-  if(-g[1]-g[2]<0)g=mul(g,-1);
   const ang=((screen.orientation&&screen.orientation.angle)||window.orientation||0)*Math.PI/180;
-  const sx=g[0]*Math.cos(ang)-g[1]*Math.sin(ang),su=g[0]*Math.sin(ang)+g[1]*Math.cos(ang);
-  const cam=norm([sx,-su,-g[2]]);
+  const toCam=g=>{if(-g[1]-g[2]<0)g=mul(g,-1);const sx=g[0]*Math.cos(ang)-g[1]*Math.sin(ang),su=g[0]*Math.sin(ang)+g[1]*Math.cos(ang);return norm([sx,-su,-g[2]]);};
+  const cam=toCam([-a.x,-a.y,-a.z]);
   S.grav=S.grav?norm(add(mul(S.grav,.85),mul(cam,.15))):cam;
+  // Where the browser also reports the hand's own acceleration (iOS does), take it out: what's left is gravity alone,
+  // already steadied by the phone's motion processing, instead of gravity plus every jolt of the hand. This cleaner
+  // "down" is used for the tilt reading, the drop and the bounce; the slab finder keeps the plain one above.
+  const u=e.acceleration;
+  if(u&&u.x!=null&&u.y!=null&&u.z!=null){const c=toCam([u.x-a.x,u.y-a.y,u.z-a.z]);S.gravC=S.gravC?norm(add(mul(S.gravC,.7),mul(c,.3))):c;}
+  else S.gravC=S.grav;
 }
 async function startLive(){
   if(S.live){stopLive();setSource(exampleScene(),true);return;}
@@ -875,7 +879,7 @@ function diag(){
   const r=(v,d=2)=>v==null?null:Array.isArray(v)?v.map(x=>r(x,d)):+(+v).toFixed(d);
   return {build:BUILD,ua:navigator.userAgent,live:S.live,src:[S.sw,S.sh],liveSrc:S.liveSrc||null,view:[Math.round(S.W),Math.round(S.H)],
     screenAngle:(screen.orientation&&screen.orientation.angle)||window.orientation||0,
-    sensor:{gravity:r(S.grav,3),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
+    sensor:{gravity:r(S.grav,4),gravityClean:r(S.gravC,4),gyroDegPerSec:r(S.rot,1),motionEvents:K.motion||0},
     set:{fov:P.fov,size:P.size,tol:P.tol,pitch:P.pitch,drop:P.drop,reb:P.reb,ball:P.ball},
     status:$("status").textContent,locked:!!S.quad,quad:S.quad&&S.quad.map(p=>[r(p.x,1),r(p.y,1)]),ms:r(S.ms,1),msAvg:r(S.msAvg,1),
     tol:r(S.ltol,1),ref:r(S.ref,1),edges:r(S.lastEdges,0),area:r(S.lastArea,0),misfit:r(S.lastMisfit,4),aspect:r(S.aspect,3),

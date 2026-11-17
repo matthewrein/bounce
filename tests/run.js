@@ -14,6 +14,7 @@ const { scoreClip, summarize, cornerErr } = require("./score");
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf("--" + k); return i < 0 ? d : (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : true); };
 const LABEL = opt("label", "run"), MODE = opt("mode", "step"), WORKERS = +opt("workers", 3), APP = opt("app", "index.html");
+const PHASE = +opt("phase", 0); // start the camera this many 60 Hz ticks later (a small, realistic perturbation)
 const FILTER = opt("filter", null), PRIVATE = !!opt("private", false), STILLS = !!opt("stills", false), QUIET = !!opt("quiet", false);
 const HARNESS = fs.readFileSync(path.join(__dirname, "harness.js"), "utf8");
 const FOV = 72.5; // what the real phone's lens setting self-calibrated to
@@ -31,7 +32,7 @@ function clipDirs() {
 async function launch(mjpeg) {
   return chromium.launch({ args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${mjpeg}`, "--autoplay-policy=no-user-gesture-required"] });
 }
-const PICK = (d) => ({ locked: d.locked, quad: d.quad, normal: d.normal, tilt: d.tilt, ball: d.ball, ms: d.ms, misfit: d.misfit, aspect: d.aspect, fov: d.set.fov, live: d.live, src: d.src, counts: d.counts, build: d.build });
+const PICK = (d) => ({ grav: d.sensor.gravityClean || d.sensor.gravity, locked: d.locked, quad: d.quad, normal: d.normal, tilt: d.tilt, ball: d.ball, ms: d.ms, misfit: d.misfit, aspect: d.aspect, fov: d.set.fov, live: d.live, src: d.src, counts: d.counts, build: d.build });
 
 async function runStep(srv, clip, gt) {
   const browser = await launch(path.join(clip.dir, "clip.mjpeg"));
@@ -45,15 +46,15 @@ async function runStep(srv, clip, gt) {
     const n = await page.evaluate((u) => window.__harness.load(u), rel);
     if (n !== gt.frames.length) throw new Error(`clip has ${n} frames, truth has ${gt.frames.length}`);
     // the motion sensor runs before the camera starts
-    for (let k = 0; k < 30; k++) await page.evaluate((s) => window.__harness.motion(s), gt.sensors[k]);
+    for (let k = 0; k < 30 + PHASE; k++) await page.evaluate((s) => window.__harness.motion(s), gt.sensors[k]);
     await page.evaluate(() => document.getElementById("live").click());
     await page.waitForFunction(() => window.slabDiagnostics().live === true, null, { timeout: 15000, polling: 50 });
-    const ticks = [], nT = gt.frames.length * 2; let was = false;
+    const ticks = [], nT = gt.frames.length * 2 - PHASE; let was = false;
     for (let k = 0; k < nT; k++) {
-      const fi = Math.min(gt.frames.length - 1, Math.floor(k / 2)), s = gt.sensors[30 + k] || gt.sensors[gt.sensors.length - 1];
+      const kk = k + PHASE, fi = Math.min(gt.frames.length - 1, Math.floor(kk / 2)), s = gt.sensors[30 + kk] || gt.sensors[gt.sensors.length - 1];
       const d = await page.evaluate(async ([fi, s, ts]) => { const H = window.__harness; await H.setFrame(fi); H.motion(s); H.tick(ts); return window.slabDiagnostics(); }, [fi, s, k * 1000 / 60]);
       const p = PICK(d); if (k === 0 && (p.src[0] !== 720 || p.src[1] !== 1280)) errs.push(`camera size ${p.src}`);
-      ticks.push({ k, t: k / 60, fi, wasLocked: was, ...p }); was = p.locked;
+      ticks.push({ k, t: kk / 60, fi, wasLocked: was, ...p }); was = p.locked;
     }
     return { ticks, errs };
   } finally { await browser.close(); }
