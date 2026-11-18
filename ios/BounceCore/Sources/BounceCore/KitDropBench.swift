@@ -21,6 +21,9 @@ public struct KitDropBenchResult: Codable, Equatable {
     public var trackErrorP90: Double?
     public var trackWrongShare: Double?
     public var measured: KitDropAnalysis?
+    /// the truth compared at the measured analysis's own landing level (`KitDropAnalysis.landingLevel`: the slab contact,
+    /// the floor, or the lowest top corner), which its landing and comparisons are scored against
+    public var measuredTruth: KitDropLevelTruth?
     /// the measured contact point in the TRUE slab's axes (m: the lock's own axes may be any of a square slab's four
     /// edge directions)
     public var measuredOffset: [Double]?
@@ -29,6 +32,7 @@ public struct KitDropBenchResult: Codable, Equatable {
     /// error, without the finder's or the lock's
     public var perfect: KitDropAnalysis?
     public var perfectFailure: String?
+    public var perfectTruth: KitDropLevelTruth?
 }
 
 /// The drop bench's report (`bounce-score --drops`).
@@ -43,6 +47,8 @@ public struct KitDropBenchReport: Codable, Equatable {
     public var video: String
     /// "app" (the app's ball finder set up for tracking) or "truth" (a finder that knows where the ball is)
     public var finder: String
+    /// ARKit's floor was given to the analysis (as on the phone); false: as in a kit, which has none
+    public var floorKnown = false
     public var results: [KitDropBenchResult]
     public var notes: [String] = []
 
@@ -61,6 +67,12 @@ public struct KitDropBenchReport: Codable, Equatable {
         public var appComparisonError: Double?
         public var reboundComparisonError: Double?
         public var directionError: Double?
+        /// the measured minus the true rebound over its sigma (|z|): median, and the drops beyond 3; the same for the drop
+        /// height and the landing against the app (app's rebound)
+        public var reboundZ: Double?
+        public var reboundBeyond3Sigma: Int
+        public var dropHeightBeyond3Sigma: Int
+        public var appComparisonBeyond3Sigma: Int
         /// the same for the perfect tracks
         public var perfectReboundError: Double?
         public var perfectOffsetError: Double?
@@ -71,29 +83,39 @@ public struct KitDropBenchReport: Codable, Equatable {
         let ok = results.filter { $0.measured?.kind == .bounce }
         func med(_ v: [Double]) -> Double? { v.isEmpty ? nil : KitStats.median(v) }
         func offErr(_ a: KitDropAnalysis, _ t: KitDropTruth) -> Double? { a.contactPoint.distance(to: t.contactPoint) }
-        func landErr(_ a: KitDropAnalysis, _ t: KitDropTruth) -> Double? {
-            a.landing.map { ($0 - t.landing).rejecting(Vec3(0, 1, 0)).length }
+        func landErr(_ a: KitDropAnalysis, _ t: KitDropLevelTruth?) -> Double? {
+            guard let l = a.landing, let t = t else { return nil }
+            return (l - t.landing).rejecting(Vec3(0, 1, 0)).length
         }
+        func z(_ e: Double, _ s: Double?) -> Double { abs(e) / max(1e-9, s ?? 0) }
         let rb = ok.compactMap { r in r.measured?.rebound.map { abs($0 - r.truth.rebound) } }
+        let rz = ok.compactMap { r in r.measured.flatMap { a in a.rebound.map { z($0 - r.truth.rebound, a.reboundSigma) } } }
+        let dz = ok.map { r in z(r.measured!.dropHeight - r.truth.dropHeight, r.measured!.dropHeightSigma) }
+        let az = ok.compactMap { r -> Double? in
+            guard let m = r.measured?.app, let t = r.measuredTruth?.app else { return nil }
+            return z(m.landingError - t.landingError, m.landingErrorSigma)
+        }
         let perf = results.filter { $0.perfect?.kind == .bounce }
         return Summary(drops: results.count, analysed: ok.count, reboundError: med(rb), reboundErrorMax: rb.max(),
                        offsetError: med(ok.compactMap { offErr($0.measured!, $0.truth) }),
                        normalTiltError: med(ok.compactMap { r in r.measured?.normalTilt.map { abs($0 - r.truth.normalTilt) } }),
                        dropHeightError: med(ok.map { abs($0.measured!.dropHeight - $0.truth.dropHeight) }),
                        impactTimeError: med(ok.map { abs($0.measured!.impactTime - $0.truth.impactTime) }),
-                       landingError: med(ok.compactMap { landErr($0.measured!, $0.truth) }),
+                       landingError: med(ok.compactMap { landErr($0.measured!, $0.measuredTruth) }),
                        appComparisonError: med(ok.compactMap { r in
-                           guard let m = r.measured?.app?.landingError, let t = r.truth.app?.landingError else { return nil }
+                           guard let m = r.measured?.app?.landingError, let t = r.measuredTruth?.app?.landingError else { return nil }
                            return abs(m - t) }),
                        reboundComparisonError: med(ok.compactMap { r in
-                           guard let m = r.measured?.measuredRebound?.landingError, let t = r.truth.trueRebound?.landingError else { return nil }
+                           guard let m = r.measured?.measuredRebound?.landingError, let t = r.measuredTruth?.trueRebound?.landingError else { return nil }
                            return abs(m - t) }),
                        directionError: med(ok.compactMap { r in
                            guard let o = r.measured?.velocityOut else { return nil }
                            return Units.degrees(o.angle(to: r.truth.velocityOut)) }),
+                       reboundZ: med(rz), reboundBeyond3Sigma: rz.filter { $0 > 3 }.count, dropHeightBeyond3Sigma: dz.filter { $0 > 3 }.count,
+                       appComparisonBeyond3Sigma: az.filter { $0 > 3 }.count,
                        perfectReboundError: med(perf.compactMap { r in r.perfect?.rebound.map { abs($0 - r.truth.rebound) } }),
                        perfectOffsetError: med(perf.compactMap { offErr($0.perfect!, $0.truth) }),
-                       perfectLandingError: med(perf.compactMap { landErr($0.perfect!, $0.truth) }))
+                       perfectLandingError: med(perf.compactMap { landErr($0.perfect!, $0.perfectTruth) }))
     }
 
     public func json() throws -> Data { try KitJSON.encode(self) }
@@ -107,6 +129,9 @@ public struct KitDropBenchReport: Codable, Equatable {
                          results.count, slabInches[0], slabInches[1], Units.toInches(dish.depth),
                          dish.shape == .sphericalCap ? "spherical cap" : "paraboloid", Units.toInches(dish.sphereRadius),
                          tangential, video, finder == "truth" ? "truth-based (knows where the ball is)" : "the app's, set up for tracking"))
+        md.append(floorKnown ? "The analysis knows ARKit's floor (as on the phone)." :
+                  "The analysis has no floor, as in a kit: it lands the bounce where the ball came down on the slab again, on the floor when "
+                  + "it is seen lower, else at the lock's lowest top corner (the app's own end level); each is scored against the truth there.")
         for n in notes { md.append("- " + KitScoreReport.cell(n)) }
         md.append("")
         func mm(_ v: Double?) -> String { v.map { String(format: "%.1f mm", $0 * 1000) } ?? "n/a" }
@@ -116,6 +141,9 @@ public struct KitDropBenchReport: Codable, Equatable {
         md.append("|---|---|---|")
         md.append("| Drops analysed | \(sm.analysed) of \(sm.drops) | \(results.filter { $0.perfect?.kind == .bounce }.count) of \(sm.drops) |")
         md.append("| Rebound | \(pts(sm.reboundError)) (worst \(pts(sm.reboundErrorMax))) | \(pts(sm.perfectReboundError)) |")
+        md.append("| Rebound error over its sigma | median \(sm.reboundZ.map { String(format: "%.1f", $0) } ?? "n/a"), beyond 3 sigma: "
+                  + "\(sm.reboundBeyond3Sigma) of \(sm.analysed) | |")
+        md.append("| Beyond 3 sigma: drop height, landing against the app | \(sm.dropHeightBeyond3Sigma), \(sm.appComparisonBeyond3Sigma) of \(sm.analysed) | |")
         md.append("| Contact point on the dish | \(mm(sm.offsetError)) | \(mm(sm.perfectOffsetError)) |")
         md.append("| Local normal's tilt | \(deg(sm.normalTiltError)) | |")
         md.append("| Drop height | \(mm(sm.dropHeightError)) | |")
@@ -147,7 +175,7 @@ public struct KitDropBenchReport: Codable, Equatable {
             let tilt = a.normalTilt.map { String(format: "%.2f°", $0) } ?? "-"
             let reb = a.rebound.map { String(format: "%.1f%% ± %.1f", $0 * 100, (a.reboundSigma ?? 0) * 100) } ?? a.kind.rawValue
             let imp = String(format: "%.1f mm", (a.impactCenter - t.impactCenter).length * 1000)
-            let land = a.landing.map { String(format: "%.0f mm", ($0 - t.landing).rejecting(Vec3(0, 1, 0)).length * 1000) } ?? "-"
+            let land = a.landing.flatMap { l in r.measuredTruth.map { String(format: "%.0f mm", (l - $0.landing).rejecting(Vec3(0, 1, 0)).length * 1000) } } ?? "-"
             func cmp(_ x: KitDropComparison?) -> String {
                 guard let x = x else { return "-" }
                 return String(format: "%.0f mm", x.landingError * 1000) + (x.bearingError.map { String(format: " %+.0f°", $0) } ?? "")
@@ -155,7 +183,8 @@ public struct KitDropBenchReport: Codable, Equatable {
             md.append("| \(r.shot.id) | \(String(format: "%.0f°", r.shot.tilt)) | \(String(format: "%.0f in", r.shot.heightInches)) | "
                       + String(format: "%.1f, %.1f / ", Units.toInches(t.offsetU), Units.toInches(t.offsetV)) + off + " | "
                       + String(format: "%.2f° / ", t.normalTilt) + tilt + " | " + String(format: "%.0f%% / ", t.rebound * 100) + reb + " | "
-                      + imp + " | " + land + " | " + cmp(t.app) + " / " + cmp(a.app) + " | " + cmp(t.trueRebound) + " / " + cmp(a.measuredRebound)
+                      + imp + " | " + land + " | " + cmp(r.measuredTruth?.app) + " / " + cmp(a.app) + " | " + cmp(r.measuredTruth?.trueRebound)
+                      + " / " + cmp(a.measuredRebound)
                       + " | " + found + " |")
         }
         let failed = results.filter { $0.measured == nil }
@@ -178,12 +207,15 @@ public struct KitDropBenchReport: Codable, Equatable {
 
 /// Scores rendered drops (`KitSyntheticDrops`) through the scorer's own per-frame path (`KitScoreRun.runShot`: the
 /// app's frame pipeline, a fresh tracker, the tracking ball finder on every frame) and analyses each track with
-/// `KitDropAnalysis` (the lock before the cue, the dish, ARKit's floor known: y = 0), against the truth.
+/// `KitDropAnalysis` (the lock before the cue, the dish; no floor, as in a kit, unless `floorKnown`), against the truth
+/// at the analysis's own landing level.
 public enum KitDropBench {
     public struct Options {
         public var drops = KitSyntheticDrops.Options()
         /// a ball finder that knows where the ball is (tests the analysis without the finder's errors)
         public var truthBall = false
+        /// give the analysis ARKit's floor (y = 0), as on the phone; false (the default): as a kit has it, no floor
+        public var floorKnown = false
         public var log: ((String) -> Void)? = nil
         public init() {}
     }
@@ -195,7 +227,7 @@ public enum KitDropBench {
         for shot in o.drops.shots {
             let d = maker.make(shot, start: start)
             start += 20
-            let r = try score(d, maker: maker, truthBall: o.truthBall)
+            let r = try score(d, maker: maker, truthBall: o.truthBall, floorKnown: o.floorKnown)
             let what = r.measured.map { a in a.rebound.map { String(format: "rebound %.1f%% (true %.0f%%)", $0 * 100, r.truth.rebound * 100) } ?? a.kind.rawValue }
                 ?? "not analysed"
             o.log?("drops \(shot.id): \(r.frames) frames, ball on \(r.ballFound)/\(r.dropFrames) drop frames, \(what)")
@@ -213,6 +245,7 @@ public enum KitDropBench {
                            dop.exposure > 0 ? String(format: "1/%.0f s (%d instants)", 1 / dop.exposure, dop.blurSamples) : "none")
         var rep = KitDropBenchReport(slabInches: [Units.toInches(dop.spec.sideU), Units.toInches(dop.spec.sideV)], dish: maker.dish,
                                      tangential: tang, video: video, finder: o.truthBall ? "truth" : "app", results: results)
+        rep.floorKnown = o.floorKnown
         rep.notes.append("The app predicts with its own model (launch along the corner plane's normal, |v_out| = sqrt(rebound) |v_in|, its "
                          + "paraboloid dish); the drops follow the physics (reflection about the dish's local normal, the ball rolling off): "
                          + "'vs app' with the true rebound is the model's own error.")
@@ -220,7 +253,7 @@ public enum KitDropBench {
     }
 
     /// One drop through the scorer's path, analysed, and its perfect track analysed.
-    static func score(_ d: KitSyntheticDrops.Drop, maker: KitSyntheticDrops, truthBall: Bool) throws -> KitDropBenchResult {
+    static func score(_ d: KitSyntheticDrops.Drop, maker: KitSyntheticDrops, truthBall: Bool, floorKnown: Bool = false) throws -> KitDropBenchResult {
         let settings = maker.settings
         let spec = KitPlan.standard.shots.first { $0.id == "s10-drop1" }!
         let W = maker.options.width / max(1, maker.options.shrink), H = maker.options.height / max(1, maker.options.shrink)
@@ -266,7 +299,7 @@ public enum KitDropBench {
         }
         var ctx = KitDropAnalysis.Context(slab: sr.lockBeforeCue, dish: maker.dish)
         ctx.ballRadius = settings.ball.radius
-        ctx.floorY = 0
+        ctx.floorY = floorKnown ? 0 : nil
         ctx.appRebound = settings.ball.rebound
         if let lock = sr.lockBeforeCue {
             ctx.predict = { held, rebound in
@@ -278,6 +311,7 @@ public enum KitDropBench {
         switch KitDropAnalysis.analyze(track: sr.track, cue: cue, context: ctx) {
         case let .analyzed(a):
             res.measured = a
+            res.measuredTruth = maker.truth(d, level: a.landingLevel)
             let q = d.slab.toSlab(a.contactPoint)
             res.measuredOffset = [q.x, q.y]
         case let .failed(why): res.failure = why
@@ -291,7 +325,7 @@ public enum KitDropBench {
             return KitBouncePrediction.app(pose: d.slab, settings: s, held: held)
         }
         switch KitDropAnalysis.analyze(track: KitSyntheticDrops.perfectTrack(d), cue: cue, context: pctx) {
-        case let .analyzed(a): res.perfect = a
+        case let .analyzed(a): res.perfect = a; res.perfectTruth = maker.truth(d, level: a.landingLevel)
         case let .failed(why): res.perfectFailure = why
         }
         return res

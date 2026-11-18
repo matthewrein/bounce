@@ -79,7 +79,8 @@ public enum KitScoreError: Error, Equatable, CustomStringConvertible {
 ///     the lock before the cue and the dish's geometry, `KitDish`): `reboundMeasured` (e², e the restitution about the
 ///     dish's local normal: the app's rebound setting), `landingErrorApp` and `landingErrorRebound` (the actual landing
 ///     against the app's prediction for the same held ball with the app's rebound, and with the measured one, both
-///     carried down to the same level: 0.1 m below the impact, or where the ball came down next when it is seen lower),
+///     carried down to the same level: where the ball came down on the slab again, else where it came down next when
+///     that is seen lower (the floor), else the lock's lowest top corner, the app's own end level),
 ///     `launchDirectionError` (the app's launch direction against the measured one) and `impactClearance` (the gap
 ///     between the ball and the dish where the fall's and the bounce's fits meet: the track against the lock).
 /// Aggregates: lockRate is the mean over slab shots, timeToLock the median over shots that locked, neverLocked a count;

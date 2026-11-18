@@ -93,6 +93,16 @@ public struct KitDropTruth: Codable, Equatable {
     public var trueRebound: KitDropComparison?
 }
 
+/// The truth compared at a landing level (the ball's centre's height, world y): where the bounce's arc comes down to it,
+/// carried on through anything in the way, and the app's prediction compared there with its own rebound and with the
+/// true one. An analysis is scored against the truth at its own landing level.
+public struct KitDropLevelTruth: Codable, Equatable {
+    public var level: Double
+    public var landing: Vec3
+    public var app: KitDropComparison?
+    public var trueRebound: KitDropComparison?
+}
+
 /// Drops onto the slab rendered with known, physical truth (`KitDropPhysics`: the bounce reflects about the dish's LOCAL
 /// normal with the restitution of its rebound, the velocity along the surface as a solid sphere rolling off; not the
 /// app's model), for scoring the drop analysis (`KitDropAnalysis`) through the scorer's own per-frame path
@@ -235,6 +245,29 @@ public final class KitSyntheticDrops {
         return Drop(shot: shot, slab: pose, physics: phys, truth: truth, start: start, frames: frames, views: views, exposures: exposures)
     }
 
+    /// The truth of drop `d` compared at the world height `level` (nil without a bounce off the slab that gets that low).
+    public func truth(_ d: Drop, level: Double) -> KitDropLevelTruth? {
+        KitSyntheticDrops.truth(d.physics, level: level, settings: settings)
+    }
+
+    static func truth(_ phys: KitDropPhysics, level: Double, settings: TrackerSettings) -> KitDropLevelTruth? {
+        guard let c = phys.impact, let land = phys.arcLanding(level: level) else { return nil }
+        let vy = c.velocityOut.y, G = Units.gravity
+        let apex = vy > 0 ? vy * vy / (2 * G) : 0
+        var t = KitDropLevelTruth(level: level, landing: land.point, app: nil, trueRebound: nil)
+        if c.surface == .slab {
+            var s = settings
+            let p = KitBouncePrediction.app(pose: phys.slab, settings: s, held: phys.held)
+            t.app = KitDropAnalysis.compare(p, rebound: s.ball.rebound, impactCenter: c.center, velocityOut: c.velocityOut, landing: land.point,
+                                            apex: apex, level: level)
+            s.ball.rebound = phys.params.rebound
+            let pt = KitBouncePrediction.app(pose: phys.slab, settings: s, held: phys.held)
+            t.trueRebound = KitDropAnalysis.compare(pt, rebound: s.ball.rebound, impactCenter: c.center, velocityOut: c.velocityOut,
+                                                    landing: land.point, apex: apex, level: level)
+        }
+        return t
+    }
+
     /// What really happened, and the app's prediction from the true slab and held ball.
     static func truth(_ phys: KitDropPhysics, cue: Double, settings: TrackerSettings) -> KitDropTruth {
         let R = phys.params.ballRadius, up = Vec3(0, 1, 0), G = Units.gravity
@@ -260,16 +293,9 @@ public final class KitSyntheticDrops {
                              landingTime: land.time,
                              nextContact: next.map { KitDropContact(time: $0.time, center: $0.center, surface: $0.surface == .slab ? .slab : .floor) },
                              app: nil, trueRebound: nil)
-        if c.surface == .slab {
-            var s = settings
-            let p = KitBouncePrediction.app(pose: phys.slab, settings: s, held: phys.held)
-            t.app = KitDropAnalysis.compare(p, rebound: s.ball.rebound, impactCenter: c.center, velocityOut: c.velocityOut, landing: land.point,
-                                            apex: apex, level: level)
-            s.ball.rebound = phys.params.rebound
-            let pt = KitBouncePrediction.app(pose: phys.slab, settings: s, held: phys.held)
-            t.trueRebound = KitDropAnalysis.compare(pt, rebound: s.ball.rebound, impactCenter: c.center, velocityOut: c.velocityOut,
-                                                    landing: land.point, apex: apex, level: level)
-        }
+        let lt = truth(phys, level: level, settings: settings)
+        t.app = lt?.app
+        t.trueRebound = lt?.trueRebound
         return t
     }
 

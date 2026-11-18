@@ -36,6 +36,18 @@ public struct KitDropContact: Codable, Equatable {
     public var surface: Surface
 }
 
+/// When the ball came down on the slab again (the landing compared there), its arc carried on through that contact to
+/// the app's own end level, as the app draws its landing: the floor when known, else the lock's lowest top corner.
+public struct KitDropCarriedOn: Codable, Equatable {
+    /// the ball's centre's height there (world y) and where it comes from ("floor", "lowest corner" or "fixed")
+    public var level: Double
+    public var levelSource: String
+    public var landing: Vec3
+    public var landingSigma: Double?
+    public var app: KitDropComparison?
+    public var measuredRebound: KitDropComparison?
+}
+
 /// A recorded drop measured from the ball's track and the locked slab (`KitScorer`'s dense track: the ball's centre in
 /// ARKit's world on every frame it was found, with misses, wrong frames, frames the recorder dropped and the ball
 /// leaving the view), and compared with what the app predicts for the same release point.
@@ -45,49 +57,70 @@ public struct KitDropContact: Codable, Equatable {
 ///     timestamps keep the first; non-finite samples are dropped;
 ///   - **noise**: the finder's error lies along the line of sight (it takes the distance from the ball's size), so every
 ///     fit is `KitDropFit`: free fall with gravity known, weighted least squares in which a sample's error along its
-///     line of sight counts kappa² as much as across it; kappa is the held ball's spread across over along (0.03-1),
-///     else re-estimated from the fall; every distance below is weighted so;
-///   - **held**: the median of the ball's centre from 1.5 s before the release cue to 0.05 s after it, when seen there
-///     on at least 2 frames; otherwise the release is taken from the fall alone (a note says so);
+///     line of sight counts kappa² as much as across it; kappa is the fall's own split of its residuals (re-estimated
+///     until it settles) and the bounce's when lower, never more than the held ball's spread across over along (a still,
+///     sharp ball promises more than a blurred falling one gives), 0.03-1; every distance below is weighted so;
 ///   - **the fall and the impact** are segmented as in `KitBounceAnalysis` (running median of five heights, here the
-///     line of sight's elevation at the held ball's distance, which the distance error does not move; the fall starts
-///     1.5 cm below the held height and goes on falling; the impact is the lowest point before the ball rises 1 cm
-///     again); a ball that never rises 1 cm but stays on the dish (or at one height) for 3 or more samples has
-///     **rolled** (no bounce measured);
+///     line of sight's elevation at the held ball's distance, which the distance error does not move): the reference is
+///     the median height over the hold (1.5 s before the cue to 0.05 s after it); not seen held, the top of the first
+///     descent after the cue up to the first V (a fall of 3 cm and a rise of 2 cm: the first bounce), never the highest
+///     point within a second; the fall is found 1.5 cm below the reference, going on down 5 cm within 0.15 s, and starts
+///     where the ball leaves the hand's own level just before (back from there while it is 3 mm or more below the median
+///     height 0.1-0.45 s before: a hand that sinks while it waits must not turn its last held frames into a fall); the
+///     impact is the lowest point before the ball rises 1 cm again; a ball that never rises 1 cm but stays on the dish
+///     (or at one height) for 3 or more samples has **rolled** (no bounce measured); a ball seen rising 3 cm or more
+///     before the fall found (from 3 cm below the reference when it was held) had an earlier bounce, missed: refused;
 ///   - **fall fit**: the arc most of the falling samples agree on (`KitDropFit.consensus`, 15 mm), refitted robustly
-///     with a prior that the ball was let go, not thrown (horizontal velocity 0 ± 0.1 m/s); **rise fit**: the consensus
-///     of the lowest sample and the next eight (also through where the fall meets the dish), grown while the next
-///     samples fit, skipping up to three wrong frames, and ended by the next contact or the end of the track (the ball
-///     left the view);
+///     with a prior that the ball was let go, not thrown (horizontal velocity 0 ± 0.1 m/s); it must span 3 cm or 30% of
+///     the drop; **rise fit**: the consensus of the lowest sample and the next eight (also through where the fall meets
+///     the dish), grown while the next samples fit, skipping up to three wrong frames, and ended by the next contact or
+///     the end of the track;
+///   - **the next contact** only when the samples after the rise make an arc of their own (4 or more agree) that the
+///     rise comes down onto, with an upward kick of 0.2 m/s or more (a bounce): on the slab when it lies over the lock
+///     within 3 cm of the dish, on the floor when within 3 cm of ARKit's floor, else on something; otherwise the ball
+///     left the view or was lost (`leftView`);
 ///   - **impact time**: where the two fits' heights meet (`impactTime`); the **impact centre** the mean of the fits
 ///     there; the **contact point** where the ball touches the dish (`KitDish`, the dish geometry with the lock's pose,
 ///     not a flat plane) when the impact centre is slid along its line of sight (the finder's error lies there; not
 ///     when the sight runs within 10° of the slab's plane, or without a camera) and the **local normal** the dish's
-///     normal there; `impactClearance` the gap between the
-///     ball at the impact centre and the dish (positive: the track turns round above the dish: the finder reads the
-///     ball high or the lock sits low); `offsetU`/`offsetV` the contact point in the lock's axes from its centre (a
-///     square slab's axes may be any of its edges), `offsetDownhill`/`offsetLeft` down its slope and to the left;
-///     `normalTilt` the local normal's angle from the slab's normal;
-///   - **release**: the held point (else the fall fit where its vertical speed is 0) and the fall fit's time of zero
-///     vertical speed; **drop height**: the release point's height above the impact centre (how far the centre fell);
+///     normal there; `impactClearance` the gap between the ball at the impact centre and the dish (positive: the track
+///     turns round above the dish: the finder reads the ball high or the lock sits low; more than 8 cm: refused, the
+///     ball missed the slab or the fall is not the ball's; more than 4 cm and 3 sigma: left out of the bake);
+///     `offsetU`/`offsetV` the contact point in the lock's axes from its centre (a square slab's axes may be any of its
+///     edges), `offsetDownhill`/`offsetLeft` down its slope and to the left; `normalTilt` the local normal's angle from
+///     the slab's normal; a contact point more than a radius outside the lock's outline is refused (the ball missed the
+///     slab), one within a radius of the edge kept out of the bake (the bounce may be off the edge);
+///   - **release**: the fall fit's time of zero vertical speed; the **held point** the median of the ball's centre over
+///     the 0.4 s before it (else over the hold window, before it), cross-checked against the fall fit's position then
+///     (its depth comes from gravity, not the ball's size: their disagreement is part of the held point's uncertainty,
+///     and a note over 1 cm); not seen held, the fall fit's position then; **drop height**: the held point's height
+///     above the impact centre (how far the centre fell);
 ///   - **restitution** e = -(v_out . n) / (v_in . n) about the local normal n, v_in and v_out the fits' velocities at
 ///     the impact; **rebound** = e², exactly `BallSpec.rebound` (the share of the drop height a straight-up bounce
-///     regains); `speedRebound` = |v_out|² / |v_in|² (what `KitBounceAnalysis` calls the rebound; the same for a
-///     straight drop on a level surface); `tangentialRatio`: the velocity along the surface after over before, along
-///     the incoming direction (nil when the incoming one is under 5 cm/s); `sideways`: how far the outgoing velocity
-///     leans out of the plane of incidence (degrees; spin from the release, or a wrong normal);
-///   - **landing**: where the rise fit comes down to the landing level: the floor plus a radius when ARKit's floor is
-///     known (`floorY`); else the ball's next contact when it is seen 3 cm or more below the impact and not on the slab
-///     (the floor, seen); else `fixedLandingDrop` below the impact centre; extrapolated past the last fitted sample when
-///     the ball left the view or came down on something higher first (`landingExtrapolation`, seconds, and notes);
+///     regains; over 100% by more than 2 sigma refused, over 100% kept out of the bake); `speedRebound` = |v_out|² /
+///     |v_in|² (what `KitBounceAnalysis` calls the rebound; the same for a straight drop on a level surface);
+///     `tangentialRatio`: the velocity along the surface after over before, along the incoming direction (nil when the
+///     incoming one is under 5 cm/s); `sideways`: how far the outgoing velocity leans out of the plane of incidence
+///     (degrees; spin from the release, or a wrong normal); a fall moving sideways over 0.2 m/s (thrown, or a later
+///     bounce taken for the drop) is kept out of the bake;
+///   - **landing**: where the rise fit comes down to the landing level (`landingLevelSource`): "slab", the ball's next
+///     contact on the slab (the real landing; `carriedOn` the arc carried on through it to the app's own end level);
+///     else "floor", ARKit's floor plus a radius when known (`floorY`); else "next bounce", the next contact when it is
+///     3 cm or more below the impact (the floor, seen); else "lowest corner", the app's own end level without a floor
+///     (`Bounce.compute`: the lock's lowest top corner, plus a radius); else (no lock) "fixed", `fixedLandingDrop`
+///     below the impact centre; extrapolated past the last fitted sample when the ball left the view or came down on
+///     something higher first (`landingExtrapolation`, seconds, and notes);
 ///   - **predictions**: `app` is the app's bounce (`predict(held, appRebound)`: `Bounce.compute` with the lock and the
 ///     same held ball, so the same release point and the app's drop height) and `measuredRebound` the same with the
-///     rebound measured here (so what is left is the model's error, not the rebound's), each carried down to the same
-///     landing level (`KitDropComparison`);
+///     rebound measured here (so what is left is the model's error and the held reading's, not the rebound's), each
+///     carried down to the same landing level (`KitDropComparison`);
 ///   - **uncertainties** (1 sigma): each fit's 6 x 6 parameter covariance (its sample times, lines of sight and prior,
 ///     and a sample's noise across the line of sight: the larger of the two fits', at least 0.5 mm) carried through
-///     every derived number by its numerical derivatives; frames whose errors are correlated make them optimistic. The
-///     held point's from the spread of the held samples.
+///     every derived number by its numerical derivatives, scaled up by sqrt(chi² / 2) when the two fits' horizontal
+///     mismatch at the impact (chi² against its sigma) shows errors their residuals do not (a distance off by a few
+///     centimetres through a whole arc); and the held point's (per axis, its spread over its frames and its
+///     disagreement with the fall fit) through the drop height and the predictions;
+///   - `bakeExcluded`: why the drop's rebound is left out of the rebound to bake (`reboundToBake`), when it is.
 public struct KitDropAnalysis: Codable, Equatable {
     public enum Kind: String, Codable {
         case bounce
@@ -145,7 +178,8 @@ public struct KitDropAnalysis: Codable, Equatable {
     /// the rise fit's highest point above the impact centre (m)
     public var apexHeight: Double?
     // the landing
-    /// the ball's centre's height at the landing (world y) and where it comes from ("floor" or "fixed")
+    /// the ball's centre's height at the landing (world y) and where it comes from: "slab" (the next contact, on the slab),
+    /// "floor", "next bounce" (the floor, seen), "lowest corner" (the app's own end level) or "fixed" (no lock)
     public var landingLevel: Double
     public var landingLevelSource: String
     public var landing: Vec3?
@@ -161,6 +195,14 @@ public struct KitDropAnalysis: Codable, Equatable {
     // against the predictions
     public var app: KitDropComparison?
     public var measuredRebound: KitDropComparison?
+    /// the landing carried on past the slab contact to the app's end level, when the ball came down on the slab again
+    public var carriedOn: KitDropCarriedOn? = nil
+    /// the weight of a sample's error along its line of sight against across it that the fits used (0.03-1)
+    public var kappa: Double? = nil
+    /// how far the held reading lies from the fall fit's position at the release (m)
+    public var heldOffset: Double? = nil
+    /// why this drop's rebound is left out of the rebound to bake (nil: it is used)
+    public var bakeExcluded: String? = nil
     public var notes: [String]
 
     public enum Outcome: Equatable {
@@ -197,26 +239,29 @@ public struct KitDropAnalysis: Codable, Equatable {
             s.append(x)
         }
         guard s.count >= 8 else { return .failed("the ball was seen on only \(s.count) frames") }
-        let G = Units.gravity, R = ctx.ballRadius
+        let G = Units.gravity, R = ctx.ballRadius, up = Vec3(0, 1, 0)
         var notes: [String] = []
+        var bakeExcluded: String? = nil
+        func exclude(_ why: String) { if bakeExcluded == nil { bakeExcluded = why } }
         func median3(_ v: [KitBallSample]) -> Vec3 {
             Vec3(KitStats.median(v.map { $0.p.x }), KitStats.median(v.map { $0.p.y }), KitStats.median(v.map { $0.p.z }))
         }
-        // held
+        // the hold window (for finding the fall; the held point itself is taken just before the release, below)
         let hold = s.filter { $0.t >= cue - 1.5 && $0.t <= cue + 0.05 }
-        let held: Vec3? = hold.count >= 2 ? median3(hold) : nil
         // the heights the fall and the bounce are found on: from the line of sight's elevation at the held ball's distance
         // from the camera (the finder's error lies along the line of sight; its direction is good), else the heights
-        let dRef = KitStats.median((hold.isEmpty ? s : hold).compactMap { x in x.c.map { (x.p - $0).rejecting(Vec3(0, 1, 0)).length } })
+        let dRef = KitStats.median((hold.isEmpty ? s : hold).compactMap { x in x.c.map { (x.p - $0).rejecting(up).length } })
         func segHeight(_ x: KitBallSample) -> Double {
             guard let c = x.c, dRef > 0.05 else { return x.p.y }
-            let d = x.p - c, hz = d.rejecting(Vec3(0, 1, 0)).length
+            let d = x.p - c, hz = d.rejecting(up).length
             return hz > 1e-6 ? c.y + dRef * d.y / hz : x.p.y
         }
         let y = KitBounceAnalysis.runningMedian(s.map(segHeight))
-        // the finder's noise across and along the line of sight, from the held ball (else a guess, refined on the fall)
-        var kappa = 0.3
-        if hold.count >= 5, let h = held {
+        // the finder's noise across and along the line of sight from the held ball: a bound only (a still, sharp ball's
+        // spread promises more than a blurred falling one gives), the fall's own residuals decide below
+        var kappaHeld: Double? = nil
+        if hold.count >= 5 {
+            let h = median3(hold)
             let dev = hold.compactMap { x -> (Double, Double)? in
                 guard let d = Fit.sight(x) else { return nil }
                 let r = x.p - h, al = r.dot(d)
@@ -225,15 +270,23 @@ public struct KitDropAnalysis: Codable, Equatable {
             if dev.count >= 5 {
                 let al = dev.map { $0.0 }, mAl = KitStats.median(al)
                 let sAlong = 1.4826 * KitStats.median(al.map { abs($0 - mAl) }), sAcross = KitStats.median(dev.map { $0.1 }) / 1.1774
-                kappa = clamp(max(0.0003, sAcross) / max(0.0003, sAlong, sAcross), 0.03, 1)
+                kappaHeld = clamp(max(0.0003, sAcross) / max(0.0003, sAlong, sAcross), 0.03, 1)
             }
         }
+        var kappa = kappaHeld ?? 0.3
         let refY: Double, refT: Double
         if !hold.isEmpty { refY = KitStats.median(hold.map(segHeight)); refT = cue - 0.3 } else {
+            // not seen held: the top of the first descent after the cue, up to the first V (a fall of 3 cm and a rise of
+            // 2 cm again: the first bounce), not the highest point within a second (a lively ball's first bounce can rise
+            // above the first frames seen of its fall)
             let w = s.indices.filter { s[$0].t >= cue - 0.3 && s[$0].t <= cue + 1.0 }
-            guard let top = w.max(by: { y[$0] < y[$1] }) else { return .failed("the ball was not seen around the release cue") }
+            guard var top = w.first else { return .failed("the ball was not seen around the release cue") }
+            var low = top
+            for i in w {
+                if y[top] - y[low] < 0.03 && y[i] > y[top] { top = i; low = i; continue }
+                if y[i] < y[low] { low = i } else if y[top] - y[low] >= 0.03 && y[i] - y[low] >= 0.02 { break }
+            }
             refY = y[top]; refT = s[top].t - 1e-6
-            notes.append("the ball was not seen held before the cue: the release is taken from the fall alone")
         }
         // the fall: 1.5 cm below the reference, and on down 5 cm within 0.15 s
         var k1: Int? = nil
@@ -244,6 +297,16 @@ public struct KitDropAnalysis: Codable, Equatable {
             k1 = i; break
         }
         guard let fallIndex = k1 else { return .failed("the ball did not fall after the release cue") }
+        // an earlier bounce missed (its fall not seen): the ball seen rising 3 cm or more before the fall found (from a
+        // point 3 cm or more below where it was held, when it was seen held)
+        var lowSoFar = Double.infinity, earlierRise = 0.0
+        for i in s.indices where s[i].t >= cue - 0.3 && s[i].t < s[fallIndex].t {
+            if hold.isEmpty || refY - y[i] >= 0.03 { lowSoFar = min(lowSoFar, y[i]) }
+            if lowSoFar.isFinite { earlierRise = max(earlierRise, y[i] - lowSoFar) }
+        }
+        guard earlierRise < 0.03 else {
+            return .failed(String(format: "the ball was seen rising %.0f mm before the fall found: its first fall and bounce were missed", earlierRise * 1000))
+        }
         // the lowest point before it rises 1 cm again
         var jm = fallIndex, rose = false, j = fallIndex
         while j < s.count && s[j].t - s[fallIndex].t < 1.5 {
@@ -252,17 +315,31 @@ public struct KitDropAnalysis: Codable, Equatable {
         }
         let jEnd = j
         jm = (max(fallIndex, jm - 1)...min(max(fallIndex, jEnd - 1), jm + 2)).min(by: { segHeight(s[$0]) < segHeight(s[$1]) }) ?? jm
-        var k0 = fallIndex
-        while k0 > 0 && s[k0 - 1].t > refT && refY - y[k0 - 1] > 0.004 { k0 -= 1 }
         let t0 = s[jm].t
+        // where the fall starts: back from the trigger while the ball is 3 mm or more below where it was held just before
+        // (the median height 0.1-0.45 s before the trigger: a hand that sinks while it waits for the beep leaves its last
+        // held frames below the median of the whole hold, and they must not join the fall); not seen held then, 4 mm below
+        // the reference
+        var k0 = fallIndex
+        let tTrig = s[fallIndex].t
+        let before = s.filter { $0.t >= tTrig - 0.45 && $0.t <= tTrig - 0.1 }
+        if !hold.isEmpty && before.count >= 3 {
+            let yLocal = KitStats.median(before.map(segHeight))
+            while k0 > 0 && s[k0 - 1].t > refT && yLocal - segHeight(s[k0 - 1]) > 0.003 { k0 -= 1 }
+        } else {
+            while k0 > 0 && s[k0 - 1].t > refT && refY - y[k0 - 1] > 0.004 { k0 -= 1 }
+        }
         // the fall: the arc most of its samples agree on (within 15 mm: a wrong frame near the release, where it weighs
-        // most, cannot bend it), then fitted robustly to those; the noise's split re-estimated from it when the held ball
-        // did not give it
+        // most, cannot bend it), then fitted robustly to those; kappa the fall's own split of its residuals (re-estimated
+        // until it settles), never more than the held ball's
         let falling = Array(s[k0..<jm])
         guard jm - k0 >= 3 else { return .failed("too few frames of the fall (\(jm - k0)) before the impact") }
         var fallStart = Fit.consensus(falling, t0: t0, kappa: kappa, gate: 0.015)?.kept ?? falling
-        if hold.count < 5, let f = Fit.robust(fallStart, t0: t0, kappa: kappa) {
-            kappa = f.fit.noiseSplit(f.kept) ?? kappa
+        for _ in 0..<3 {
+            guard let f = Fit.robust(fallStart, t0: t0, kappa: kappa), let kf = f.fit.noiseSplit(f.kept) else { break }
+            let k2 = min(kappaHeld ?? 1, kf)
+            if abs(k2 - kappa) <= 0.05 * kappa { break }
+            kappa = k2
             fallStart = Fit.consensus(falling, t0: t0, kappa: kappa, gate: 0.015)?.kept ?? falling
         }
         guard let pre0 = Fit.robust(fallStart, t0: t0, kappa: kappa) else {
@@ -270,9 +347,21 @@ public struct KitDropAnalysis: Codable, Equatable {
         }
         // a ball let go: its horizontal velocity 0 ± 0.1 m/s (a prior, which a fall seen over a short way needs when the
         // finder's distances are poor)
-        let still = max(0.0005 * 0.0005, pre0.fit.noiseAcross(pre0.kept)) / (0.1 * 0.1)
+        func stillWeight(_ f: Fit, _ kept: [KitBallSample]) -> Double { max(0.0005 * 0.0005, f.noiseAcross(kept)) / (0.1 * 0.1) }
+        var still = stillWeight(pre0.fit, pre0.kept)
         let preR = Fit.robust(pre0.kept, t0: t0, kappa: kappa, still: still) ?? pre0
         var pre = preR.fit, preKept = preR.kept
+
+        // the held point: the ball seen in the 0.4 s before the release (the fall fit's vertex: a hand that drifts while
+        // it waits is read where it let go), else in the hold window before the release; its spread per axis
+        func heldReading(_ tr: Double) -> (point: Vec3, spread: Vec3, n: Int)? {
+            var near = s.filter { $0.t >= max(cue - 1.5, tr - 0.4) && $0.t <= tr - 0.01 }
+            if near.count < 2 { near = hold.filter { $0.t <= tr - 0.01 } }
+            guard near.count >= 2 else { return nil }
+            let m = median3(near)
+            func mad(_ f: (Vec3) -> Double) -> Double { 1.4826 * KitStats.median(near.map { abs(f($0.p) - f(m)) }) }
+            return (m, Vec3(mad { $0.x }, mad { $0.y }, mad { $0.z }), near.count)
+        }
 
         // where on the dish a ball centre is: contact point, normal, clearance (world)
         let slab = ctx.slab, dish = ctx.dish ?? slab.map { KitDish(shape: .sphericalCap, depth: 0, halfU: $0.halfU, halfV: $0.halfV) }
@@ -280,6 +369,12 @@ public struct KitDropAnalysis: Codable, Equatable {
             guard let p = slab, let d = dish else { return (c - Vec3(0, R, 0), Vec3(0, 1, 0), nil, nil, nil) }
             let k = d.contact(center: p.toSlab(c), radius: R)
             return (p.fromSlab(k.point), p.directionFromSlab(k.normal).normalized, k.clearance, k.point.x, k.point.y)
+        }
+        // how far a point on the dish lies outside the slab's outline (m; negative inside)
+        func outside(_ point: Vec3) -> Double? {
+            guard let p = slab else { return nil }
+            let q = p.toSlab(point)
+            return max(abs(q.x) - p.halfU, abs(q.y) - p.halfV)
         }
 
         guard rose else {
@@ -299,8 +394,10 @@ public struct KitDropAnalysis: Codable, Equatable {
                 ti = (lo + hi) / 2
             }
             let c = pre.position(ti), d = onDish(c)
-            let release = held ?? pre.position(pre.t0 + pre.b.y / G)
-            var a = KitDropAnalysis(kind: .rolled, heldSeen: held != nil, releaseTime: pre.t0 + pre.b.y / G, releasePoint: release,
+            let tr = pre.t0 + pre.b.y / G, hr = heldReading(tr)
+            let release = hr?.point ?? pre.position(tr)
+            if hr == nil { notes.insert("the ball was not seen held before the cue: the release is taken from the fall alone", at: 0) }
+            var a = KitDropAnalysis(kind: .rolled, heldSeen: hr != nil, releaseTime: tr, releasePoint: release,
                                     dropHeight: release.y - c.y, dropHeightSigma: 0, fallSamples: preKept.count,
                                     fallRejected: jm - k0 - preKept.count, fallRms: pre.rms, impactTime: ti, impactTimeSigma: 0,
                                     impactCenter: c, contactPoint: d.point, offsetU: d.u, offsetV: d.v, localNormal: d.normal,
@@ -350,7 +447,7 @@ public struct KitDropAnalysis: Codable, Equatable {
             }
             post = f
         }
-        guard let rise = post, kept.count >= 3, kept.last!.t - kept.first!.t >= 0.04 else {
+        guard var rise = post, kept.count >= 3, kept.last!.t - kept.first!.t >= 0.04 else {
             return .failed("too few frames after the impact to fit the bounce")
         }
         // the lowest sample, unless the rise took it, goes with the fall if it fits it
@@ -358,11 +455,44 @@ public struct KitDropAnalysis: Codable, Equatable {
             let dPre = pre.distance(s[jm]), dPost = rise.distance(s[jm])
             if dPre <= gate && dPre <= dPost { preKept.append(s[jm]); if let f = Fit.fit(preKept, t0: t0, kappa: kappa, still: still) { pre = f } }
         }
+        // the rise's own split of its residuals lowers kappa further when it is noisier along the line of sight: both
+        // fits are made again with it
+        if let kr = rise.noiseSplit(kept), kr < 0.95 * kappa {
+            kappa = kr
+            if let f0 = Fit.fit(preKept, t0: t0, kappa: kappa) {
+                still = stillWeight(f0, preKept)
+                if let f = Fit.fit(preKept, t0: t0, kappa: kappa, still: still) { pre = f }
+            }
+            if let f = Fit.fit(kept, t0: t0, kappa: kappa) { rise = f }
+        }
 
-        // the end of the rise: the next contact (the arc the samples after it make, met with the rise's), or the end of the
-        // track (the ball left the view or was lost)
+        // the held point and the release: the fall fit's vertex; the held reading cross-checked against the fall fit's
+        // position there (its depth comes from gravity, not from the ball's size): their disagreement is part of the
+        // held point's uncertainty
+        let releaseTime = pre.t0 + pre.b.y / G
+        let hr = heldReading(releaseTime)
+        if hr == nil { notes.insert("the ball was not seen held before the cue: the release is taken from the fall alone", at: 0) }
+        let fitRelease = pre.position(releaseTime)
+        var heldSigma = Vec3.zero
+        var heldOff: Double? = nil
+        if let h = hr {
+            let off = h.point - fitRelease
+            heldOff = off.length
+            let n = Double(h.n).squareRoot()
+            heldSigma = Vec3((pow(h.spread.x / n, 2) + off.x * off.x).squareRoot(), (pow(h.spread.y / n, 2) + off.y * off.y).squareRoot(),
+                             (pow(h.spread.z / n, 2) + off.z * off.z).squareRoot())
+            if off.length > 0.01 {
+                notes.append(String(format: "the held ball reads %.0f mm from where the fall fit starts (%+.0f mm in height; its size read off, or the hand moved): the drop height and the app's prediction carry that",
+                                    off.length * 1000, off.y * 1000))
+            }
+        }
+
+        // the end of the rise: the next contact, only when the samples after it make an arc of their own (4 or more)
+        // that the rise comes down onto with an upward kick (a bounce); otherwise the ball left the view or was lost
         let floorLevel = ctx.floorY.map { $0 + R }
-        let release: Vec3 = held ?? pre.position(pre.t0 + pre.b.y / G)
+        // the app's own end level (`Bounce.compute` without a floor): the lock's lowest top corner (a ball's centre: a
+        // radius over it)
+        let cornerLevel = slab.map { p in p.topCorners.map { $0.y }.min()! + R }
         let lastT = kept.last!.t
         let dbApprox = pre.b.y - rise.b.y
         let tiApprox = abs(dbApprox) > 1e-6 ? t0 + (rise.a.y - pre.a.y) / dbApprox : s[jm].t
@@ -370,37 +500,41 @@ public struct KitDropAnalysis: Codable, Equatable {
         let following = s.filter { $0.t > lastT && $0.t <= lastT + 0.6 }
         var next: KitDropContact? = nil
         if let nx = following.first, nx.t - lastT < 0.25 {
-            var tc = (lastT + nx.t) / 2
             let arc = Array(following.prefix(12))
-            if arc.count >= 4, let nf = Fit.robust(arc, t0: nx.t, kappa: kappa), nf.kept.count >= 4 {
-                // the two arcs' heights differ linearly in time
+            if arc.count >= 4, let c = Fit.consensus(arc, t0: nx.t, kappa: kappa, gate: max(0.015, 3 * rise.rms)),
+               let nf = Fit.robust(c.kept, t0: nx.t, kappa: kappa), nf.kept.count >= 4, let first = nf.kept.first {
+                // the two arcs' heights differ linearly in time: the rise above the next arc before the contact, below it
+                // after; they cross between the rise's last samples (the last can lie just past the contact) and the next
+                // arc's first
                 func gap(_ t: Double) -> Double { rise.position(t).y - nf.fit.position(t).y }
-                let ta = lastT, tb = nx.t, fa = gap(ta), fb = gap(tb)
-                if abs(fb - fa) > 1e-9 { tc = clamp(ta - fa * (tb - ta) / (fb - fa), lastT, nx.t) }
-            } else {
-                // where the rise comes down to the lowest of the next few samples
-                let low = following.prefix(3).map(segHeight).min() ?? segHeight(nx)
-                let v = rise.velocity(tiApprox), p0 = rise.position(tiApprox)
-                let disc = v.y * v.y + 2 * G * (p0.y - low)
-                if disc >= 0 { tc = clamp(tiApprox + (v.y + disc.squareRoot()) / G, lastT, nx.t) }
+                let ta = lastT, tb = first.t, fa = gap(ta), fb = gap(tb)
+                if fb < 0 && fb < fa {
+                    let tc = ta - fa * (tb - ta) / (fb - fa)
+                    if tc >= max(tiApprox + 0.05, lastT - 0.05) && tc <= tb && rise.velocity(tc).y < 0
+                        && nf.fit.velocity(tc).y - rise.velocity(tc).y > 0.2 {
+                        let c = rise.position(tc)
+                        var surface = KitDropContact.Surface.unknown
+                        if let p = slab, let dd = dish {
+                            let q = p.toSlab(c)
+                            if abs(q.x) <= p.halfU && abs(q.y) <= p.halfV && abs(dd.contact(center: q, radius: R).clearance) < 0.03 { surface = .slab }
+                        }
+                        if surface == .unknown, let fl = floorLevel, abs(c.y - fl) < 0.03 { surface = .floor }
+                        next = KitDropContact(time: tc, center: c, surface: surface)
+                    }
+                }
             }
-            let c = rise.position(tc)
-            var surface = KitDropContact.Surface.unknown
-            if let p = slab, let dd = dish {
-                let q = p.toSlab(c)
-                if abs(q.x) <= p.halfU && abs(q.y) <= p.halfV && abs(dd.contact(center: q, radius: R).clearance) < 0.03 { surface = .slab }
-            }
-            if surface == .unknown, let fl = floorLevel, abs(c.y - fl) < 0.03 { surface = .floor }
-            next = KitDropContact(time: tc, center: c, surface: surface)
         }
-        // the landing level: the floor; else where the ball came down next, when that is clearly lower than the impact and
-        // not on the slab (the floor, seen); else a fixed level below the impact
+        // the landing level: where the ball came down on the slab again (the real landing); else the floor; else where
+        // it came down next when that is clearly lower than the impact (the floor, seen); else the app's own end level
+        // (the lock's lowest top corner); else (no lock) a fixed level below the impact
         var levelSource = "fixed"
         var levelFromTrack: Double? = nil
-        if floorLevel != nil { levelSource = "floor" }
-        else if let nc = next, nc.surface != .slab, rise.position(tiApprox).y - nc.center.y > 0.03 {
-            levelFromTrack = nc.center.y; levelSource = "next bounce"
-        }
+        if let nc = next, nc.surface == .slab { levelFromTrack = nc.center.y; levelSource = "slab" }
+        else if floorLevel != nil { levelSource = "floor" }
+        else if let nc = next, rise.position(tiApprox).y - nc.center.y > 0.03 { levelFromTrack = nc.center.y; levelSource = "next bounce" }
+        else if cornerLevel != nil { levelSource = "lowest corner" }
+        let carryOn = levelSource == "slab"
+        let endSource = floorLevel != nil ? "floor" : cornerLevel != nil ? "lowest corner" : "fixed"
 
         // where the ball touched the dish: its centre at the fits' meeting slid along the line of sight (where the
         // finder's error lies; the lock and the dish are good to millimetres) until it touches; unchanged without a
@@ -418,8 +552,8 @@ public struct KitDropAnalysis: Codable, Equatable {
             for _ in 0..<60 { let m = (lo + hi) / 2; if gap(m) > 0 { lo = m } else { hi = m } }
             return cam + dir * ((lo + hi) / 2)
         }
-
-        // everything that follows from the two fits (for the numbers and, by differences, their uncertainties)
+        // everything that follows from the two fits and the held point (for the numbers and, by differences, their
+        // uncertainties)
         struct Derived {
             var ti = 0.0, center = Vec3.zero, point = Vec3.zero, normal = Vec3(0, 1, 0)
             var u: Double?, v: Double?, clearance: Double?, tilt: Double?, downhill: Double?, left: Double?
@@ -427,18 +561,19 @@ public struct KitDropAnalysis: Codable, Equatable {
             var apex = 0.0, level = 0.0, tl = 0.0, landing = Vec3.zero
             var app: KitDropComparison?, measured: KitDropComparison?
             var drop = 0.0
+            var endLevel: Double?, endLanding: Vec3?, endApp: KitDropComparison?, endMeasured: KitDropComparison?
             var scalars: [Double?] {
                 [ti, u, v, clearance, e, e * e, k, sideways, apex, landing.x, landing.z, drop,
                  app?.directionError, app?.landingError, app?.rangeError, app?.bearingError,
-                 measured?.directionError, measured?.landingError, measured?.rangeError, measured?.bearingError]
+                 measured?.directionError, measured?.landingError, measured?.rangeError, measured?.bearingError,
+                 endLanding?.x, endLanding?.z, endApp?.landingError, endMeasured?.landingError]
             }
         }
-        let up = Vec3(0, 1, 0)
         let wrap = KitDropAnalysis.wrap, landingOf = KitDropAnalysis.landing
-        func compare(_ p: KitBouncePrediction, rebound: Double, d: Derived) -> KitDropComparison {
-            KitDropAnalysis.compare(p, rebound: rebound, impactCenter: d.center, velocityOut: d.vout, landing: d.landing, apex: d.apex, level: d.level)
+        func compare(_ p: KitBouncePrediction, rebound: Double, d: Derived, landing: Vec3, level: Double) -> KitDropComparison {
+            KitDropAnalysis.compare(p, rebound: rebound, impactCenter: d.center, velocityOut: d.vout, landing: landing, apex: d.apex, level: level)
         }
-        func derive(_ pre: Fit, _ rise: Fit, predict: Bool) -> Derived? {
+        func derive(_ pre: Fit, _ rise: Fit, release rel: Vec3?, predict: Bool) -> Derived? {
             var d = Derived()
             let db = pre.b.y - rise.b.y
             guard abs(db) > 1e-6 else { return nil }
@@ -468,18 +603,30 @@ public struct KitDropAnalysis: Codable, Equatable {
             }
             let ta = rise.t0 + rise.b.y / G
             d.apex = rise.position(max(d.ti, ta)).y - d.center.y
-            d.level = floorLevel ?? levelFromTrack ?? (d.center.y - ctx.fixedLandingDrop)
+            d.level = levelFromTrack ?? floorLevel ?? cornerLevel ?? (d.center.y - ctx.fixedLandingDrop)
             let (tau, l) = landingOf(rise.position(d.ti), d.vout, d.level)
             d.tl = d.ti + tau; d.landing = l
+            if carryOn {
+                let el = floorLevel ?? cornerLevel ?? (d.center.y - ctx.fixedLandingDrop)
+                d.endLevel = el
+                d.endLanding = landingOf(rise.position(d.ti), d.vout, el).1
+            }
+            let release = rel ?? pre.position(pre.t0 + pre.b.y / G)
             d.drop = release.y - d.center.y
             if predict, let pr = ctx.predict {
-                if let p = pr(release, ctx.appRebound) { d.app = compare(p, rebound: ctx.appRebound, d: d) }
                 let r = max(0, d.e * d.e)
-                if let p = pr(release, r) { d.measured = compare(p, rebound: r, d: d) }
+                let pa = pr(release, ctx.appRebound), pm = pr(release, r)
+                if let p = pa { d.app = compare(p, rebound: ctx.appRebound, d: d, landing: d.landing, level: d.level) }
+                if let p = pm { d.measured = compare(p, rebound: r, d: d, landing: d.landing, level: d.level) }
+                if let el = d.endLevel, let l = d.endLanding {
+                    if let p = pa { d.endApp = compare(p, rebound: ctx.appRebound, d: d, landing: l, level: el) }
+                    if let p = pm { d.endMeasured = compare(p, rebound: r, d: d, landing: l, level: el) }
+                }
             }
             return d
         }
-        guard let d = derive(pre, rise, predict: true) else {
+        let release = hr?.point
+        guard let d = derive(pre, rise, release: release, predict: true) else {
             return .failed("the track does not hold together as a drop: the fall's and the bounce's fits do not meet")
         }
         let lo = (preKept.map { $0.t }.max() ?? s[jm].t) - 0.02, hi = (kept.first?.t ?? s[jm].t) + 0.02
@@ -496,8 +643,30 @@ public struct KitDropAnalysis: Codable, Equatable {
             notes.append(String(format: "the speed into the bounce (%.2f m/s) is %.0f%% off a fall of %.0f mm from the held point (a push at the release, or the held point read off)",
                                 d.vin.length, 100 * (got.squareRoot() / expected.squareRoot() - 1), d.drop * 1000))
         }
-        guard d.e * d.e <= 1.1, d.e > 0 else {
+        guard d.e > 0, d.e * d.e <= 1.5 else {
             return .failed(String(format: "the track does not hold together as a drop: it gives a rebound of %.0f%%", d.e * d.e * 100))
+        }
+        // the fall seen over a real part of it (at least 3 cm, or 30% of the drop): a few frames next to the impact (or
+        // held frames taken for a fall) say little
+        if let a = preKept.first, let b = preKept.last {
+            let span = pre.position(a.t).y - pre.position(b.t).y
+            guard span >= min(0.03, 0.3 * d.drop) else {
+                return .failed(String(format: "too little of the fall was seen (%.0f mm of %.0f mm)", span * 1000, d.drop * 1000))
+            }
+        }
+        // the impact on the slab's top: the track must turn round near the dish and over the slab
+        if let cl = d.clearance, abs(cl) > 0.08 {
+            return .failed(String(format: "the track turns round %.0f mm %@ the slab's top: the ball missed the slab (or hit its edge), or the fall is not the ball's (a hand that moved before the release)",
+                                  abs(cl) * 1000, cl < 0 ? "below" : "above"))
+        }
+        if let out = outside(d.point) {
+            if out > R {
+                return .failed(String(format: "the ball missed the slab: it came down %.0f mm outside the slab's outline", out * 1000))
+            }
+            if out > -R {
+                let why = String(format: "the ball hit the slab's edge (%.0f mm from it): the bounce may be off the edge, not the top", abs(out) * 1000)
+                notes.append(why); exclude(why)
+            }
         }
 
         // uncertainties: each fit's per-axis covariance through the derivatives of every number
@@ -507,6 +676,17 @@ public struct KitDropAnalysis: Codable, Equatable {
         let base = d.scalars
         var variance = [Double](repeating: 0, count: base.count)
         let h = 1e-5
+        func accumulate(_ dd: Derived?, scale: Double) -> [Double] {
+            var jac = [Double](repeating: 0, count: base.count)
+            guard let sc = dd?.scalars else { return jac }
+            for q in base.indices {
+                guard let x0 = base[q], let x1 = sc[q] else { continue }
+                var diff = x1 - x0
+                if q == 15 || q == 19 { diff = wrap(diff) }  // bearings
+                jac[q] = diff / scale
+            }
+            return jac
+        }
         for which in 0..<2 {
             let f0 = which == 0 ? pre : rise
             // the numbers' derivatives by the fit's six parameters (a, then b)
@@ -516,14 +696,7 @@ public struct KitDropAnalysis: Codable, Equatable {
                 var av = f1.a.array, bv = f1.b.array
                 if k < 3 { av[k] += h } else { bv[k - 3] += h }
                 f1.a = Vec3(av); f1.b = Vec3(bv)
-                guard let dd = which == 0 ? derive(f1, rise, predict: true) : derive(pre, f1, predict: true) else { continue }
-                let sc = dd.scalars
-                for q in base.indices {
-                    guard let x0 = base[q], let x1 = sc[q] else { continue }
-                    var diff = x1 - x0
-                    if q == 15 || q == 19 { diff = wrap(diff) }  // bearings
-                    jac[k][q] = diff / h
-                }
+                jac[k] = accumulate(which == 0 ? derive(f1, rise, release: release, predict: true) : derive(pre, f1, release: release, predict: true), scale: h)
             }
             for q in base.indices {
                 var v = 0.0
@@ -531,33 +704,90 @@ public struct KitDropAnalysis: Codable, Equatable {
                 variance[q] += s2 * v
             }
         }
-        func sigma(_ q: Int) -> Double? { base[q] == nil ? nil : max(0, variance[q]).squareRoot() }
-        // the held point's spread
-        var heldSigma = 0.0
-        if let hp = held, hold.count >= 2 {
-            let dev = hold.map { abs($0.p.y - hp.y) }
-            heldSigma = 1.4826 * KitStats.median(dev) / Double(hold.count).squareRoot()
-        } else {
-            // from the fall fit's apex: about twice the uncertainty of its height at the impact
-            heldSigma = 2 * (s2 * pre.unitCov[1][1]).squareRoot()
+        // the fits' own check: the fall and the bounce must meet at the impact. Their heights meet there by definition;
+        // their horizontal mismatch against its sigma (2 degrees of freedom) shows errors the residuals do not (a finder
+        // whose distance is off by a few centimetres through the whole fall, and by another amount through the bounce):
+        // the fits' part of every uncertainty is scaled up by sqrt(chi² / 2) when that exceeds 1
+        func positionCovariance(_ f: Fit, _ t: Double) -> [[Double]] {
+            let tau = t - f.t0
+            var c = [[Double]](repeating: [0, 0, 0], count: 3)
+            for i in 0..<3 {
+                for j in 0..<3 {
+                    c[i][j] = s2 * (f.unitCov[i][j] + tau * (f.unitCov[i][j + 3] + f.unitCov[i + 3][j]) + tau * tau * f.unitCov[i + 3][j + 3])
+                }
+            }
+            return c
         }
+        let mismatch = pre.position(d.ti) - rise.position(d.ti)
+        let cp = positionCovariance(pre, d.ti), cr = positionCovariance(rise, d.ti)
+        let cxx = cp[0][0] + cr[0][0], czz = cp[2][2] + cr[2][2], cxz = cp[0][2] + cr[0][2], det = cxx * czz - cxz * cxz
+        let chi2 = det > 0 ? (mismatch.x * mismatch.x * czz - 2 * mismatch.x * mismatch.z * cxz + mismatch.z * mismatch.z * cxx) / det : 0
+        let fitScale = max(1, (chi2 / 2).squareRoot())
+        if fitScale > 1 { for q in variance.indices { variance[q] *= fitScale * fitScale } }
+        if fitScale > 2 {
+            notes.append(String(format: "the fall's and the bounce's fits miss each other by %.0f mm at the impact (the finder's distances off by different amounts): their uncertainties are scaled up %.1f times",
+                                mismatch.rejecting(up).length * 1000, fitScale))
+        }
+        // the held point's (its spread over its frames and its disagreement with the fall fit, per axis): through the drop
+        // height and the predictions, which start from it
+        if let rp = release {
+            let sg = heldSigma.array
+            for k in 0..<3 where sg[k] > 0 {
+                var pv = rp.array
+                pv[k] += h
+                let jac = accumulate(derive(pre, rise, release: Vec3(pv), predict: true), scale: h)
+                for q in base.indices { variance[q] += jac[q] * jac[q] * sg[k] * sg[k] }
+            }
+        }
+        func sigma(_ q: Int) -> Double? { base[q] == nil ? nil : max(0, variance[q]).squareRoot() }
         var app = d.app, meas = d.measured
         app?.directionErrorSigma = sigma(12); app?.landingErrorSigma = sigma(13); app?.rangeErrorSigma = sigma(14)
         let appBearing = app?.bearingError, measBearing = meas?.bearingError
         app?.bearingErrorSigma = appBearing == nil ? nil : sigma(15)
         meas?.directionErrorSigma = sigma(16); meas?.landingErrorSigma = sigma(17); meas?.rangeErrorSigma = sigma(18)
         meas?.bearingErrorSigma = measBearing == nil ? nil : sigma(19)
+        var carried: KitDropCarriedOn? = nil
+        if let el = d.endLevel, let l = d.endLanding {
+            var ea = d.endApp, em = d.endMeasured
+            ea?.landingErrorSigma = sigma(22); em?.landingErrorSigma = sigma(23)
+            carried = KitDropCarriedOn(level: el, levelSource: endSource, landing: l,
+                                       landingSigma: (pow(sigma(20) ?? 0, 2) + pow(sigma(21) ?? 0, 2)).squareRoot(), app: ea, measuredRebound: em)
+        }
+
+        // a rebound over 100% is more than the ball can regain: refused when clearly so, else kept out of the bake
+        let reb = d.e * d.e, rebSigma = sigma(5) ?? 0
+        if reb - 2 * rebSigma > 1 {
+            return .failed(String(format: "the track does not hold together as a drop: it gives a rebound of %.0f%% ± %.0f (more than the ball can regain)",
+                                  reb * 100, rebSigma * 100))
+        }
+        if reb > 1 {
+            let why = String(format: "a rebound of %.0f%% ± %.0f is more than the ball can regain (the track's error)", reb * 100, rebSigma * 100)
+            notes.append(why); exclude(why)
+        }
+        // a ball let go does not move sideways: a fall that does was thrown, or is a later bounce taken for the drop
+        let sideSpeed = pre.b.rejecting(up).length
+        if sideSpeed > 0.2 {
+            let why = String(format: "the fall moves sideways at %.2f m/s (a ball let go: 0 ± 0.1): thrown, or a later bounce taken for the drop", sideSpeed)
+            notes.append(why); exclude(why)
+        }
+        if let cl = d.clearance, abs(cl) > 0.04, abs(cl) > 3 * (sigma(3) ?? 0) {
+            let why = String(format: "the track turns round %.0f mm %@ the dish (the finder's distances or the lock off, or the ball not on the top)",
+                              abs(cl) * 1000, cl < 0 ? "below" : "above")
+            notes.append(why); exclude(why)
+        }
 
         var leftView = false
         if let nc = next {
-            if levelSource != "next bounce" && nc.time < d.tl - 0.01 {
-                let on = nc.surface == .slab ? "on the slab" : nc.surface == .floor ? "on the floor" : "on something"
+            if levelSource == "slab" {
+                notes.append(String(format: "the ball came down on the slab again %.2f s after the bounce: that is the landing", nc.time - d.ti))
+            } else if levelSource != "next bounce" && nc.time < d.tl - 0.01 {
+                let on = nc.surface == .floor ? "on the floor" : "on something"
                 notes.append(String(format: "the ball came down %@ %.2f s after the bounce, %.0f mm above the landing level: the landing is the arc carried on",
                                     on, nc.time - d.ti, (nc.center.y - d.level) * 1000))
             }
         } else if d.tl > lastT + 0.02 {
             leftView = true
-            notes.append(String(format: "the ball was not seen after %.2f s of its %.2f s flight (it left the view or was lost): the landing is extrapolated",
+            notes.append(String(format: "the bounce was followed for %.2f s of its %.2f s flight (the ball left the view or was lost): the landing is extrapolated",
                                 lastT - d.ti, d.tl - d.ti))
         }
         let extrapolation = max(0, d.tl - lastT)
@@ -573,8 +803,8 @@ public struct KitDropAnalysis: Codable, Equatable {
         if slab == nil { notes.append("no lock before the release: the impact is taken on a level surface (no offset, no dish)") }
 
         let launchTilt = Units.degrees(d.vout.angle(to: up))
-        let a = KitDropAnalysis(kind: .bounce, heldSeen: held != nil, releaseTime: pre.t0 + pre.b.y / G, releasePoint: release,
-                                dropHeight: d.drop, dropHeightSigma: ((sigma(11) ?? 0) * (sigma(11) ?? 0) + heldSigma * heldSigma).squareRoot(),
+        var a = KitDropAnalysis(kind: .bounce, heldSeen: hr != nil, releaseTime: releaseTime, releasePoint: release ?? fitRelease,
+                                dropHeight: d.drop, dropHeightSigma: sigma(11) ?? 0,
                                 appDropHeight: app?.dropHeight,
                                 fallSamples: preKept.count, fallRejected: max(0, jm - k0 - preR.kept.count), fallRms: pre.rms,
                                 impactTime: d.ti, impactTimeSigma: sigma(0) ?? 0, impactCenter: d.center, contactPoint: d.point,
@@ -583,13 +813,17 @@ public struct KitDropAnalysis: Codable, Equatable {
                                 offsetDownhill: d.downhill, offsetLeft: d.left,
                                 localNormal: d.normal, normalTilt: d.tilt, impactClearance: d.clearance, impactClearanceSigma: sigma(3),
                                 velocityIn: d.vin, velocityOut: d.vout, restitution: d.e, restitutionSigma: sigma(4),
-                                rebound: d.e * d.e, reboundSigma: sigma(5), speedRebound: d.speedRebound,
+                                rebound: reb, reboundSigma: rebSigma, speedRebound: d.speedRebound,
                                 tangentialRatio: d.k, tangentialRatioSigma: sigma(6), sideways: d.sideways, sidewaysSigma: sigma(7),
                                 launchTilt: launchTilt, riseSamples: kept.count, riseRejected: riseRejected, riseRms: rise.rms,
                                 apexHeight: d.apex, landingLevel: d.level, landingLevelSource: levelSource,
                                 landing: d.landing, landingSigma: (pow(sigma(9) ?? 0, 2) + pow(sigma(10) ?? 0, 2)).squareRoot(),
                                 landingTime: d.tl, landingExtrapolation: extrapolation, nextContact: next, leftView: leftView,
                                 app: app, measuredRebound: meas, notes: notes)
+        a.carriedOn = carried
+        a.kappa = kappa
+        a.heldOffset = heldOff
+        a.bakeExcluded = bakeExcluded
         return .analyzed(a)
     }
 
@@ -658,7 +892,12 @@ public struct KitDropAnalysis: Codable, Equatable {
                 ?? "none (\(a.kind.rawValue))"
             let dir = a.app.map { String(format: "%.1f°", $0.directionError) + ($0.directionErrorSigma.map { String(format: " ± %.1f", $0) } ?? "") } ?? "n/a"
             var notes: [String] = []
+            if a.bakeExcluded != nil { notes.append("left out of the rebound to bake") }
             if let x = a.landingExtrapolation, x > 0.02 { notes.append(String(format: "landing extrapolated %.2f s", x)) }
+            if let co = a.carriedOn, let ca = co.app {
+                notes.append(String(format: "landed on the slab again (compared there); carried on to the %@: %.0f mm against the app", co.levelSource,
+                                    ca.landingError * 1000))
+            }
             notes += a.notes
             md.append("| \(id) | \(dh) | \(off) | \(slope) | \(tilt) | \(reb) | \(dir) | \(landing(a.app)) | \(landing(a.measuredRebound)) | "
                       + KitScoreReport.cell(notes.joined(separator: "; ")) + " |")
@@ -674,7 +913,7 @@ public struct KitDropAnalysis: Codable, Equatable {
     /// bounce.
     public static func reboundToBake(_ drops: [KitDropAnalysis]) -> (rebound: Double, sigma: Double, count: Int)? {
         let r = drops.compactMap { d -> (Double, Double)? in
-            guard d.kind == .bounce, let x = d.rebound, x.isFinite else { return nil }
+            guard d.kind == .bounce, d.bakeExcluded == nil, let x = d.rebound, x.isFinite else { return nil }
             return (x, max(0.01, d.reboundSigma ?? 0.05))
         }
         guard !r.isEmpty else { return nil }

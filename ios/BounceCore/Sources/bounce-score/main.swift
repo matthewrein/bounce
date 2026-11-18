@@ -3,7 +3,8 @@
 //   bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
 //                [--fail-on-regression] [--measured]
 //   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
-//   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--truth-ball] [--markdown]
+//   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--drops-floor] [--truth-ball]
+//                [--markdown]
 //
 // Kits are private: it prints kit ids, shot ids and numbers, never paths or anything from the pictures.
 import BounceCore
@@ -34,6 +35,7 @@ options:
   --drop-slab INCHES     the drops' slab side (default 18)
   --drop-shrink N        render the drops at 1/N of 1440x1080 (default 1)
   --drops-json FILE      write the drops' report as JSON
+  --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)
   --max-tilt-error DEG   exit with status 3 if the synthetic kit's median tilt error is above DEG, or missing
   --scorer LABEL         record who scored it (e.g. a git hash) in the JSON
   --quiet                no progress lines
@@ -49,7 +51,7 @@ func progress(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8
 var paths: [String] = []
 var jsonOut: String? = nil, compareWith: String? = nil, scorerLabel: String? = nil, videoCodec: String? = nil
 var markdown = false, failOnRegression = false, measured = false, synthetic = false, truthBall = false, quiet = false
-var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil
+var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil, dropsFloor = false
 var frames = 12
 var maxTiltError: Double? = nil
 var args = Array(CommandLine.arguments.dropFirst())
@@ -74,6 +76,7 @@ while !args.isEmpty {
     case "--drop-slab": guard let d = Double(value(a)), d > 4 else { fail("--drop-slab needs inches") }; dropSlab = d
     case "--drop-shrink": guard let n = Int(value(a)), n >= 1 else { fail("--drop-shrink needs a whole number") }; dropShrink = n
     case "--drops-json": dropsJson = value(a)
+    case "--drops-floor": dropsFloor = true; drops = true
     case "--max-tilt-error": guard let d = Double(value(a)), d > 0 else { fail("--max-tilt-error needs degrees") }; maxTiltError = d
     case "--scorer": scorerLabel = value(a)
     case "--quiet": quiet = true
@@ -139,6 +142,7 @@ var dropReport: KitDropBenchReport? = nil
 if drops {
     var o = KitDropBench.Options()
     o.truthBall = truthBall
+    o.floorKnown = dropsFloor
     o.log = log
     if let s = dropSlab { o.drops.spec.sideU = Units.inches(s); o.drops.spec.sideV = Units.inches(s) }
     o.drops.shrink = dropShrink
