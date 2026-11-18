@@ -3,7 +3,8 @@
 // only) so `swift test` runs on Linux as well as on a Mac. The iOS app (../BounceApp) adds the camera, ARKit and UI.
 // `bounce-score` (macOS and Linux) scores capture kits against their ground truth (CaptureKit.md, "Scoring") and
 // `bounce-kit` checks a kit that arrived and writes the synthetic phone-sized kit of the hand-off dry run (CaptureKit.md,
-// "When the kit is uploaded"); the app links only the BounceCore library.
+// "When the kit is uploaded"); the app links only the BounceCore library. The device budget bench (bounce-bench) is a
+// package of its own, ../BounceBench, so `swift test` here never builds it.
 import PackageDescription
 
 let package = Package(

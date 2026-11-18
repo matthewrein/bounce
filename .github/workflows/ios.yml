@@ -106,6 +106,41 @@ jobs:
           ios/tools/handoff-dryrun.sh --app-bundle "$GITHUB_WORKSPACE/demo-kit-bundle" --dir "$RUNNER_TEMP/handoff" | tee app-bundle.log
           { echo "### The app's bundle through the hand-off"; echo '```'; grep -E "^(===|  ok|  FAILED|dry run)" app-bundle.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
+  # The device budget (informational; never fails the run): each stage of the phone's per-frame processing timed on
+  # synthetic 1920x1440 camera frames (optimised, as the app is built), the 60 fps budget with the app's cadence and
+  # frame pacer, and an iPhone estimate from this Mac's times (bounce-bench). A package of its own (ios/BounceBench), so
+  # BounceCore's tests never build it, and a job of its own, in parallel with the app's: it adds no time to the app's
+  # legs and a failure here (continue-on-error) cannot fail the run. The Markdown goes to the run's summary and to the
+  # log between BENCH-BEGIN and BENCH-END; the report is kept as an artifact.
+  bench-macos:
+    name: Device budget bench (macOS, informational)
+    runs-on: macos-15
+    continue-on-error: true
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Device budget bench (bounce-bench)
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -o pipefail
+          sysctl -n machdep.cpu.brand_string hw.ncpu || true
+          swift build -c release --package-path ios/BounceBench
+          swift run -c release --skip-build --package-path ios/BounceBench bounce-bench --markdown bench.md --json bench.json
+          echo "BENCH-BEGIN"
+          cat bench.md
+          echo "BENCH-END"
+          cat bench.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the device budget report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-budget-bench
+          path: |
+            bench.md
+            bench.json
+          if-no-files-found: ignore
+
   app-macos:
     name: App (${{ matrix.xcode }} Xcode)
     runs-on: macos-15
