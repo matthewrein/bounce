@@ -31,14 +31,30 @@ public struct BallImageCrop: Codable, Equatable {
     /// (world up, so it works in any orientation of the phone), grown by the slab's mean side in the image on every
     /// side, clamped to the image, and shrunk so its longer side is at most `maxSide` pixels. nil if the slab does not
     /// project or the crop would be under 33 pixels either way.
+    /// A camera held lower than `reach` over the slab (or near it) has some of the points above the corners behind it:
+    /// each vertical line from a corner up is then cut where it comes within `near` metres of the camera's plane, and
+    /// that end is taken instead; it projects far out toward where the world's up points in the image, so the crop runs
+    /// to the image's edge that way and takes in all of the space above the slab that is in view. (Dropping those
+    /// points shrank the crop to the slab and cut off a ball held over it, whenever all four were behind the camera.)
     /// - Parameters: slab: the lock (world); full: the camera for the full camera image (world-from-camera, CV axes).
-    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900) -> BallImageCrop? {
+    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900, near: Double = 0.02) -> BallImageCrop? {
         let q = slab.topCorners.compactMap { full.project(world: $0) }
         guard q.count == 4 else { return nil }
-        let up = slab.topCorners.compactMap { full.project(world: $0 + Vec3(0, reach, 0)) }
+        var up: [Vec2] = []
+        for P in slab.topCorners {
+            let a = full.toCamera(P), b = full.toCamera(P + Vec3(0, reach, 0))
+            var e = b
+            if b.z < near {
+                guard a.z > near else { continue }
+                e = a + (b - a) * ((a.z - near) / (a.z - b.z))
+            }
+            if let p = full.intrinsics.project(e) { up.append(p) }
+        }
         let pts = q + up, side = ShapeCheck.meanSide(q)
-        let x0 = Int(pts.map { $0.x }.min()! - side), x1 = Int(pts.map { $0.x }.max()! + side)
-        let y0 = Int(pts.map { $0.y }.min()! - side), y1 = Int(pts.map { $0.y }.max()! + side)
+        // (bounded before the conversion: a point just in front of the camera's plane projects arbitrarily far out)
+        func px(_ v: Double) -> Int { Int(min(1e7, max(-1e7, v))) }
+        let x0 = px(pts.map { $0.x }.min()! - side), x1 = px(pts.map { $0.x }.max()! + side)
+        let y0 = px(pts.map { $0.y }.min()! - side), y1 = px(pts.map { $0.y }.max()! + side)
         let cx0 = max(0, x0), cy0 = max(0, y0)
         let cw = min(full.intrinsics.width, x1) - cx0, ch = min(full.intrinsics.height, y1) - cy0
         guard cw > 32, ch > 32 else { return nil }

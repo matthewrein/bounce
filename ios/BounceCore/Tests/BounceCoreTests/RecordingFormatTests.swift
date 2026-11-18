@@ -252,6 +252,51 @@ final class RecordingFormatTests: XCTestCase {
         XCTAssertEqual(sx / s, want.x, accuracy: 1e-6); XCTAssertEqual(sy / s, want.y, accuracy: 1e-6)
     }
 
+    /// A phone held less than `reach` (1.2 m) over the slab has the points straight above the slab's corners behind it:
+    /// the crop still takes in the space above the slab. (It shrank to the slab when all four were behind the camera,
+    /// and cut off a ball held over it: the demo's 2.6 s without the ball, its camera 0.6 m above the slab.) Over the
+    /// demo's 6 s, and from 0.45-0.6 m at 30-60 degrees with the ball 10-60 cm over the slab, the ball's whole outline
+    /// is inside the crop wherever it is inside the camera's picture.
+    func testBallCropTakesInTheSpaceAboveTheSlabFromClose() throws {
+        var d = DemoScript(); d.ballHeight = 0.30
+        var behind = 0
+        for i in 0..<75 {
+            let t = Double(i) * 0.08, v = d.view(at: t), s = d.scene(at: t)
+            if s.slab.topCorners.allSatisfy({ v.toCamera($0 + Vec3(0, 1.2, 0)).z <= 0.02 }) { behind += 1 }
+            let c = try XCTUnwrap(BallImageCrop.plan(slab: s.slab, full: v))
+            let K = c.intrinsics(full: v.intrinsics)
+            let B = v.toCamera(s.ball!), p = K.project(B)!, r = Bounce.imageRadius(ballCenter: B, intrinsics: K, ball: BallSpec())!
+            XCTAssertTrue(p.x >= r && p.y >= r && p.x + r <= Double(K.width) && p.y + r <= Double(K.height), String(format: "t %.2f: ball at (%.0f, %.0f) r %.1f, crop %dx%d", t, p.x, p.y, r, K.width, K.height))
+        }
+        XCTAssertGreaterThan(behind, 20, "the demo's camera is that close for much of its run")
+        let full = CameraIntrinsics(fx: 1450, fy: 1450, cx: 960, cy: 720, width: 1920, height: 1440)
+        let slab = SyntheticScene.slabPose(tilt: 8, heading: 30), up = Vec3(0, 1, 0), R = BallSpec().radius
+        var poses = 0, closeOnes = 0
+        for dist in [0.45, 0.6] {
+            for el in [30.0, 45, 60] {
+                for az in [0.0, 70, 140] {
+                    for h in [0.1, 0.3, 0.6] {
+                        let a = Units.radians(az), e = Units.radians(el), aim = slab.center + up * (0.4 * h)
+                        let v = SyntheticScene.camera(at: aim + Vec3(sin(a) * cos(e), sin(e), cos(a) * cos(e)) * dist, lookingAt: aim, intrinsics: full)
+                        let B = v.toCamera(slab.center + up * (h + R))
+                        guard slab.topCorners.allSatisfy({ v.project(world: $0).map { full.contains($0) } ?? false }),
+                              let pf = full.project(B), let rf = Bounce.imageRadius(ballCenter: B, intrinsics: full, ball: BallSpec()),
+                              pf.x >= rf, pf.y >= rf, pf.x + rf <= 1920, pf.y + rf <= 1440 else { continue }
+                        poses += 1
+                        if slab.topCorners.allSatisfy({ v.toCamera($0 + up * 1.2).z <= 0.02 }) { closeOnes += 1 }
+                        let c = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: v))
+                        let K = c.intrinsics(full: full)
+                        let p = K.project(B)!, r = rf / Double(c.factor)
+                        XCTAssertTrue(p.x >= r && p.y >= r && p.x + r <= Double(K.width) && p.y + r <= Double(K.height),
+                                      String(format: "%.2f m at %.0f deg, azimuth %.0f, ball %.1f m up", dist, el, az, h))
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(closeOnes, 5)
+        print("ball crop from close: \(behind) of 75 demo frames and \(closeOnes) of \(poses) poses with every point above the corners behind the camera")
+    }
+
     // MARK: depth
 
     /// The part of the depth map kept on frames without a detection gives exactly the check the whole map gives.

@@ -380,13 +380,20 @@ in this build"). `--truth-ball` gives the synthetic kit a finder that knows wher
 around the lock, giving the ball's centre in the world. It is the app's `BallLocator` set up for tracking
 (`KitScorer.trackingLocator`, `BallLocator.Options.tracking`): every frame stands on its own (no hold-over of a missed
 ball, no smoothing, no follow box), from just above the dish (no 5 cm floor) and around the slab, on it or not, so each
-sample is a measurement of its frame; a truth-based finder is used as it is. The release cue is `releaseTime`, else
-`startTime + releaseCue`. Held: the median position from 1.5 s before the cue to 0.05 s after it. The fall starts with
-the first sample after cue - 0.3 s at least 1.5 cm below the held height (and the next sample too); the impact is the
-lowest sample before the ball rises 1 cm again. Free fall with gravity known (`p = a + b t + g t²/2`) is fitted to the
-falling samples (the release is where its vertical speed is 0) and to the samples after the impact, grown one at a time
-while each lies within max(15 mm, 5 x the fall's RMS misfit, 4 x its own) of the fit (one sample off is skipped, two in
-a row end the flight, at the floor; samples at the end more than max(6 mm, 3 x RMS) off are dropped). The impact time is
+sample is a measurement of its frame; a ball seen from half its outline is taken at any height and on a single frame
+(the app asks a half outline for two scans in a row at the same place over the slab and 0.2 m of height, which a falling
+ball never shows); a truth-based finder is used as it is. The release cue is `releaseTime`, else
+`startTime + releaseCue`. Held: the median position from 1.5 s before the cue to 0.05 s after it. The fall and the
+impact are found on the heights smoothed by a running median of five samples, so that one frame read wrong neither
+starts the fall nor is taken for the impact. The fall starts with the first sample after cue - 0.3 s at least 1.5 cm
+below the held height (and the next sample too) that goes on to fall at least 5 cm below the held height within 0.15 s
+(a ball let go falls 10 cm more in the 0.1 s after its first 1.5 cm; a few frames read a little low do not); the impact
+is the lowest sample about the lowest smoothed point before the ball rises 1 cm again. Free fall with gravity known
+(`p = a + b t + g t²/2`) is fitted to the falling samples, less those far off it (more than max(6 mm, 5 x the median
+distance), the worst first, at most a quarter; the release is where its vertical speed is 0), and to the samples after
+the impact, started from the first five that fit (the same way) and grown one at a time while each lies within
+max(15 mm, 5 x the fall's RMS misfit, 4 x its own) of the fit (one sample off is skipped, two in a row end the flight, at
+the floor; samples at the end more than max(6 mm, 3 x RMS) off are dropped). The impact time is
 where the two fits' heights meet, the impact point their mean there, the velocities in and out the fits' velocities
 there; **rebound** = |v_out|² / |v_in|² (the app's rebound). The **apex** is the post-impact fit's highest point and the
 **landing** where it comes back down to the impact point's height (extrapolated past the last sample if need be). A

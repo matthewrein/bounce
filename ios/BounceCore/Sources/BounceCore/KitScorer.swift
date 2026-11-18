@@ -136,8 +136,9 @@ public struct KitScorer {
     }
 
     /// A ball finder for following a drop frame by frame: the app's `BallLocator` with `BallLocator.Options.tracking`
-    /// (every frame stands on its own: no hold-over, no smoothing, no follow box, no 5 cm floor, on the slab or not), so
-    /// each sample of the track is a measurement of that frame. Any other finder is used as it is.
+    /// (every frame stands on its own: no hold-over, no smoothing, no follow box, no 5 cm floor, on the slab or not, and
+    /// a half outline taken on one frame at any height), so each sample of the track is a measurement of that frame.
+    /// Any other finder is used as it is.
     public static func trackingLocator(_ l: BallLocating?) -> BallLocating? {
         guard let b = l as? BallLocator else { return l }
         b.options = BallLocator.Options.tracking(b.options)
