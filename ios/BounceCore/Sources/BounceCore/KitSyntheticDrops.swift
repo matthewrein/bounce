@@ -6,8 +6,10 @@ public struct KitDropShot: Codable, Equatable {
     /// the slab's tilt (degrees) and its downhill direction (degrees from +x toward +z, ARKit's world)
     public var tilt: Double
     public var heading: Double = 35
-    /// where the ball is held: over the dish this far from the slab's centre (inches), in this direction from the slab's
-    /// downhill one (degrees, anticlockwise seen from above)
+    /// where the ball is held: over the dish this far from the slab's centre (inches, horizontally; on any slab, not
+    /// scaled to its size), in this direction from the slab's downhill one (degrees, anticlockwise seen from above; with
+    /// the default heading the slab's axes, square to its edges, lie about 20° anticlockwise of downhill, so 65° points at
+    /// a corner)
     public var offsetInches: Double
     public var offsetAzimuth: Double
     /// the ball's bottom above the dish straight below it when let go (inches): what the app calls the drop height
@@ -15,7 +17,9 @@ public struct KitDropShot: Codable, Equatable {
     /// the slab's true restitution, as a rebound (e²)
     public var rebound: Double
     /// where the camera stands, from the downhill direction (degrees, anticlockwise seen from above), its elevation
-    /// (degrees) and distance (m; nil: about enough to keep the held ball, the slab and the landing in view)
+    /// (degrees) and distance from the point it aims at (m; nil: 0.95 m plus the drop height, at most 1.2 m: the held
+    /// ball and the slab in view, the slab 1.2-1.5 m from the camera and 44-56 px across the app's 480 px frame; the
+    /// tracker locked the 7 in slab from 1.55 m but not from 1.7 m)
     public var cameraAzimuth: Double
     public var cameraElevation: Double = 28
     public var cameraDistance: Double? = nil
@@ -37,26 +41,30 @@ public struct KitDropShot: Codable, Equatable {
         self.cameraDistance = cameraDistance; self.aimDownhill = aimDownhill; self.releaseVelocity = releaseVelocity; self.droppedFrames = droppedFrames; self.jitter = jitter
     }
 
-    /// The standard drop set: centre and off-centre (0, 2, 4 and 6.5 in from the centre, every side of it), rebounds 0.5,
-    /// 0.6, 0.7, 0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45° and from behind and in front of the
-    /// bounce, with a sloppy release, dropped frames and a ball that leaves the view in some.
+    /// The standard drop set, on the owner's 7 in slab (`SlabSpec.standard`: the dish leans asin(r / 49 in) toward the
+    /// middle, 1.2° 1 in out, 2.3° at 2 in, 3.5° at 3 in): the centre, about 1, 2 and 3 in from it on several sides (the
+    /// 3 in ones toward the corners, where the contact point stays more than the ball's radius inside the edges; toward
+    /// the middle of an edge it does so only within 2.8 in of the centre; 2.8 in uphill on the 12° slab is 3 in along its
+    /// top) and one 3.3 in out, within the ball's radius of the downhill edge (measured, but left out of the rebound to
+    /// bake); rebounds 0.5, 0.6, 0.7, 0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45° and from behind
+    /// and in front of the bounce, with a sloppy release, dropped frames and a ball that leaves the view in some.
     public static let standardSet: [KitDropShot] = [
         KitDropShot(id: "d01-centre", tilt: 5, offsetInches: 0, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 90),
-        KitDropShot(id: "d02-2in-downhill", tilt: 5, offsetInches: 2, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 60),
-        KitDropShot(id: "d03-4in-side", tilt: 8, offsetInches: 4, offsetAzimuth: 90, heightInches: 12, rebound: 0.7, cameraAzimuth: 120),
-        KitDropShot(id: "d04-6in-uphill", tilt: 12, offsetInches: 6.5, offsetAzimuth: 180, heightInches: 18, rebound: 0.7, cameraAzimuth: 90),
-        KitDropShot(id: "d05-6in-side-low-tilt", tilt: 2, offsetInches: 6.5, offsetAzimuth: 270, heightInches: 12, rebound: 0.85,
+        KitDropShot(id: "d02-1in-downhill", tilt: 5, offsetInches: 1, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 60),
+        KitDropShot(id: "d03-2in-side", tilt: 8, offsetInches: 2, offsetAzimuth: 90, heightInches: 12, rebound: 0.7, cameraAzimuth: 120),
+        KitDropShot(id: "d04-3in-uphill", tilt: 12, offsetInches: 2.8, offsetAzimuth: 160, heightInches: 18, rebound: 0.7, cameraAzimuth: 90),
+        KitDropShot(id: "d05-3in-side-low-tilt", tilt: 2, offsetInches: 3, offsetAzimuth: 250, heightInches: 12, rebound: 0.85,
                     cameraAzimuth: 45),
         KitDropShot(id: "d06-centre-dropped-frames", tilt: 10, offsetInches: 0, offsetAzimuth: 0, heightInches: 24, rebound: 0.5,
                     cameraAzimuth: 135, droppedFrames: [9, 10, 23, 41, 42]),
-        KitDropShot(id: "d07-4in-6in-drop", tilt: 3, offsetInches: 4, offsetAzimuth: 45, heightInches: 6, rebound: 0.85, cameraAzimuth: 90),
-        KitDropShot(id: "d08-2in-36in-drop", tilt: 12, offsetInches: 2, offsetAzimuth: 225, heightInches: 36, rebound: 0.5, cameraAzimuth: 70),
-        KitDropShot(id: "d09-6in-push", tilt: 8, offsetInches: 6.5, offsetAzimuth: 135, heightInches: 24, rebound: 0.85, cameraAzimuth: 100,
+        KitDropShot(id: "d07-2in-6in-drop", tilt: 3, offsetInches: 2, offsetAzimuth: 45, heightInches: 6, rebound: 0.85, cameraAzimuth: 90),
+        KitDropShot(id: "d08-1in-36in-drop", tilt: 12, offsetInches: 1, offsetAzimuth: 225, heightInches: 36, rebound: 0.5, cameraAzimuth: 70),
+        KitDropShot(id: "d09-3in-push", tilt: 8, offsetInches: 3, offsetAzimuth: 335, heightInches: 24, rebound: 0.85, cameraAzimuth: 100,
                     releaseVelocity: Vec3(0.03, 0, -0.02)),
-        KitDropShot(id: "d10-level-4in", tilt: 0, offsetInches: 4, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 90),
-        KitDropShot(id: "d11-6in-from-behind", tilt: 6, offsetInches: 6.5, offsetAzimuth: 0, heightInches: 9, rebound: 0.6, cameraAzimuth: 180),
-        KitDropShot(id: "d12-4in-leaves-view", tilt: 10, offsetInches: 4, offsetAzimuth: 315, heightInches: 30, rebound: 0.7, cameraAzimuth: 95,
-                    cameraElevation: 24, cameraDistance: 1.3, aimDownhill: -0.45),
+        KitDropShot(id: "d10-level-2in", tilt: 0, offsetInches: 2, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 90),
+        KitDropShot(id: "d11-edge-from-behind", tilt: 6, offsetInches: 3.3, offsetAzimuth: 0, heightInches: 9, rebound: 0.6, cameraAzimuth: 180),
+        KitDropShot(id: "d12-2in-leaves-view", tilt: 10, offsetInches: 2, offsetAzimuth: 315, heightInches: 30, rebound: 0.7, cameraAzimuth: 95,
+                    cameraElevation: 24, cameraDistance: 1.2, aimDownhill: -0.3),
     ]
 }
 
@@ -110,13 +118,14 @@ public struct KitDropLevelTruth: Codable, Equatable {
 /// cue at 2 s, then 60 fps from just before the release until the ball has landed; every frame with its own timestamp
 /// (a little jitter, and frames the recorder dropped are missing) and exposure motion blur (the ball rendered at
 /// `blurSamples` instants over the exposure and averaged; the timestamp is the exposure's middle). The slab is the
-/// owner's as described: about 18 in square, 1 in thick, dished 1/8 in at the centre (a spherical cap,
-/// `KitDish.Shape.sphericalCap`), on a base whose top centre is 4.5 in over the floor. The renderer (`SyntheticScene`)
-/// draws the top as the plane through its corners; where a ball in the dish sinks below that plane it is drawn over it.
+/// owner's as described (`SlabSpec.standard`): about 7 in square, 1 in thick, dished 1/8 in at the centre (a spherical
+/// cap, `KitDish.Shape.sphericalCap`: its sphere's radius is 49 in), on a base whose top centre is 4.5 in over the
+/// floor. The renderer (`SyntheticScene`) draws the top as the plane through its corners; where a ball in the dish sinks
+/// below that plane it is drawn over it.
 public final class KitSyntheticDrops {
     public struct Options {
-        /// the slab (sides, thickness, dish depth) and its dish's shape
-        public var spec = SlabSpec(sideU: Units.inches(18), sideV: Units.inches(18), thickness: Units.inches(1), dishDepth: Units.inches(0.125))
+        /// the slab (sides, thickness, dish depth: the owner's, as the app has it) and its dish's shape
+        public var spec = SlabSpec.standard
         public var dishShape = KitDish.Shape.sphericalCap
         /// the slab top's centre over the floor (m)
         public var centreHeight = Units.inches(4.5)
@@ -187,9 +196,7 @@ public final class KitSyntheticDrops {
         let downhill = Vec3(cos(hd), 0, sin(hd))
         func around(_ deg: Double) -> Vec3 { downhill.rotated(by: up * Units.radians(deg)) }
         // held over the dish point `offset` from the centre (horizontally), its bottom `height` above the dish there
-        // (offsets are for the 18 in slab: a smaller one has them scaled to its half-width)
-        let scale = min(1, Units.toInches(min(options.spec.halfU, options.spec.halfV)) / 9)
-        let off = around(shot.offsetAzimuth) * Units.inches(shot.offsetInches * scale)
+        let off = around(shot.offsetAzimuth) * Units.inches(shot.offsetInches)
         var surface = pose.center + off
         for _ in 0..<6 {   // down the vertical line onto the dish: h(y) = the height over the corner plane plus the dish's depth
             let q = pose.toSlab(surface)
@@ -218,10 +225,11 @@ public final class KitSyntheticDrops {
             k += 1
             t += 1 / options.fps
         }
-        // the camera: it looks at the space over the slab and downhill of it from `cameraAzimuth`
+        // the camera: it looks at the space over the slab and downhill of it from `cameraAzimuth`, about halfway up to
+        // the held ball
         let h = Units.inches(shot.heightInches)
-        let aim = pose.center + up * (0.08 + 0.35 * h) + downhill * shot.aimDownhill
-        let dist = shot.cameraDistance ?? clamp(0.95 + 1.0 * h, 1.0, 2.0)
+        let aim = pose.center + up * (0.08 + 0.45 * h) + downhill * shot.aimDownhill
+        let dist = shot.cameraDistance ?? clamp(0.95 + 1.0 * h, 1.0, 1.2)
         let el = Units.radians(shot.cameraElevation)
         let K = intrinsics()
         let views = times.map { tt -> CameraView in

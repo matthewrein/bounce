@@ -32,7 +32,7 @@ options:
   --drops                score the rendered drops (KitSyntheticDrops: physical bounces off the dish, centre and
                          off-centre, known truth) through the scorer's path and the drop analysis
   --drops-only IDS       only these drops (comma-separated ids, or prefixes such as d01)
-  --drop-slab INCHES     the drops' slab side (default 18)
+  --drop-slab INCHES     the drops' slab side (default 7, the owner's; the drops' offsets stay in inches)
   --drop-shrink N        render the drops at 1/N of 1440x1080 (default 1)
   --drops-json FILE      write the drops' report as JSON
   --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)

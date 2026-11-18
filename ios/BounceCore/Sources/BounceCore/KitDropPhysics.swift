@@ -10,9 +10,9 @@ import Foundation
 /// Two shapes:
 ///   - **sphericalCap** (the default, the owner's description: "dished 1/8 in deep at the centre"): a spherical cap
 ///     `depth` deep at the centre whose rim is the circle inscribed in the top (radius a = the top's half-width), so the
-///     sphere's radius is R = (a² + D²) / (2 D) (an 18 in top, D = 1/8 in: R = 324 in = 8.23 m; a 7 in top: 49 in), and
-///     the top is flat (the corner plane) outside the rim. Its surface leans toward the middle by asin(r / R) at r from
-///     the centre: 1.06° 6 in out on an 18 in top, 1.6° at its rim.
+///     sphere's radius is R = (a² + D²) / (2 D) (the owner's 7 in top, D = 1/8 in: R = 49.06 in = 1.25 m), and the top
+///     is flat (the corner plane) outside the rim. Its surface leans toward the middle by asin(r / R) at r from the
+///     centre: on the 7 in top 1.17° 1 in out, 2.34° at 2 in, 3.5° at 3 in and 4.1° at its rim.
 ///   - **paraboloid**: the app's model (`Dish.at`, `SlabSpec.dishDepth`): through the four corners, D at the centre and
 ///     D/2 at the middles of the edges, so it leans half as much as the cap near the middle (the cap through the corners
 ///     would be the same to second order).
@@ -88,7 +88,7 @@ public struct KitDish: Codable, Equatable {
             return best!
         case .paraboloid:
             // the ball's centre lies a radius out along the normal from its contact: a few steps settle it (the slope is
-            // under 2°)
+            // under 3° on a 7 in top)
             var u = c.x, v = c.y
             var s = surface(u: u, v: v)
             for _ in 0..<4 {

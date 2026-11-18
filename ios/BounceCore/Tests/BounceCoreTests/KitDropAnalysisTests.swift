@@ -99,10 +99,11 @@ final class KitDropAnalysisTests: XCTestCase {
     }
 
     /// A perfect track (the true centre on every frame, at its own jittered timestamp) gives the truth back: the analysis
-    /// itself adds next to nothing, for every drop of the set, centre and off-centre, with ARKit's floor (the phone) and
-    /// without it (a kit). The landing is where the ball came down on the slab again when it did (the real landing; the
-    /// arc carried on to the app's end level as well), else on the floor (known, or seen), else at the lock's lowest top
-    /// corner; each is compared with the truth at that level.
+    /// itself adds next to nothing, for every drop of the set, centre and off-centre (up to 3.3 in out on the 7 in top,
+    /// where the dish leans 3.9°), with ARKit's floor (the phone) and without it (a kit); the drop within a radius of the
+    /// edge is measured but left out of the rebound to bake. The landing is where the ball came down on the slab again
+    /// when it did (the real landing; the arc carried on to the app's end level as well), else on the floor (known, or
+    /// seen), else at the lock's lowest top corner; each is compared with the truth at that level.
     func testAPerfectTrackGivesTheTruth() throws {
         for floor in [true, false] {
         for shot in KitDropShot.standardSet {
@@ -120,7 +121,11 @@ final class KitDropAnalysisTests: XCTestCase {
             XCTAssertEqual(try XCTUnwrap(a.normalTilt), t.normalTilt, accuracy: 0.005, shot.id)
             XCTAssertEqual(a.dropHeight, t.dropHeight, accuracy: 0.001, shot.id)
             XCTAssertEqual(abs(try XCTUnwrap(a.impactClearance)), 0, accuracy: 0.0005, shot.id)
-            XCTAssertNil(a.bakeExcluded, shot.id)
+            if shot.id.contains("edge") {
+                XCTAssertTrue(a.bakeExcluded?.contains("the slab's edge") ?? false, "\(shot.id): \(a.bakeExcluded ?? "baked")")
+            } else {
+                XCTAssertNil(a.bakeExcluded, shot.id)
+            }
             if let nc = t.nextContact, nc.surface == .slab {
                 XCTAssertEqual(a.landingLevelSource, "slab", shot.id)
                 XCTAssertEqual(a.landingLevel, nc.center.y, accuracy: 0.002, shot.id)
@@ -253,7 +258,7 @@ final class KitDropAnalysisTests: XCTestCase {
     /// slab, and lands the bounce there (the real landing, compared with the app's arc at that height), with the arc
     /// carried on to the app's own end level as well (the floor here; a kit's lowest top corner).
     func testTwoBouncesOnTheSlab() throws {
-        let d = maker.make(KitDropShot.standardSet[4])   // 2°, 0.85, 6.5 in out
+        let d = maker.make(KitDropShot.standardSet[4])   // 2°, 0.85, 3 in out
         let nc = try XCTUnwrap(d.truth.nextContact)
         XCTAssertEqual(nc.surface, .slab, "the drop comes down on the slab")
         for floor in [true, false] {
@@ -468,7 +473,7 @@ final class KitDropAnalysisTests: XCTestCase {
     /// measured, but said so and left out of the rebound to bake (the bounce may be off the edge).
     func testAMissAndAnEdgeHit() throws {
         var off = KitDropShot.standardSet[0]
-        off.offsetInches = 11
+        off.offsetInches = 5   // the 7 in top's edge is about 3.7 in out this way
         off.offsetAzimuth = 0
         let dm = maker.make(off)
         XCTAssertEqual(dm.physics.impact?.surface, .floor)
@@ -477,7 +482,7 @@ final class KitDropAnalysisTests: XCTestCase {
         XCTAssertTrue(r.reason?.contains("missed the slab") ?? false, r.reason ?? "analysed")
         // the edge: the offset whose contact lies 3-12 mm inside the outline
         var edge: KitSyntheticDrops.Drop? = nil
-        for tenth in 80...92 {
+        for tenth in 28...38 {
             var s = KitDropShot.standardSet[0]
             s.offsetInches = Double(tenth) / 10
             let d = maker.make(s)
