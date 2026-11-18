@@ -175,6 +175,43 @@ final class KitScorerTests: XCTestCase {
         XCTAssertLessThan(tb.center.distance(to: B1), 0.01)
     }
 
+    /// The tracking finder takes a ball seen from half its outline on a single frame and at any height: a falling ball
+    /// never shows up twice at one place over the slab, and the end of its fall and its bounce are under the 0.2 m the
+    /// app asks of a half outline. The app's own locator still holds such a ball back. Under those 0.2 m, a half outline
+    /// found again where one was on the frame before is not taken (`BallLocator.Options.stillPartialCeiling`): a lid
+    /// or a ring of light lying on the slab stays put, a ball in a drop does not; one found where none was, or higher,
+    /// is.
+    func testTheTrackingLocatorTakesAHalfOutlineOnOneFrame() throws {
+        let K = CameraIntrinsics(fx: 500, fy: 500, cx: 200, cy: 240, width: 400, height: 480)
+        let g = Vec3(0, 1, 0), up = -g
+        let ball = BallSpec(), spec = SlabSpec.standard
+        let B = K.ray(Vec2(205, 170)).normalized * 0.5
+        let n = up, u = Vec3(1, 0, 0).rejecting(n).normalized
+        for h in [0.08, 0.3] {
+            let slab = SlabPose(center: B - n * (h + ball.radius), normal: n, axisU: u, axisV: n.cross(u), halfU: spec.halfU, halfV: spec.halfV)
+            // the lower half the very floor behind it: the upper outline only
+            let img = SphereScene(K: K, center: B, radius: ball.radius, surface: SphereScene.mirrorSurface(up: up, lowerVisible: false)).render(noise: 1)
+            let t = try XCTUnwrap(BallLocator(options: .tracking()).update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g),
+                                  "\(h) m: on the first frame")
+            XCTAssertTrue(t.circle.partial)
+            XCTAssertEqual(t.drop.dropHeight, h, accuracy: 0.03)
+            // the same frame again: still there
+            let tracking = BallLocator(options: .tracking())
+            XCTAssertNotNil(tracking.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g))
+            let again = tracking.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
+            if h < 0.2 { XCTAssertNil(again, "\(h) m: a half outline low over the slab that stays put") } else { XCTAssertNotNil(again, "\(h) m") }
+            // a ball that moved on: taken
+            let B2 = B + up * 0.02
+            let moved = SphereScene(K: K, center: B2, radius: ball.radius, surface: SphereScene.mirrorSurface(up: up, lowerVisible: false)).render(noise: 1)
+            let m = try XCTUnwrap(tracking.update(luma: moved, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g), "\(h) m: moved 2 cm")
+            XCTAssertEqual(m.drop.dropHeight, h + 0.02, accuracy: 0.03)
+            let app = BallLocator()
+            XCTAssertNil(app.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g), "\(h) m: the app wants a second scan")
+            let second = app.update(luma: img, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
+            if h < 0.2 { XCTAssertNil(second, "\(h) m: under the app's height for a half outline") } else { XCTAssertNotNil(second) }
+        }
+    }
+
     /// A drop scored with the truth-based finder: the track holds together, the bounce is measured (the app's own
     /// model, so the prediction from a good lock agrees), and the launch height says how far the lock's plane is off.
     func testADropWithTheTruthBall() throws {

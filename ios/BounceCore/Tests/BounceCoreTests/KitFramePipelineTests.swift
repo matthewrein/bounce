@@ -69,23 +69,11 @@ final class KitFramePipelineTests: XCTestCase {
             var d: (DepthMap, CameraIntrinsics)? = nil
             if tracker.state == .locked { d = depth }
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
-            if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab {
-                let q = s.topCorners.compactMap { full.project(world: $0) }
-                if q.count == 4 {
-                    let up = s.topCorners.compactMap { full.project(world: $0 + Vec3(0, 1.2, 0)) }
-                    let pts = q + up, side = ShapeCheck.meanSide(q)
-                    let x0 = Int(pts.map { $0.x }.min()! - side), x1 = Int(pts.map { $0.x }.max()! + side)
-                    let y0 = Int(pts.map { $0.y }.min()! - side), y1 = Int(pts.map { $0.y }.max()! + side)
-                    let cx0 = max(0, x0), cy0 = max(0, y0)
-                    let cw = min(full.intrinsics.width, x1) - cx0, chh = min(full.intrinsics.height, y1) - cy0
-                    if cw > 32, chh > 32 {
-                        let k = max(1, Int(ceil(Double(max(cw, chh)) / 900)))
-                        if let p = AppPath.lumaCrop(img, x0: cx0, y0: cy0, width: cw, height: chh, factor: k) {
-                            ballImage = p
-                            ballK = full.intrinsics.cropped(x0: Double(cx0), y0: Double(cy0), scale: 1 / Double(k), width: p.width, height: p.height)
-                        }
-                    }
-                }
+            // the crop as ARController plans it (`BallImageCrop.plan` with its defaults), its pixels as its lumaCrop
+            if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab, let c = BallImageCrop.plan(slab: s, full: full),
+               let p = AppPath.lumaCrop(img, x0: c.x0, y0: c.y0, width: c.width, height: c.height, factor: c.factor) {
+                ballImage = p
+                ballK = full.intrinsics.cropped(x0: Double(c.x0), y0: Double(c.y0), scale: 1 / Double(c.factor), width: p.width, height: p.height)
             }
             return TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: d?.0, depthIntrinsics: d?.1, ballImage: ballImage,
                                 ballIntrinsics: ballK, tap: nil, floorY: nil, trackingNormal: normal)

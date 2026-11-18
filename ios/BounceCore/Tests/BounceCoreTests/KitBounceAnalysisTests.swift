@@ -76,6 +76,29 @@ final class KitBounceAnalysisTests: XCTestCase {
         }
     }
 
+    /// Frames whose ball was read wrong (a size from the wrong half of the outline puts it a few centimetres off along
+    /// the line of sight) do not stop the analysis or bend it: every seventh sample 3 cm low, a run of three samples
+    /// 16 mm low while the ball is held, and the sample just after the impact 3 cm low. The landing still comes back
+    /// within 1.5 cm, the apex within 1 cm and the rebound within 0.06. (Before the smoothed heights and the robust fits
+    /// the run while held was taken for the fall, or a low sample for the impact, and the drop was refused.)
+    func testWrongFramesAreLeftOut() throws {
+        for seed in UInt64(1)...10 {
+            let d = drop(seed: seed)
+            var track = d.track
+            let h = try XCTUnwrap(track.firstIndex { $0.t > d.cue - 0.2 })
+            for k in 0..<3 { track[h + k].p.y -= 0.016 }
+            for i in stride(from: h + 6, to: track.count, by: 7) { track[i].p.y -= 0.03 }
+            let j = try XCTUnwrap(track.firstIndex { $0.t > d.impactTime })
+            track[j].p.y -= 0.03
+            let r = KitBounceAnalysis.analyze(track: track, cue: d.cue)
+            let a = try XCTUnwrap(r.analysis, "seed \(seed): \(r.reason ?? "")")
+            XCTAssertLessThan(horizontal(a.landing, d.landing), 0.015, "seed \(seed): landing")
+            XCTAssertEqual(a.apexHeight, d.apexHeight, accuracy: 0.01, "seed \(seed)")
+            XCTAssertEqual(a.rebound, 0.7, accuracy: 0.06, "seed \(seed)")
+            XCTAssertEqual(a.releaseTime, d.release, accuracy: 0.03, "seed \(seed)")
+        }
+    }
+
     /// Against the app's prediction from the true slab: a perfect track and the app's own model agree; a ball that
     /// rebounds less than the settings say lands short of the prediction, with a lower apex.
     func testComparesWithTheAppsPrediction() throws {

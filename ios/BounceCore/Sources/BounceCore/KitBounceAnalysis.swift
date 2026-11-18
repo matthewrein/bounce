@@ -49,14 +49,20 @@ public struct KitBouncePrediction: Codable, Equatable {
 ///
 /// Definitions (world, metres, y up, g = 9.80665 m/s²):
 ///   - **held**: the median of the ball's centre from 1.5 s before the release cue to 0.05 s after it;
-///   - **the fall** starts with the first sample after (cue - 0.3 s) at least 1.5 cm below the held height whose next
-///     sample is too; **the impact** is the lowest sample before the ball rises 1 cm again;
-///   - **pre-impact fit**: free fall `p(t) = a + b t + g t²/2` (least squares, gravity known) on the falling samples;
-///     the release is where its vertical speed is 0;
-///   - **post-impact fit**: the same model on the samples after the impact, grown one sample at a time while each new
-///     sample lies within max(15 mm, 5 x the pre-impact fit's RMS, 4 x its own RMS) of the fit's prediction; a single
-///     sample off is skipped, two in a row end the flight (the next bounce, on the floor), and samples at the end more
-///     than max(6 mm, 3 x RMS) off the final fit are dropped; at least 3 samples;
+///   - the fall and the impact are found on the track's heights smoothed by a running median of five samples, so that
+///     a single frame whose ball was read wrong (a reflected ring taken for the outline, the size read from the wrong
+///     half) neither starts the fall nor is taken for the impact: **the fall** starts with the first sample after
+///     (cue - 0.3 s) at least 1.5 cm below the held height whose next sample is too, and which goes on to fall at least
+///     5 cm below the held height within 0.15 s (where the track has samples then); **the impact** is the lowest
+///     sample about the lowest smoothed point before the ball rises 1 cm again;
+///   - **pre-impact fit**: free fall `p(t) = a + b t + g t²/2` (least squares, gravity known) on the falling samples,
+///     less those far off it (`robustFit`: more than max(6 mm, 5 x the median distance) off, the worst first, at most a
+///     quarter of them); the release is where its vertical speed is 0;
+///   - **post-impact fit**: the same model on the samples after the impact, started from the first five that fit
+///     (robustly, as above), grown one sample at a time while each new sample lies within max(15 mm, 5 x the
+///     pre-impact fit's RMS, 4 x its own RMS) of the fit's prediction; a single sample off is skipped, two in a row end
+///     the flight (the next bounce, on the floor), and samples at the end more than max(6 mm, 3 x RMS) off the final
+///     fit are dropped; at least 3 samples;
 ///   - **impact time**: where the two fits' heights meet; **impact point**: the mean of the two fits there;
 ///   - **velocity in / out**: the fits' velocities at the impact; **rebound** = |v_out|² / |v_in|² (the app's rebound:
 ///     the share of the drop height a straight-up bounce would regain);
@@ -145,6 +151,30 @@ public struct KitBounceAnalysis: Codable, Equatable {
             f.rms = (s.reduce(0) { $0 + ($1.p - f.position($1.t)).lengthSquared } / n).squareRoot()
             return f
         }
+
+        /// The fit less the samples far off it: while the worst sample lies more than max(`floor`, 5 x the median
+        /// distance of the samples from the fit) off, it is dropped and the rest refitted, up to a quarter of them (a
+        /// distance's median is 0.67 standard deviations of an error along one direction, as a size's error is along the
+        /// line of sight: 5 medians are 3.4 of them). Returns the fit and the samples kept, in order.
+        static func robust(_ s: [KitBallSample], t0: Double, floor: Double = 0.006) -> (fit: Fit, kept: [KitBallSample])? {
+            var kept = s
+            guard var f = fit(kept[...], t0: t0) else { return nil }
+            var dropped = 0
+            while dropped < s.count / 4 && kept.count > 3 {
+                let d = kept.map { ($0.p - f.position($0.t)).length }
+                guard let worst = d.indices.max(by: { d[$0] < d[$1] }), d[worst] > max(floor, 5 * KitStats.median(d)) else { break }
+                kept.remove(at: worst)
+                dropped += 1
+                guard let g = fit(kept[...], t0: t0) else { return nil }
+                f = g
+            }
+            return (f, kept)
+        }
+    }
+
+    /// Running median of five (fewer at the ends).
+    static func runningMedian(_ v: [Double]) -> [Double] {
+        v.indices.map { i in KitStats.median(Array(v[max(0, i - 2)...min(v.count - 1, i + 2)])) }
     }
 
     /// Analyses a drop. `track`: the ball's centre over the shot (any order; non-finite samples are dropped); `cue`: when
@@ -158,10 +188,15 @@ public struct KitBounceAnalysis: Codable, Equatable {
         let hold = s.filter { $0.t >= cue - 1.5 && $0.t <= cue + 0.05 }
         guard hold.count >= 2 else { return .failed("the ball was not seen held before the release cue") }
         let held = Vec3(median(hold.map { $0.p.x }), median(hold.map { $0.p.y }), median(hold.map { $0.p.z }))
-        // the fall
+        // the fall and the impact, on the smoothed heights
+        let y = runningMedian(s.map { $0.p.y })
         var k1: Int? = nil
-        for i in s.indices where s[i].t > cue - 0.3 && held.y - s[i].p.y > 0.015 {
-            if i + 1 < s.count && held.y - s[i + 1].p.y <= 0.015 { continue }
+        for i in s.indices where s[i].t > cue - 0.3 && held.y - y[i] > 0.015 {
+            if i + 1 < s.count && held.y - y[i + 1] <= 0.015 { continue }
+            // and goes on falling: 1.5 cm down a ball let go falls 10 cm more in the next 0.1 s, so within 0.15 s it is
+            // at least 5 cm below where it was held (a run of frames read a little low is not a fall)
+            let next = s.indices.filter { s[$0].t > s[i].t && s[$0].t <= s[i].t + 0.15 }
+            if !next.isEmpty && !next.contains(where: { held.y - y[$0] > 0.05 }) { continue }
             k1 = i; break
         }
         guard let fallIndex = k1 else { return .failed("the ball did not fall after the release cue") }
@@ -169,23 +204,28 @@ public struct KitBounceAnalysis: Codable, Equatable {
         var jm = fallIndex, rose = false
         var j = fallIndex
         while j < s.count && s[j].t - s[fallIndex].t < 1.5 {
-            if s[j].p.y < s[jm].p.y { jm = j } else if s[j].p.y > s[jm].p.y + 0.01 { rose = true; break }
+            if y[j] < y[jm] { jm = j } else if y[j] > y[jm] + 0.01 { rose = true; break }
             j += 1
         }
         guard rose else { return .failed("no bounce found: the ball was not seen rising after its fall") }
+        // (the median of five flattens the bottom of the V the impact makes: the lowest sample is the lowest smoothed
+        // point, or one of the next two, or the one before; a wrong frame there is dropped by the fits below)
+        jm = (max(fallIndex, jm - 1)...min(j - 1, jm + 2)).min(by: { s[$0].p.y < s[$1].p.y }) ?? jm
         // the falling samples: from the first one clearly below the held height
         var k0 = fallIndex
-        while k0 > 0 && s[k0 - 1].t > cue - 0.3 && held.y - s[k0 - 1].p.y > 0.004 { k0 -= 1 }
+        while k0 > 0 && s[k0 - 1].t > cue - 0.3 && held.y - y[k0 - 1] > 0.004 { k0 -= 1 }
         let t0 = s[jm].t
-        guard var pre = Fit.fit(s[k0..<jm], t0: t0) else { return .failed("too few frames of the fall (\(jm - k0)) before the impact") }
+        guard let preR = Fit.robust(Array(s[k0..<jm]), t0: t0) else { return .failed("too few frames of the fall (\(jm - k0)) before the impact") }
+        var pre = preR.fit, preKept = preR.kept
         // the post-impact samples, grown while they fit: within max(15 mm, 5 x the fall's misfit, 4 x the fit's own
         // misfit) of the fit's prediction; a single sample off is skipped, two in a row end the flight (the floor)
         let gate = max(0.015, 5 * pre.rms)
         var post: Fit? = nil
         var kept: [KitBallSample] = []
-        if jm + 4 <= s.count, var f = Fit.fit(s[(jm + 1)..<(jm + 4)], t0: t0) {
-            kept = Array(s[(jm + 1)..<(jm + 4)])
-            var i = jm + 4
+        if jm + 4 <= s.count, let start = Fit.robust(Array(s[(jm + 1)..<min(s.count, jm + 6)]), t0: t0) {
+            var f = start.fit
+            kept = start.kept
+            var i = min(s.count, jm + 6)
             func fits(_ x: KitBallSample, _ f: Fit) -> Bool { (x.p - f.position(x.t)).length <= max(gate, 4 * f.rms) }
             while i < s.count {
                 if fits(s[i], f) { kept.append(s[i]); i += 1 }
@@ -201,11 +241,13 @@ public struct KitBounceAnalysis: Codable, Equatable {
             post = f
         }
         guard var postFit = post else { return .failed("too few frames after the impact to fit the bounce") }
-        // the lowest sample belongs to whichever fit it is nearer
+        // the lowest sample belongs to whichever fit it is nearer (if it is not far off both)
         var preEnd = jm, postStart = jm + 1
         let dPre = (s[jm].p - pre.position(s[jm].t)).length, dPost = (s[jm].p - postFit.position(s[jm].t)).length
-        if dPre <= dPost { preEnd = jm + 1; if let f = Fit.fit(s[k0..<preEnd], t0: t0) { pre = f } }
-        else { postStart = jm; kept.insert(s[jm], at: 0); if let f = Fit.fit(kept[...], t0: t0) { postFit = f } }
+        if min(dPre, dPost) <= gate {
+            if dPre <= dPost { preEnd = jm + 1; preKept.append(s[jm]); if let f = Fit.fit(preKept[...], t0: t0) { pre = f } }
+            else { postStart = jm; kept.insert(s[jm], at: 0); if let f = Fit.fit(kept[...], t0: t0) { postFit = f } }
+        }
         let notes: [String] = []
         // impact: where the heights meet (the difference of two free falls is linear in time)
         let db = pre.b.y - postFit.b.y
@@ -215,7 +257,7 @@ public struct KitBounceAnalysis: Codable, Equatable {
         } else {
             ti = (s[preEnd - 1].t + s[postStart].t) / 2
         }
-        let lo = s[preEnd - 1].t - 0.02, hi = s[postStart].t + 0.02
+        let lo = (preKept.last?.t ?? s[preEnd - 1].t) - 0.02, hi = (kept.first?.t ?? s[postStart].t) + 0.02
         guard ti >= lo && ti <= hi else {
             return .failed("the track does not hold together as a drop: the fall's and the bounce's fits do not meet between the frames around the impact")
         }
@@ -251,7 +293,7 @@ public struct KitBounceAnalysis: Codable, Equatable {
         var a = KitBounceAnalysis(held: held, releaseTime: tr, impactTime: ti, impactPoint: impact, velocityIn: vin, velocityOut: vout,
                                   rebound: rebound, fallHeight: fall,
                                   apexHeight: apex.y - impact.y, apex: apex, landing: landing, landingDistance: landDist,
-                                  landingExtrapolation: extrapolation, preSamples: preEnd - k0, postSamples: kept.count,
+                                  landingExtrapolation: extrapolation, preSamples: preKept.count, postSamples: kept.count,
                                   preRms: pre.rms, postRms: postFit.rms, prediction: nil, landingError: nil, landingDistanceError: nil,
                                   apexError: nil, impactHeightError: nil, notes: notes)
         if let p = predict?(held) {

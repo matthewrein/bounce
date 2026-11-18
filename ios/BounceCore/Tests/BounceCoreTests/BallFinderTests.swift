@@ -453,6 +453,28 @@ final class BallFinderTests: XCTestCase {
         XCTAssertNil(loc.current)
     }
 
+    /// A followed ball that moved further than the follow box (4 radii) between two scans, a hand moving quickly or a
+    /// ball let go, is found on the same scan in the whole search window, not held over where it was.
+    func testFollowedBallThatJumpsIsFoundAtOnce() {
+        let K = CameraIntrinsics(fx: 500, fy: 500, cx: 200, cy: 240, width: 400, height: 480)
+        let g = Vec3(0, 0.75, 0.66).normalized, up = -g
+        let ball = BallSpec(), spec = SlabSpec.standard
+        let B1 = K.ray(Vec2(190, 150)).normalized * 0.5
+        let n = up, u = Vec3(1, 0, 0).rejecting(n).normalized
+        let slab = SlabPose(center: B1 - n * (0.4 + ball.radius), normal: n, axisU: u, axisV: n.cross(u), halfU: spec.halfU, halfV: spec.halfV)
+        let B2 = B1 - n * 0.2
+        let img1 = SphereScene(K: K, center: B1, radius: ball.radius, surface: SphereScene.mirrorSurface(up: up, lowerVisible: true)).render(noise: 1)
+        let img2 = SphereScene(K: K, center: B2, radius: ball.radius, surface: SphereScene.mirrorSurface(up: up, lowerVisible: true)).render(noise: 1, seed: 2)
+        let r = Bounce.imageRadius(ballCenter: B1, intrinsics: K, ball: ball)!
+        XCTAssertGreaterThan(K.project(B1)!.distance(to: K.project(B2)!), 4 * r * 1.2, "beyond the follow box")
+        let loc = BallLocator()
+        XCTAssertNotNil(loc.update(luma: img1, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g))
+        let o = loc.update(luma: img2, intrinsics: K, slab: slab, spec: spec, ball: ball, down: g)
+        XCTAssertEqual(o?.missedUpdates, 0, "found, not held over")
+        XCTAssertLessThan(o?.center.distance(to: B2) ?? 1, 0.01)
+        XCTAssertEqual(o?.drop.dropHeight ?? 0, 0.2, accuracy: 0.015)
+    }
+
     /// A large image (the ball some 60 px across) is searched at a reduced scale, and the ball still comes back in the
     /// image's own pixels.
     func testLargeBallSearchedAtReducedScale() {
@@ -809,6 +831,153 @@ final class BallFinderTests: XCTestCase {
         }
         print(String(format: "clean ball at 3-5 ft: %d scenes, worst radius %.1f%%, worst drop %.1f cm", n, 100 * worstR, 100 * worstD))
         XCTAssertGreaterThan(n, 0)
+    }
+
+    /// The capture kit's held shots without the video, at each crop factor the app uses for the phone's camera:
+    /// SyntheticScene's polished ball (it reflects a dark floor below the horizon and a bright sky above, so just inside
+    /// its upper limb the reflection sweeps from what lies behind the ball to the sky, and the edge found along the top
+    /// sits about a pixel inside the outline) held 4, 12 and 24 in over a slab tilted 10 degrees, seen as the kit's s09
+    /// shots are (1.0 m plus a quarter of the height from a point 0.4 of the height over the slab) from 40, 50 and 65
+    /// degrees up, by a 1920x1440 camera. As the app does it: the full camera image cut to the app's ball crop
+    /// (`BallImageCrop.plan`) and shrunk by its factor in block averages (as ARController's), which is 1 or 2 here,
+    /// never 3. Over three scans the locator reports the ball held 12 and 24 in on the second and third (the first too
+    /// where the whole outline is read: a half outline needs two scans); the ball held 4 in, under the least height for
+    /// a ball found from half its outline (`BallLocator.Options.minPartialHeight`), is reported where its whole outline
+    /// is read. Every drop height reported is never low by more than 10 mm nor high by more than 20 mm. (Before the
+    /// directed step test, `BallFinder.upperStepsIn`, the whole outline's circle, pulled in by that top edge, read 15-37
+    /// mm low; e74b53e's crop shrank these views by 3 at 50 and 65 degrees, and the ball read up to 29 mm high there. The
+    /// size now comes from the lower half's reading, which on these renders reads 0-3% large: up to 19 mm high at 50
+    /// degrees. That renderer's look is not a polished ball's on real footage (on a ball that reflects the scene, with
+    /// Fresnel, the same poses read about 11 mm low; see CaptureKit.md), so the limits are not tuned to it.) A debug build
+    /// runs one azimuth at 40 degrees, rendered at the crop's own scale.
+    func testHeldPolishedBallAtThePhonesScale() {
+        let f = 0.78 * 1920, Kf = CameraIntrinsics(fx: f, fy: f, cx: 960, cy: 720, width: 1920, height: 1440)
+        let slab = SyntheticScene.slabPose(tilt: 10, heading: 35), spec = SlabSpec.standard, ball = BallSpec()
+        let up = Vec3(0, 1, 0), down = ARKitConvention.worldDown
+        #if DEBUG
+        let elevations = [40.0], azimuths = [32.0], fullImage = false
+        #else
+        let elevations = [40.0, 50, 65], azimuths = [20.0, 32, 50], fullImage = true
+        #endif
+        var lines: [String] = [], worst = 0.0, factors = Set<Int>()
+        for el in elevations {
+            for inches in [4.0, 12, 24] {
+                let h = Units.inches(inches)
+                let B = slab.center - slab.normal * spec.dishDepth + up * (ball.radius + h)
+                let truth = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: down)!.dropHeight
+                for az in azimuths {
+                    let a = Units.radians(az), e = Units.radians(el), aim = slab.center + up * (h * 0.4)
+                    let full = SyntheticScene.camera(at: aim + Vec3(sin(a) * cos(e), sin(e), cos(a) * cos(e)) * (1.0 + h * 0.25), lookingAt: aim, intrinsics: Kf)
+                    guard let crop = BallImageCrop.plan(slab: slab, full: full) else { XCTFail("no crop"); continue }
+                    XCTAssertLessThanOrEqual(crop.factor, 2)
+                    factors.insert(crop.factor)
+                    let view = CameraView(worldFromCamera: full.worldFromCamera, intrinsics: crop.intrinsics(full: Kf))
+                    let K = view.intrinsics
+                    let luma: Plane
+                    if fullImage {
+                        // the crop at full resolution, then k x k block averages
+                        let Kc = Kf.cropped(x0: Double(crop.x0), y0: Double(crop.y0), scale: 1, width: crop.width, height: crop.height)
+                        var scene = SyntheticScene(slab: slab, ball: B); scene.supersample = 1
+                        let p = SyntheticScene.ycc(rgb: scene.renderRGB(view: CameraView(worldFromCamera: full.worldFromCamera, intrinsics: Kc)),
+                                                   width: crop.width, height: crop.height).luma
+                        luma = crop.factor > 1 ? p.downscaled(by: crop.factor) : p
+                    } else {
+                        luma = SyntheticScene.ycc(rgb: SyntheticScene(slab: slab, ball: B).renderRGB(view: view), width: K.width, height: K.height).luma
+                    }
+                    XCTAssertEqual(luma.width, K.width); XCTAssertEqual(luma.height, K.height)
+                    let sc = slab.transformed(by: view.cameraFromWorld), g = view.cameraFromWorld.applyDirection(down)
+                    let rt = Bounce.imageRadius(ballCenter: view.toCamera(B), intrinsics: K, ball: ball)!
+                    let loc = BallLocator()
+                    let scans = (0..<3).map { _ in loc.update(luma: luma, intrinsics: K, slab: sc, spec: spec, ball: ball, down: g) }
+                    let label = String(format: "%.0f deg up, %.0f in, azimuth %.0f", el, inches, az)
+                    lines.append(label + String(format: " (crop factor %d, radius %.1f px): ", crop.factor, rt) + scans.map { o in
+                        o.map { String(format: "drop %+.1f mm, radius %+.1f%%%@", 1000 * ($0.drop.dropHeight - truth), 100 * ($0.circle.radius / rt - 1),
+                                       $0.circle.partial ? " partial" : "") } ?? "nothing"
+                    }.joined(separator: "; "))
+                    for (k, o) in scans.enumerated() {
+                        guard let o else {
+                            if k > 0 && inches > 6 { XCTFail("\(label): not reported on scan \(k + 1)") }
+                            continue
+                        }
+                        XCTAssertEqual(o.missedUpdates, 0, label)
+                        XCTAssertLessThan(o.circle.center.distance(to: K.project(view.toCamera(B))!), 0.25 * rt, label)
+                        worst = max(worst, abs(o.drop.dropHeight - truth))
+                        XCTAssertGreaterThan(o.drop.dropHeight - truth, -0.010, label)
+                        XCTAssertLessThan(o.drop.dropHeight - truth, 0.020, label)
+                    }
+                }
+            }
+        }
+        print("held polished ball at the phone's scale (crop factors \(factors.sorted())):\n  " + lines.joined(separator: "\n  ")
+              + String(format: "\n  worst drop error %.1f mm", 1000 * worst))
+    }
+
+    /// A shiny lid with pressed rings lying on the slab (`ReflectingScene`: 60-80 mm across, a jar lid, a coaster, a
+    /// medallion), alone and with a polished ball held 4 or 12 in over the slab (at its centre or off it), seen from
+    /// 0.75 m at 55-70 degrees by the phone's camera at the scale of a crop shrunk by 3 (640 x 480 for its 1920 x 1440
+    /// image, the ball 12-16 px across). The lid's outer rim gives a lower half's reading and an inner ring an upper one
+    /// that closes it over the top, and its whole outline, an ellipse, reads as a circle whose top lies inside the circle
+    /// its lower half makes: each such find stays partial (`BallFinder.outermost`), so it is held to the locator's
+    /// rules for half an outline and ranks below a ball whose outline was read whole. Over three scans the ball is
+    /// reported on every scan, where it is (within a quarter of its radius), and the lid never is; alone, the lid is
+    /// never reported, and the capture kit's tracking finder takes a half outline of it under 0.2 m on one of three
+    /// frames at most (`BallLocator.Options.stillPartialCeiling`). (Before, those finds were whole ones counting the whole rim's support: in scenes like these the
+    /// lid took the ball's place on 38 of 120 scans, about 20 cm low for a ball held 12 in up. Poses where a lid's whole
+    /// outline is taken for a ball, which the level-disc test does not tell from one, are a separate matter.) A debug
+    /// build runs two poses.
+    func testRingedLidOnTheSlabIsNotTakenForTheBall() {
+        let slab = SyntheticScene.slabPose(tilt: 10, heading: 35), spec = SlabSpec.standard, ball = BallSpec()
+        let K = CameraIntrinsics(fx: 0.78 * 640, fy: 0.78 * 640, cx: 320, cy: 240, width: 640, height: 480)
+        let up = Vec3(0, 1, 0), down = ARKitConvention.worldDown
+        // lid diameter, camera elevation and azimuth, lid offset along the slab's axes, ring depth
+        var lids: [(Double, Double, Double, Double, Double, Double)] = [(0.06, 55, 80, -0.05, 0.05, 0.35), (0.06, 60, 140, -0.05, 0.05, 0.25)]
+        #if !DEBUG
+        lids += [(0.06, 60, 220, 0, 0, 0.35), (0.06, 60, 255, 0.06, -0.04, 0.35), (0.06, 70, 185, 0.06, -0.04, 0.25),
+                 (0.07, 60, 220, 0, 0, 0.35), (0.07, 65, 150, 0.06, -0.04, 0.35), (0.08, 60, 10, -0.05, 0.05, 0.35)]
+        #endif
+        var lines: [String] = [], scenes = 0
+        for (D, el, az, ou, ov, rings) in lids {
+            let a = Units.radians(az), e = Units.radians(el), aim = slab.center + up * 0.1
+            let view = SyntheticScene.camera(at: aim + Vec3(sin(a) * cos(e), sin(e), cos(a) * cos(e)) * 0.75, lookingAt: aim, intrinsics: K)
+            let sc = slab.transformed(by: view.cameraFromWorld), g = view.cameraFromWorld.applyDirection(down)
+            var balls: [(String, Vec3?)] = [("no ball", nil)]
+            for (inches, bu, bv) in [(4.0, 0.0, 0.0), (12.0, 0.0, 0.0), (12.0, -0.06, -0.05)] where !(ou == 0 && ov == 0 && bu == 0 && bv == 0) {
+                balls.append((String(format: "ball %.0f in at (%+.2f, %+.2f)", inches, bu, bv),
+                              slab.center + slab.axisU * bu + slab.axisV * bv - slab.normal * spec.dishDepth + up * (ball.radius + Units.inches(inches))))
+            }
+            for (name, B) in balls {
+                var scene = ReflectingScene(slab: slab)
+                scene.putLid(diameter: D, u: ou, v: ov, rings: rings)
+                scene.ball = B
+                let luma = scene.renderLuma(view: view)
+                let label = String(format: "lid %.0f mm at (%+.2f, %+.2f), %.0f deg up, azimuth %.0f, %@", 1000 * D, ou, ov, el, az, name)
+                let at = B.flatMap { view.project(world: $0) }, r = B.flatMap { Bounce.imageRadius(ballCenter: view.toCamera($0), intrinsics: K, ball: ball) } ?? 0
+                let loc = BallLocator()
+                var outs: [String] = []
+                for k in 0..<3 {
+                    let o = loc.update(luma: luma, intrinsics: K, slab: sc, spec: spec, ball: ball, down: g)
+                    outs.append(o.map { "\($0.circle) \(String(format: "%.3f m", $0.drop.dropHeight))" } ?? "nothing")
+                    if let at {
+                        guard let o else { XCTFail("\(label): the ball not reported on scan \(k + 1)"); continue }
+                        XCTAssertLessThan(o.circle.center.distance(to: at), 0.25 * r, "\(label), scan \(k + 1): \(o.circle) is not the ball")
+                    } else {
+                        XCTAssertNil(o, "\(label), scan \(k + 1): the lid reported as a ball")
+                    }
+                }
+                if B == nil {
+                    // the capture kit's tracking finder (`BallLocator.Options.tracking`): a half outline low over the slab
+                    // is taken on a single frame, but not again where one was on the frame before
+                    let tracking = BallLocator(options: .tracking())
+                    let taken = (0..<3).compactMap { _ in tracking.update(luma: luma, intrinsics: K, slab: sc, spec: spec, ball: ball, down: g) }
+                    let low = taken.filter { $0.circle.partial && $0.drop.dropHeight < 0.2 }.count
+                    XCTAssertLessThanOrEqual(low, 1, "\(label): the tracking finder took a half outline lying on the slab \(low) times")
+                    outs.append("tracking: " + (taken.isEmpty ? "nothing" : taken.map { "\($0.circle) \(String(format: "%.3f m", $0.drop.dropHeight))" }.joined(separator: ", ")))
+                }
+                scenes += 1
+                lines.append(label + ": " + outs.joined(separator: "; "))
+            }
+        }
+        print("ringed lid on the slab, \(scenes) scenes:\n  " + lines.joined(separator: "\n  "))
     }
 
     /// No ball, on floors of square tiles (2-5 cm, grout 2 and 4 mm in two shades) with the slab on them, seen from

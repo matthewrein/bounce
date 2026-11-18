@@ -156,10 +156,11 @@ final class PipelineTests: XCTestCase {
         print(String(format: "PIPELINE demo ball: first drop from the ball at %.2f s; %d of %d locked frames; drop error median %.1f mm worst %.1f mm",
                      firstBall ?? -1, withBall, frames, errs.isEmpty ? -1 : errs[errs.count / 2] * 1000, (errs.last ?? -1) * 1000))
         XCTAssertNotNil(firstBall, "the ball never set the drop height")
-        // Known gap (n6): the finder misses the ball for about 2.6 s while the demo camera drifts round (searches
-        // "BBBB................BBBBBBBBBBBBBBB"), so about half the locked frames use the ball. Guard that level until the
-        // gap is understood (on real captures first: they outrank renders).
-        XCTAssertGreaterThan(Double(withBall), 0.45 * Double(frames))
-        XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.02)
+        // Every search finds the ball, so nearly every locked frame uses it. (Until n8 the ball's crop lost the space
+        // above the slab whenever the demo camera, 0.6 m over the slab, had every point 1.2 m above the slab's corners
+        // behind it: 2.6 s of misses, "BBBB................BBBBBBBBBBBBBBB", 38 of 71 frames, median error 6.6 mm.)
+        XCTAssertFalse(seq.contains("."), seq)
+        XCTAssertGreaterThan(Double(withBall), 0.9 * Double(frames))
+        XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.01)
     }
 }
