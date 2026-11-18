@@ -124,8 +124,11 @@ final class FinderRun {
     let down: Vec3?
     let choice: EdgeChoice?
     let yRaw: Plane
-    let edgeLuma: Plane
-    let edgeMap: ImageMap
+    /// the finer image for the edge steps, if any, and the map from the frame's pixels to its pixels
+    let detail: DetailImage?
+    let detailMap: ImageMap?
+    /// the frame's own pixels (for outlines the finer image does not cover)
+    let frameMap: ImageMap
     let refiner: EdgeRefiner
     // processing planes (the web app's ensureProc): blurred luma and colour differences, texture
     let Y: UnsafeMutableBufferPointer<Float>
@@ -154,8 +157,9 @@ final class FinderRun {
         opt = options; w = frame.width; h = frame.height; n = w * h
         K = intrinsics; self.spec = spec; self.down = down; self.choice = choice
         yRaw = frame.y
-        edgeLuma = detail?.luma ?? frame.y
-        edgeMap = ImageMap(from: intrinsics, to: detail?.intrinsics ?? intrinsics)
+        self.detail = detail
+        detailMap = detail.map { ImageMap(from: intrinsics, to: $0.intrinsics) }
+        frameMap = ImageMap(from: intrinsics, to: intrinsics)
         refiner = EdgeRefiner(options: options.edges)
         func buf<T>(_ count: Int, _ v: T) -> UnsafeMutableBufferPointer<T> {
             let b = UnsafeMutableBufferPointer<T>.allocate(capacity: count); b.initialize(repeating: v); return b
@@ -234,6 +238,31 @@ final class FinderRun {
                 out[y * w + x] = Float(max(0, (i2[a] - i2[b] - i2[d] + i2[e]) / c - mu * mu).squareRoot())
             }
         }
+    }
+
+    /// How far beyond an outline the edge steps read, as a share of its longest side (the plain step's spokes reach 0.09
+    /// of a side; the box model's up to about two cut-face bands plus 0.06 of the side, a band being under 0.2 of a side
+    /// from any view the shape checks accept), plus `detailReachUnits` half pixels of the frame (the spokes' own width).
+    static let detailReach = 0.45
+    static let detailReachUnits = 6.0
+
+    /// The image the edge steps read for an outline (frame pixels): the finer image (`detail`, e.g. a full-resolution crop
+    /// around the slab) where it covers the outline and everything the steps look at around it (`detailReach`), else the
+    /// frame's own luma. A crop around one outline then refines that outline on the finer pixels and leaves any other
+    /// (a lookalike elsewhere in the view) on the frame's, instead of reading the crop's clamped border for it. Parts
+    /// beyond the frame's own edges do not count (neither image has pixels there).
+    func edgeImage(for q: [Vec2]) -> (luma: Plane, map: ImageMap) {
+        guard let d = detail, let m = detailMap, q.count >= 3 else { return (yRaw, frameMap) }
+        let P = q.map(m.forward)
+        let longest = (0..<P.count).map { P[$0].distance(to: P[($0 + 1) % P.count]) }.max() ?? 0
+        let g = FinderRun.detailReach * longest + FinderRun.detailReachUnits * max(0.5, m.scale / 2)
+        let a = m.forward(Vec2(0, 0)), b = m.forward(Vec2(Double(w), Double(h)))
+        let x0 = max(P.map { $0.x }.min()! - g, a.x), x1 = min(P.map { $0.x }.max()! + g, b.x)
+        let y0 = max(P.map { $0.y }.min()! - g, a.y), y1 = min(P.map { $0.y }.max()! + g, b.y)
+        let tol = 1.0
+        guard x0.isFinite, x1.isFinite, y0.isFinite, y1.isFinite, x0 >= -tol, y0 >= -tol,
+              x1 <= Double(d.luma.width) + tol, y1 <= Double(d.luma.height) + tol else { return (yRaw, frameMap) }
+        return (d.luma, m)
     }
 
     // MARK: entry points
@@ -675,7 +704,8 @@ final class FinderRun {
         var quad = plain, sides: [SideEdge] = [], newChoice: EdgeChoice? = nil
         let fit: PoseFit
         if opt.useBoxModel {
-            guard let r = refiner.refine(outline: plain, intrinsics: K, luma: edgeLuma, lumaIntrinsics: edgeMap.to, spec: spec,
+            let edges = edgeImage(for: plain)
+            guard let r = refiner.refine(outline: plain, intrinsics: K, luma: edges.luma, lumaIntrinsics: edges.map.to, spec: spec,
                                          down: down, choice: choice) else { return nil }
             quad = r.outline; fit = r.fit; sides = r.sides; newChoice = r.choice
         } else {
@@ -762,8 +792,9 @@ final class FinderRun {
     /// Sharpen an outline on the edge image: find the first clear edge from the inside at many points along each side,
     /// fit a straight line through them ignoring strays, and take the corners where those lines cross.
     func plainRefine(_ q: [Vec2]) -> (quad: [Vec2], fitted: Int, contrast: [Double]) {
+        let (edgeLuma, edgeMap) = edgeImage(for: q)
         let P = q.map(edgeMap.forward)
-        let ds = edgeMap.scale, unit = max(0.5, ds / 2), wf = 0.09
+        let ds = edgeMap.scale, unit = EdgeRefiner.unit(scale: ds), wf = 0.09
         let c = Geometry.centroid(P)
         var lines: [Line2] = [], fitted = 0, contrast: [Double] = []
         for i in 0..<4 {

@@ -226,6 +226,17 @@ public struct EdgeRefiner {
     public var options: Options
     public init(options: Options = Options()) { self.options = options }
 
+    /// The edge steps' sampling unit, in pixels of the image they read, `ds` times finer than the frame searched (its
+    /// profiles are read every half unit, its steps measured over three units): half a frame pixel, but on a finer image
+    /// (the camera's own pixels) never more than one of its pixels. A camera's edges are 2-3 of its pixels wide; read at
+    /// half a frame pixel (2 camera pixels at the app's factor 4) they are sharper than the step measure, whose peak then
+    /// lands on the edge's inner side (measured on the synthetic slab at 1920x1440: corners 0.7-0.9 px off at 4-6 ft,
+    /// worse than the frame's own 0.2-0.3 px; at one camera pixel 0.1-0.2 px, `SlabDetailGainTests`). Unchanged for the
+    /// frame itself and for crops up to twice as fine.
+    static func unit(scale ds: Double) -> Double {
+        ds <= 2 ? max(0.5, ds / 2) : 1
+    }
+
     /// Refine an outline of the slab in a colour frame (its luma is used).
     public func refine(outline: [Vec2], frame: ColorFrame, intrinsics K: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
                        choice: EdgeChoice? = nil) -> Result? {
@@ -248,7 +259,7 @@ public struct EdgeRefiner {
         guard outline.count == 4, ShapeCheck.isConvex(outline) else { return nil }
         let KD = KDIn ?? K
         let map = ImageMap(from: K, to: KD)
-        let ds = map.scale, unit = max(0.5, ds / 2)
+        let ds = map.scale, unit = EdgeRefiner.unit(scale: ds)
         let prevSides = choice?.sides(matching: outline)
         let expected = choice?.expectedLines(matching: outline).map { $0.map { (map.forward($0.0), map.forward($0.1)) } }
         var cur = outline.map(map.forward)

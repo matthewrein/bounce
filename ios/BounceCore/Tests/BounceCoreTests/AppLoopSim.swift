@@ -113,6 +113,9 @@ struct AppLoopSim {
     var restartAt: Double? = nil
     /// the slab detector to make for each new tracker (default: one CornerCodeDetector for the whole run)
     var makeDetector: (() -> SlabDetecting)? = nil
+    /// the camera's full-resolution pixels for the slab's edges (`TrackerFrame.slabDetail`), cut from the virtual full
+    /// image as `FrameConversion.lumaCrop` would
+    var slabCrops = false
 
     init(world: World) { self.world = world }
 
@@ -249,8 +252,11 @@ struct AppLoopSim {
                 run.ballFrames += 1
             }
             let floorY: Double? = tracker.slab != nil ? 0.0 : nil
+            let slabDetail: (([Vec2]) -> SlabDetail?)? = !slabCrops ? nil : SlabImageCrop.provider(processing: pK, full: full) { c in
+                self.lumaCrop(BallImageCrop(x0: c.x0, y0: c.y0, width: c.width, height: c.height, factor: c.factor), ballPx: bp)
+            }
             let tf = TrackerFrame(timestamp: t, view: pv, frame: ycc.map { ColorFrame(gray: $0.luma) } ?? blank, depth: depth?.0, depthIntrinsics: depth?.1,
-                                  ballImage: ballImage, ballIntrinsics: ballK, tap: tap, floorY: floorY, trackingNormal: normal)
+                                  ballImage: ballImage, ballIntrinsics: ballK, tap: tap, floorY: floorY, trackingNormal: normal, slabDetail: slabDetail)
             let out = tracker.process(tf)
             run.outputs.append(out); run.times.append(t)
             if version1 {
@@ -264,8 +270,8 @@ struct AppLoopSim {
                 }
             } else {
                 var r = cadence.record(tf, output: out, tracker: tracker, image: ycc, ballCrop: crop)
-                if dropPixels.contains(i) { r.image = nil; r.ball = nil }
-                try writer.append(r.frame, image: r.image, depth: r.depth, ball: r.ball)
+                if dropPixels.contains(i) { r.image = nil; r.ball = nil; r.slab = nil }
+                try writer.append(r.frame, image: r.image, depth: r.depth, ball: r.ball, slab: r.slab)
             }
         }
         writer.close()

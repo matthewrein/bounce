@@ -11,6 +11,8 @@ import Foundation
 ///   - `d<NNNNNN>.bdp` optional LiDAR depth (`DepthMap`, format "BDP1"), the whole map or the part the tracker read
 ///   - `b<NNNNNN>.pgm` optional: the image the ball finder was given (a crop of the full camera image; a PGM that keeps
 ///                     the crop's shrunk pixels exactly, see `Plane.pgmData(blockSum:)`)
+///   - `s<NNNNNN>.pgm` optional: the full-resolution crop the slab's edge steps read (`SlabImageCrop`; kept exactly the
+///                     same way)
 /// NNNNNN is the frame's line number in frames.jsonl.
 ///
 /// Version 1 has a line only for frames with an image, taken every 0.1-0.2 s regardless of what the tracker did.
@@ -74,6 +76,11 @@ public struct RecordingSettings: Codable, Equatable {
 
     /// how often the app searches for the slab while it has none (s): the search costs tens of ms on the phone
     public static let appSearchInterval = 0.12
+    /// The app's shortest time between two runs of the slab detector (s; `TrackerSettings.minDetectionGap`): at most
+    /// 20 runs a second, so the detector cannot run on every frame at 60 (or 30) fps however often something forces a
+    /// run (a discontinuity reported frame after frame, taps); a forced run waits at most this long. The scheduled
+    /// intervals (0.12 s searching, 0.3 s re-checking) are longer and unaffected.
+    public static let appMinDetectionGap = 0.05
 
     /// The tracker settings the app runs with for these settings (AppSettings.tracker should use this, so the app and
     /// a replay of an older recording build them the same way).
@@ -84,6 +91,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.defaultDropHeight = dropHeight
         t.launchRule = launchRule
         t.searchInterval = RecordingSettings.appSearchInterval
+        t.minDetectionGap = RecordingSettings.appMinDetectionGap
         return t
     }
 
@@ -138,6 +146,11 @@ public struct RecordedFrame: Codable, Equatable {
     public var ballCrop: BallImageCrop?
     /// the tracker's result on the phone for this frame (what a replay is compared with)
     public var output: RecordedOutput?
+    /// the full-resolution crop the slab finder's edge steps read on this frame (`TrackerOutput.slabDetail`; where it was
+    /// cut is `output.slabCrop`): its file (`s<NNNNNN>.pgm`) and the intrinsics of its pixels. The intrinsics are kept
+    /// even when the pixels were dropped (the disk fell behind), so a replay knows the phone had them.
+    public var slabFile: String?
+    public var slabIntrinsics: CameraIntrinsics?
 
     public init(index: Int, timestamp: Double, file: String, worldFromCamera: [Double], intrinsics: CameraIntrinsics, trackingNormal: Bool = true) {
         self.index = index; self.timestamp = timestamp; self.file = file; self.worldFromCamera = worldFromCamera
@@ -158,6 +171,7 @@ public struct RecordedFrame: Codable, Equatable {
         controls = output.controls.isEmpty ? nil : output.controls
         depthIntrinsics = tf.depthIntrinsics
         if tf.ballImage != nil { ballIntrinsics = tf.ballIntrinsics; self.ballCrop = ballCrop }
+        slabIntrinsics = output.slabDetail?.intrinsics
         self.output = RecordedOutput(output)
     }
 
@@ -339,6 +353,13 @@ public struct RecordingReader {
         return p
     }
 
+    /// The slab's full-resolution crop on this frame, exactly as the phone cut it (nil if the frame has none recorded).
+    public func slab(for f: RecordedFrame) throws -> Plane? {
+        guard let name = f.slabFile else { return nil }
+        guard let p = Plane(pgm: try Data(contentsOf: folder.appendingPathComponent(name))) else { throw RecordingError.badFile(name) }
+        return p
+    }
+
     public func depth(for f: RecordedFrame) throws -> DepthMap? {
         guard let name = f.depthFile else { return nil }
         guard let d = DepthMap(data: try Data(contentsOf: folder.appendingPathComponent(name))) else { throw RecordingError.badFile(name) }
@@ -414,9 +435,9 @@ public final class RecordingWriter {
         return e
     }
 
-    /// Append a frame: its image (if any), depth and ball finder image are written as files next to the index, then its
-    /// line. The frame's index and file names are set here.
-    public func append(_ frameIn: RecordedFrame, image: YCCImage?, depth: DepthMap? = nil, ball: Plane? = nil) throws {
+    /// Append a frame: its image (if any), depth, ball finder image and slab crop are written as files next to the
+    /// index, then its line. The frame's index and file names are set here.
+    public func append(_ frameIn: RecordedFrame, image: YCCImage?, depth: DepthMap? = nil, ball: Plane? = nil, slab: Plane? = nil) throws {
         if let e = failure { throw e }
         guard let h = handle else { throw RecordingError.notOpen }
         var frame = frameIn
@@ -429,18 +450,26 @@ public final class RecordingWriter {
             let k = [frame.ballCrop?.factor ?? 1, 1, 2, 3, 4].first { $0 >= 1 && $0 <= 16 && b.isBlockAverage(of: $0) } ?? 16
             return b.pgmData(blockSum: k)
         }
+        // the slab crop the same way, with its own shrink factor
+        let slabData = slab.map { b -> Data in
+            guard exact else { return b.pgmData() }
+            let k = [frame.output?.slabCrop?.factor ?? 1, 1, 2, 3, 4].first { $0 >= 1 && $0 <= 16 && b.isBlockAverage(of: $0) } ?? 16
+            return b.pgmData(blockSum: k)
+        }
         frame.file = imageData != nil ? String(format: "f%06d.byc", frameCount) : ""
         frame.depthFile = depthData != nil ? String(format: "d%06d.bdp", frameCount) : nil
         if depthData == nil { frame.depthIntrinsics = nil }
         frame.ballFile = ballData != nil ? String(format: "b%06d.pgm", frameCount) : nil
+        frame.slabFile = slabData != nil ? String(format: "s%06d.pgm", frameCount) : nil
         var line = try enc.encode(frame)
         line.append(10)
-        let fileBytes: Int = (imageData?.count ?? 0) + (depthData?.count ?? 0)
+        let fileBytes: Int = (imageData?.count ?? 0) + (depthData?.count ?? 0) + (slabData?.count ?? 0)
         let size = Int64(line.count + fileBytes + (ballData?.count ?? 0))
         if let limit = byteLimit, bytesWritten + size > limit { throw RecordingError.limitReached(limit) }
         if let d = imageData { try d.write(to: folder.appendingPathComponent(frame.file)) }
         if let d = depthData { try d.write(to: folder.appendingPathComponent(frame.depthFile!)) }
         if let d = ballData { try d.write(to: folder.appendingPathComponent(frame.ballFile!)) }
+        if let d = slabData { try d.write(to: folder.appendingPathComponent(frame.slabFile!)) }
         do {
             try h.write(contentsOf: line)
         } catch {

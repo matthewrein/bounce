@@ -1,11 +1,34 @@
 import Foundation
 
-/// Finds the slab's top-corner outline in a frame. The real one is SlabFinder; tests can plug in others.
+/// Finds the slab's top-corner outline in a frame. The real one is SlabFinder; tests can plug in others (they need only
+/// the first `detect`: the others have defaults that ignore the finer image and keep nothing).
 public protocol SlabDetecting {
     /// Outlines (top corners, pixels of `frame`) best first, each starting at any corner and running either way round
     /// (`PoseFit.cornerOrder` maps them onto the pose). `seed`: a point the owner tapped (kept by the tracker and passed
     /// on every search until it locks); `near`: a predicted outline to search around (in the pose's corner order).
     func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline]
+    /// The same, with a finer luma image of part of the view (`detail`: a full-resolution crop around where the slab is
+    /// expected) for the edge steps of the outlines it covers. Default: the plain `detect`, ignoring it.
+    func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?,
+                detail: DetailImage?) -> [DetectedOutline]
+    /// Refine one outline this frame's search found (pixels of `frame`) on a finer image around it: the slab's outline
+    /// there, best first, as `detect` would return it while following that outline. Default: nothing (the tracker keeps
+    /// the outline as found).
+    func refine(outline: [Vec2], frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
+                detail: DetailImage) -> [DetectedOutline]
+    /// Drop anything kept from earlier calls in pixels of the processing frame (e.g. SlabFinderDetector's edge memory):
+    /// the frame's size changed. Default: nothing kept.
+    func forgetPixelMemory()
+}
+
+extension SlabDetecting {
+    public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?,
+                       detail: DetailImage?) -> [DetectedOutline] {
+        detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near)
+    }
+    public func refine(outline: [Vec2], frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
+                       detail: DetailImage) -> [DetectedOutline] { [] }
+    public func forgetPixelMemory() {}
 }
 
 /// One outline a detector found.
@@ -85,6 +108,10 @@ public struct DetectionRecord: Codable, Equatable {
     public var aspect: Double?
     /// the detector's per-side edge modes, in pose order
     public var sideModes: [String]?
+    /// where the edge steps of the outline used read their pixels: "crop" (a re-check following the lock's outline, on
+    /// the full-resolution crop around it, `SlabImageCrop`), "refined" (a search's find refined on a crop around it);
+    /// nil: the processing frame alone
+    public var edges: String?
 
     public init(time: Double, state: TrackerState, found: Int, rejected: [String] = [], outcome: [String] = []) {
         self.time = time; self.state = state; self.found = found; self.rejected = rejected; self.outcome = outcome
@@ -107,6 +134,13 @@ public struct TrackerSettings: Equatable {
     /// seconds between re-detections while locked, and between searches while not (0: every frame)
     public var recheckInterval: Double = 0.3
     public var searchInterval: Double = 0
+    /// The shortest time between two runs of the slab detector, whatever asks for one (s): the intervals above, and the
+    /// runs forced on the next frame by a tap, a reset, a world-frame discontinuity (reported by the app, a jump of the
+    /// camera, tracking resumed) or a change of the processing frame's size. A forced run still happens, on the first
+    /// frame this much after the last run (`detectionDue`), so a discontinuity reported on frame after frame cannot run
+    /// the detector on every frame. 0: no minimum (the default, so older recordings, whose settings lack it, replay as
+    /// the phone ran them); the app's is `RecordingSettings.appMinDetectionGap`.
+    public var minDetectionGap: Double = 0
     /// consistent detections needed before locking (more while they cannot yet pin the normal: `maxLockSigmaDegrees`)
     public var confirmCount: Int = 3
     /// The smallest agreement gates (centre distance, normal angle): measurements this close always agree. The gates
@@ -236,15 +270,30 @@ public struct TrackerFrame {
     public var floorY: Double?
     /// ARKit tracking state is normal (poses are good)
     public var trackingNormal: Bool
+    /// Full-resolution luma for the slab's edge steps, on request: given an outline (pixels of `frame`), the crop of the
+    /// full camera image around it with its intrinsics (`SlabImageCrop.provider` plans and cuts it), or nil when the
+    /// camera cannot provide one. The tracker calls it at most once a frame, only on a frame where its detector runs:
+    /// before the detector runs when it follows the lock's outline (a re-check), else after a search (searching,
+    /// confirming, or a re-check over the whole view) found the slab, around that find, which the detector then refines
+    /// on it (`SlabDetecting.refine`): the processing frame finds the slab, the camera's pixels place its edges. What it
+    /// got is in `TrackerOutput.slabDetail` (for the recording). nil: no such pixels (the processing frame alone, as
+    /// before; recordings without them replay that way).
+    public var slabDetail: (([Vec2]) -> SlabDetail?)?
 
     public init(timestamp: Double, view: CameraView, frame: ColorFrame, depth: DepthMap? = nil, depthIntrinsics: CameraIntrinsics? = nil,
-                ballImage: Plane? = nil, ballIntrinsics: CameraIntrinsics? = nil, tap: Vec2? = nil, floorY: Double? = nil, trackingNormal: Bool = true) {
+                ballImage: Plane? = nil, ballIntrinsics: CameraIntrinsics? = nil, tap: Vec2? = nil, floorY: Double? = nil, trackingNormal: Bool = true,
+                slabDetail: (([Vec2]) -> SlabDetail?)? = nil) {
         self.timestamp = timestamp; self.view = view; self.frame = frame; self.depth = depth; self.depthIntrinsics = depthIntrinsics
         self.ballImage = ballImage; self.ballIntrinsics = ballIntrinsics; self.tap = tap; self.floorY = floorY; self.trackingNormal = trackingNormal
+        self.slabDetail = slabDetail
     }
 }
 
 public enum TrackerState: String, Codable { case searching, confirming, locked }
+
+/// What a run of the slab detector was for: a search (searching for the slab, or confirming one), or a re-check of the
+/// lock.
+public enum TrackerDetectionKind: String, Codable { case search, recheck }
 
 /// What the app shows.
 public struct Readouts: Equatable, Codable {
@@ -308,6 +357,13 @@ public struct TrackerOutput {
     /// the ball finder ran on this frame (`ball` is then its result, nil if it found none; otherwise `ball` is the last
     /// result, kept)
     public var ballSearched: Bool = false
+    /// what the slab detector's run on this frame was for (nil: it did not run; then `detections` is nil too)
+    public var detectionKind: TrackerDetectionKind? = nil
+    /// the full-resolution crop the tracker got for the slab's edges on this frame (`TrackerFrame.slabDetail`), if any
+    public var slabDetail: SlabDetail? = nil
+    /// a search's find refined on that crop: the detector's own outlines from `SlabDetecting.refine` (pixels of the
+    /// processing frame), or nil if there was no such pass on this frame
+    public var refinedDetections: [DetectedOutline]? = nil
 }
 
 /// The per-frame logic shared by the app and the replay tests: search, confirm, lock the slab in world space so its
@@ -390,6 +446,13 @@ public final class SlabTracker {
     private var implausible = 0                            // re-locks held back as implausible since the last one
     private var noiseSamples: [Double] = []                // re-checks' squared distances from the lock (see cornerNoiseEstimate)
     private var lastCheck = -Double.infinity, lastGood = -Double.infinity, lastBall = -Double.infinity, lastBallSeen = -Double.infinity
+    /// when the detector last ran (never reset: `minDetectionGap` counts from it whatever happened since)
+    private var lastDetectionRun = -Double.infinity
+    /// the processing frame's intrinsics on the last frame (a change of its size is a discontinuity)
+    private var lastProcessing: CameraIntrinsics?
+    /// this frame's full-resolution crop and refine pass, if any (see TrackerOutput.slabDetail, refinedDetections)
+    private var frameDetail: SlabDetail?
+    private var frameRefined: [DetectedOutline]?
     private var previousTime: Double?
     private var lastMeasured: (normal: Vec3, time: Double)?
     private var ballState: (center: Vec3, circle: Vec2, radius: Double)?  // world centre
@@ -420,11 +483,19 @@ public final class SlabTracker {
         detectionBumps?.append(k)
     }
 
-    /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image). With a
-    /// tap on that frame it runs anyway. (These two decide it exactly, which a replay relies on.)
-    public func detectionDue(at t: Double) -> Bool {
-        t - lastCheck >= (state == .locked && !sidesUndecided ? settings.recheckInterval : settings.searchInterval)
+    /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image), if its
+    /// tracking state is normal. `tap`: the frame brings a tap (which asks for a run on that frame). A run is due when
+    /// the interval for the state has passed since the last scheduled one (or something forced one: a tap, a reset, a
+    /// discontinuity), and never sooner than `minDetectionGap` after the last run (a clock that went backwards does not
+    /// hold it back). (This decides it exactly, which a replay relies on.)
+    public func detectionDue(at t: Double, tap: Bool) -> Bool {
+        let since = t - lastDetectionRun
+        if since >= 0 && since < settings.minDetectionGap { return false }
+        return tap || t - lastCheck >= (state == .locked && !sidesUndecided ? settings.recheckInterval : settings.searchInterval)
     }
+
+    /// The same for a frame without a tap.
+    public func detectionDue(at t: Double) -> Bool { detectionDue(at: t, tap: false) }
 
     /// a rectangular slab whose long side the evidence has not settled yet: re-check at the search rate to gather it
     private var sidesUndecided: Bool {
@@ -587,6 +658,8 @@ public final class SlabTracker {
         let controls = pendingControls
         pendingControls = []
         var detections: [DetectedOutline]? = nil
+        var detectionKind: TrackerDetectionKind? = nil
+        frameDetail = nil; frameRefined = nil
 
         // a tap: look for the slab there until it locks; with tracking limited, start over once it is normal again
         if let tp = f.tap {
@@ -601,9 +674,20 @@ public final class SlabTracker {
 
         let due = detectionDue(at: t)
 
-        // world-frame discontinuities: reported by the app, a jump of the camera, or a long spell of limited tracking
+        // the processing frame changed size (the camera's video format changed: ARKit re-ran with another one): what is
+        // kept in its pixels is rescaled or dropped, and the lock must be seen again (a discontinuity, below)
+        var resized = false
+        if let old = lastProcessing, old.width != f.view.intrinsics.width || old.height != f.view.intrinsics.height {
+            processingFrameChanged(from: old, to: f.view.intrinsics)
+            resized = true
+        }
+        lastProcessing = f.view.intrinsics
+
+        // world-frame discontinuities: reported by the app, a jump of the camera, a long spell of limited tracking, or
+        // a new video format
         var discontinuity = pendingDiscontinuity
         pendingDiscontinuity = nil
+        if resized { discontinuity = discontinuity ?? "frame-size" }
         if f.trackingNormal {
             if let last = lastNormalFrame, t - last.time < 0.25,
                f.view.position.distance(to: last.position) > max(settings.poseJumpDistance, 3 * (t - last.time)) {
@@ -639,7 +723,8 @@ public final class SlabTracker {
         if state == .locked, let s = imageSlab, f.depth != nil { chk = depthCheck(s); chkFor = s }
 
         if due && f.trackingNormal {
-            lastCheck = t
+            lastCheck = t; lastDetectionRun = t
+            detectionKind = state == .locked ? .recheck : .search
             detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
         }
 
@@ -674,6 +759,9 @@ public final class SlabTracker {
         out.hint = state != .locked && t - lastHintTime < 2 ? SlabTracker.overheadHint : nil
         out.controls = controls
         out.detections = detections
+        out.detectionKind = detectionKind
+        out.slabDetail = frameDetail
+        out.refinedDetections = frameRefined
         guard state == .locked, let s = slab else { return out }
         out.outline = project(s, f.view)
 
@@ -708,10 +796,11 @@ public final class SlabTracker {
         detectionBumps = []; rejectedNow = []
         var used: Measurement? = nil
         var found: [DetectedOutline] = []
+        var edges: String? = nil
         defer {
             record.found = found.count
             record.rejected = rejectedNow
-            record.outcome = (detectionBumps ?? []).filter { !["searches", "rechecks", "detections"].contains($0) && !$0.hasPrefix("reject:") }
+            record.outcome = (detectionBumps ?? []).filter { !["searches", "rechecks", "detections", "slabCrops", "slabRefines"].contains($0) && !$0.hasPrefix("reject:") }
             if let m = used {
                 let p = m.pose, sides = (0..<4).map { m.quad[$0].distance(to: m.quad[($0 + 1) % 4]) }
                 record.center = p.center.array; record.normal = p.normal.array
@@ -721,6 +810,7 @@ public final class SlabTracker {
                 record.sidesPixels = sides
                 record.aspect = (sides[0] + sides[2]) / max(sides[1] + sides[3], 1e-9)
                 record.sideModes = m.sideModes.isEmpty ? nil : m.sideModes
+                record.edges = edges
             }
             detectionLog.append(record)
             if detectionLog.count > SlabTracker.detectionLogSize { detectionLog.removeFirst(detectionLog.count - SlabTracker.detectionLogSize) }
@@ -736,12 +826,20 @@ public final class SlabTracker {
             if !inView || u.rechecks % 2 == 0 { near = nil }
         }
         let seedPx: Vec2? = state == .locked ? nil : seed.flatMap { f.view.project(world: $0.world) }.flatMap { f.view.intrinsics.contains($0) ? $0 : nil }
-        found = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: seedPx, near: near)
+        // following the lock's outline: full-resolution pixels around it for the edge steps, up front
+        var askedForDetail = false
+        if let provide = f.slabDetail, let q = near {
+            askedForDetail = true
+            frameDetail = provide(q)
+            if frameDetail != nil { bump("slabCrops") }
+        }
+        found = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: seedPx, near: near,
+                                detail: frameDetail?.image)
         bump(state == .locked ? "rechecks" : "searches")
         let reference = referenceNormal(t).map { f.view.directionToCamera($0) }
         weakRejections = 0
         let options = found.compactMap { measure($0, f, downCam, reference) }
-        guard let chosen = choose(options, f, seedPx: seedPx) else {
+        guard var chosen = choose(options, f, seedPx: seedPx) else {
             switch state {
             case .confirming:
                 // an outline seen too nearly face-on to pin the tilt is still the slab: keep what is being confirmed
@@ -752,6 +850,26 @@ public final class SlabTracker {
             case .searching: break
             }
             return found
+        }
+        if frameDetail != nil { edges = "crop" }
+        // a search's find (searching or confirming, or a re-check over the whole view): found on the processing frame,
+        // then refined on full-resolution pixels around it, the detector following that one outline as it follows a
+        // lock, so no measurement that feeds the lock is left on the processing frame's coarse edges
+        if !askedForDetail, let provide = f.slabDetail, let d = provide(chosen.quad) {
+            frameDetail = d
+            bump("slabCrops")
+            let raw = detector.refine(outline: chosen.quad, frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam,
+                                      detail: d.image)
+            frameRefined = raw
+            // the refined outline: the first that passes the shape checks and lies where the find was (not another object)
+            let tol = max(2, 0.15 * ShapeCheck.meanSide(chosen.quad))
+            let found0 = chosen.quad
+            if let m = raw.lazy.compactMap({ self.measure($0, f, downCam, reference, counting: false) })
+                .first(where: { SlabTracker.rmsDistance(SlabTracker.aligned($0.quad, to: found0), found0) <= tol }) {
+                chosen = m; edges = "refined"; bump("slabRefines")
+            } else {
+                bump("slabRefineMisses")
+            }
         }
         bump("detections")
         used = chosen
@@ -771,8 +889,14 @@ public final class SlabTracker {
         return found
     }
 
-    /// A detected outline's pose(s), checked; nil (and counted) if it fails the shape check.
-    private func measure(_ o: DetectedOutline, _ f: TrackerFrame, _ downCam: Vec3, _ previousNormal: Vec3?) -> Measurement? {
+    /// rms distance between corresponding corners
+    static func rmsDistance(_ a: [Vec2], _ b: [Vec2]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return .infinity }
+        return (zip(a, b).reduce(0) { $0 + pow($1.0.distance(to: $1.1), 2) } / Double(a.count)).squareRoot()
+    }
+
+    /// A detected outline's pose(s), checked; nil (and counted, unless `counting` is false) if it fails the shape check.
+    private func measure(_ o: DetectedOutline, _ f: TrackerFrame, _ downCam: Vec3, _ previousNormal: Vec3?, counting: Bool = true) -> Measurement? {
         let fits = PoseSolver.solveAssignments(corners: o.quad, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam,
                                                previousNormal: previousNormal)
         var chosen = fits.first, other: PoseFit? = nil
@@ -785,7 +909,7 @@ public final class SlabTracker {
             chosen = first ? fits[0] : fits[1]; other = first ? fits[1] : fits[0]
         }
         let verdict = ShapeCheck.check(chosen, outline: o.quad, down: downCam, limits: settings.shapeLimits)
-        guard verdict == .ok, let fit = chosen else { reject(verdict, f.timestamp); return nil }
+        guard verdict == .ok, let fit = chosen else { if counting { reject(verdict, f.timestamp) }; return nil }
         let w = f.view.worldFromCamera, R = w.rotation, Rt = R.transposed
         func est(_ p: PoseFit) -> Estimate {
             let pose = p.pose.transformed(by: w)
@@ -1109,6 +1233,38 @@ public final class SlabTracker {
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"
+    }
+
+    /// The processing frame changed size (ARKit re-ran with another video format; the caller also treats it as a
+    /// world-frame discontinuity). What the tracker keeps in its pixels is moved to the new frame's: the measurements'
+    /// uncertainties and misfits (stated for 1 pixel of corner noise) are rescaled by the new pixel's size (the focal
+    /// lengths' ratio), their outlines mapped, the side evidence (pose-fit costs in pixels) rescaled; what cannot be
+    /// carried over is dropped: the corner noise measured in the old pixels (`cornerNoiseEstimate` falls back to the
+    /// assumed `cornerNoisePixels` until re-checks in the new frame measure it again: a detector's noise in pixels does
+    /// not simply scale with the pixel), the detector's edge memory, the ball finder's state.
+    private func processingFrameChanged(from old: CameraIntrinsics, to new: CameraIntrinsics) {
+        bump("frameSizeChanges")
+        let r = new.focal / old.focal
+        if r.isFinite && r > 0 {
+            let map = ImageMap(from: old, to: new)
+            func scaled(_ e: Estimate) -> Estimate {
+                var x = e
+                x.sigma = e.sigma / r; x.ncov = mscale(e.ncov, 1 / (r * r)); x.cov = mscale(e.cov, 1 / (r * r)); x.cost = e.cost * r * r
+                return x
+            }
+            func rescaled(_ m: Measurement) -> Measurement {
+                var x = m
+                x.est = scaled(m.est); x.alt = m.alt.map(scaled); x.quad = m.quad.map(map.forward); x.rms = m.rms * r
+                return x
+            }
+            hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled)
+            recent = recent.map(rescaled); partners = partners.map(rescaled)
+            sideEvidence = min(settings.sideEvidenceCap, sideEvidence * r * r)
+        }
+        noiseSamples = []
+        ballState = nil; ballLocator?.reset()
+        detector.forgetPixelMemory()
+        if !hist.isEmpty { refreshLock() }
     }
 
     private func onDiscontinuity(_ reason: String, _ events: inout [String]) {

@@ -118,12 +118,26 @@ public struct ReplayRunner {
 
             // The processing image, converted (as the app does) only when the tracker will run the detector on it: on a
             // tap or when a detection is due. Other frames get a blank, as in the app.
-            let detects = f.tapPoint != nil || tracker.detectionDue(at: f.timestamp)
+            let detects = tracker.detectionDue(at: f.timestamp, tap: f.tapPoint != nil)
             let wantImage = f.hasImage && ((detects && options.detections == .run) || (f.ballIntrinsics != nil && f.ballFile == nil)
                                            || (options.ballFromProcessingFrame && f.output == nil))
             let img: YCCImage? = wantImage ? try reader.image(for: f) : nil
             let frame = detects && options.detections == .run ? img?.colorFrame : nil
-            det.prepare(hasImage: frame != nil, recorded: f.output?.detections)
+
+            // The slab's full-resolution crop, as the phone cut it, handed to the tracker whatever outline it asks about
+            // (with the same inputs it asks about the phone's). Where the phone had one but its pixels were not kept, a
+            // stand-in carries the phone's crop and the detector gives the phone's outlines on this frame.
+            var slabDetail: SlabDetail? = nil, slabMissing = false
+            if let c = f.output?.slabCrop {
+                if let p = try reader.slab(for: f), let k = f.slabIntrinsics {
+                    slabDetail = SlabDetail(crop: c, luma: p, intrinsics: k)
+                } else {
+                    slabMissing = true
+                    slabDetail = SlabDetail(crop: c, luma: Plane(width: 1, height: 1), intrinsics: f.slabIntrinsics ?? f.intrinsics)
+                }
+            }
+            det.prepare(hasImage: frame != nil && !slabMissing, recorded: f.output?.detections, recordedRefined: f.output?.refinedDetections)
+            if slabMissing && frame != nil { det.missing = "no slab crop recorded" }
 
             // the ball finder's image
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
@@ -153,7 +167,8 @@ public struct ReplayRunner {
             let depth = try reader.depth(for: f)
             let tf = TrackerFrame(timestamp: f.timestamp, view: f.view, frame: frame ?? blank, depth: depth,
                                   depthIntrinsics: depth != nil ? f.depthIntrinsics : nil, ballImage: ballImage, ballIntrinsics: ballK,
-                                  tap: f.tapPoint, floorY: f.floorY ?? floorY, trackingNormal: f.trackingNormal)
+                                  tap: f.tapPoint, floorY: f.floorY ?? floorY, trackingNormal: f.trackingNormal,
+                                  slabDetail: slabDetail.map { d in { _ in d } })
             let out = tracker.process(tf)
             if let n = det.note { subs.append(n) }
             var diffs: [String] = []
@@ -248,30 +263,51 @@ public struct ReplayReport: CustomStringConvertible {
     }
 }
 
-/// The detector a replay hands its tracker: the real one on frames with an image, else the phone's recorded outlines.
+/// The detector a replay hands its tracker: the real one on frames with an image (and the slab crop, where the phone
+/// had one), else the phone's recorded outlines (and those of its refine pass).
 final class ReplaySlabDetector: SlabDetecting {
     var inner: SlabDetecting
     var useRecorded = false
     private var hasImage = false
     private var recorded: [DetectedOutline]? = nil
+    private var recordedRefined: [DetectedOutline]? = nil
+    /// why the real detector cannot run on this frame although it has an image (e.g. "no slab crop recorded")
+    var missing: String? = nil
     /// what it did on the current frame, when that was not running the real detector on the recorded image
     private(set) var note: String? = nil
 
     init(_ inner: SlabDetecting) { self.inner = inner }
 
-    func prepare(hasImage: Bool, recorded: [DetectedOutline]?) {
-        self.hasImage = hasImage; self.recorded = recorded; note = nil
+    func prepare(hasImage: Bool, recorded: [DetectedOutline]?, recordedRefined: [DetectedOutline]? = nil) {
+        self.hasImage = hasImage; self.recorded = recorded; self.recordedRefined = recordedRefined; note = nil; missing = nil
     }
 
     func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
-        if !useRecorded && hasImage { return inner.detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near) }
+        detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: nil)
+    }
+
+    func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?,
+                detail: DetailImage?) -> [DetectedOutline] {
+        if !useRecorded && hasImage {
+            return inner.detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: detail)
+        }
         if let r = recorded {
-            if !useRecorded { note = "detections: the phone's (no image recorded)" }
+            if !useRecorded { note = "detections: the phone's (\(missing ?? "no image recorded"))" }
             return r
         }
         note = "detections: none (the phone did not run the detector on this frame" + (hasImage || useRecorded ? ")" : ", and no image)")
         return []
     }
+
+    func refine(outline: [Vec2], frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
+                detail: DetailImage) -> [DetectedOutline] {
+        if !useRecorded && hasImage {
+            return inner.refine(outline: outline, frame: frame, intrinsics: intrinsics, spec: spec, down: down, detail: detail)
+        }
+        return recordedRefined ?? []
+    }
+
+    func forgetPixelMemory() { inner.forgetPixelMemory() }
 }
 
 /// The ball finder a replay hands its tracker: the real one, or the phone's recorded result for this frame.

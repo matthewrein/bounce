@@ -124,6 +124,17 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var thermalState: String?
     /// the last processed frame's timestamp (s, the camera's clock: the same as `recentEvents` and recordings)
     public var frameTime: Double?
+    /// how the camera's frames came and went: delivered, processed, skipped as late, missed by the camera, delivery
+    /// latency, processing time, detector runs per second (`FramePacer.report`)
+    public var framePacing: FramePacingReport?
+    /// how the last capture lock (focus, exposure, white balance) came about: settled, or at the timeout with what was
+    /// still adjusting (`CaptureLockGate`)
+    public var captureLockSettle: CaptureLockGate.Lock?
+    /// the last full-resolution crop the slab's edge steps read (full camera image pixels and shrink factor)
+    public var slabCrop: SlabImageCrop?
+    /// video format changes seen (`VideoFormatWatch`), and the last one
+    public var videoFormatChanges: Int?
+    public var videoFormatChange: VideoFormatWatch.Change?
 
     /// The frame and units of every field, as written into `frames`.
     public static let fieldFrames: [String: String] = [
@@ -145,6 +156,10 @@ public struct DiagnosticsReport: Codable, Equatable {
         "recentEvents": "prefixed with the camera clock (s), as frameTime and recordings",
         "floorY": "world y of the floor (m); floorBelowSlab: the lock's centre above it (m)",
         "lockSigmaDegrees": "how well the lock pins the normal (deg, 1 sigma); cornerNoisePixels: the detector's corner noise (processing px)",
+        "framePacing": "camera clock: frames received / processed / skipped late / missed by the camera; latencies and processing times in ms (p50, p95, max); detector runs per second; recent window and total",
+        "captureLockSettle": "camera clock (s): when the capture lock was armed and taken, how long it waited, whether it timed out and what was still adjusting",
+        "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
+        "videoFormatChange": "the last video format change (full image size, nominal fps) and the camera clock of its first frame",
     ]
 
     public init(build: String, device: String, system: String, time: String, settings: RecordingSettings, state: String, tracking: String,
@@ -171,7 +186,8 @@ public struct DiagnosticsReport: Codable, Equatable {
     /// the camera relative to the lock, the processing frame's size (from `view`, the processing frame's camera, and
     /// `lens`, the full image's), the ball crop's frame and the floor.
     public mutating func addTracker(_ tracker: SlabTracker, view: CameraView?, lens: CameraIntrinsics? = nil, output: TrackerOutput? = nil,
-                                    ballCrop: BallImageCrop? = nil, floorY: Double? = nil) {
+                                    ballCrop: BallImageCrop? = nil, floorY: Double? = nil, slabCrop: SlabImageCrop? = nil) {
+        self.slabCrop = slabCrop ?? output?.slabDetail?.crop
         imageSlab = tracker.imageSlab.map(Pose.init)
         depthFused = output?.depthFused
         history = tracker.detectionLog.suffix(15).map(DiagnosticsReport.rounded)

@@ -68,6 +68,10 @@ public struct RecordedOutput: Codable, Equatable {
     public var ball: [Double]?
     public var depthFused: Bool?
     public var lockUnconfirmed: Bool?
+    /// where the slab's full-resolution crop was cut on this frame (`TrackerOutput.slabDetail`), and the outlines of a
+    /// search's refine pass on it (`TrackerOutput.refinedDetections`); nil: none
+    public var slabCrop: SlabImageCrop?
+    public var refinedDetections: [DetectedOutline]?
 
     public init(state: TrackerState) { self.state = state }
 
@@ -83,6 +87,8 @@ public struct RecordedOutput: Codable, Equatable {
         ball = o.ball.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
         depthFused = o.depthFused ? true : nil
         lockUnconfirmed = o.lockUnconfirmed ? true : nil
+        slabCrop = o.slabDetail?.crop
+        refinedDetections = o.refinedDetections
     }
 
     /// the slab's tilt from level (degrees), while locked
@@ -150,6 +156,17 @@ public struct RecordedOutput: Codable, Equatable {
         if (phone.lockUnconfirmed ?? false) != (lockUnconfirmed ?? false) {
             d.append("lock unconfirmed: phone \(phone.lockUnconfirmed ?? false), replay \(lockUnconfirmed ?? false)")
         }
+        if (phone.slabCrop == nil) != (slabCrop == nil) {
+            d.append("slab crop: \(phone.slabCrop != nil ? "cut on the phone, not in the replay" : "cut in the replay, not on the phone")")
+        }
+        switch (phone.refinedDetections, refinedDetections) {
+        case (nil, nil): break
+        case (.some, nil), (nil, .some): d.append("refined: the refine pass ran \(phone.refinedDetections != nil ? "on the phone only" : "in the replay only")")
+        case let (.some(a), .some(b)):
+            let m = a.count == b.count
+                ? zip(a, b).map { RecordedOutput.maxDistance($0.quad.map { [$0.x, $0.y] }, $1.quad.map { [$0.x, $0.y] }) }.max() ?? 0 : .infinity
+            if m > tol.pixels { d.append("refined: outlines differ (phone \(a.count), replay \(b.count), corners up to \(f(m)) px apart)") }
+        }
         return d
     }
 
@@ -181,6 +198,8 @@ public struct FrameRecord {
     public var image: YCCImage?
     public var depth: DepthMap?
     public var ball: Plane?
+    /// the slab's full-resolution crop, on frames whose detector run used one (always kept: a replay needs it)
+    public var slab: Plane? = nil
 }
 
 /// What a recording keeps of each frame the app processes, so a replay runs exactly what the phone ran:
@@ -191,7 +210,8 @@ public struct FrameRecord {
 ///   - LiDAR depth: the whole map with an image or a detection (a re-lock checks other poses), else only the part
 ///     under the lock's top, which is all the tracker read (a few kB instead of 250 kB, so it can be kept on every
 ///     frame at the camera's rate);
-///   - for the ball finder, on every frame it ran on, what `ballPixels` says (its crop's place and intrinsics always).
+///   - for the ball finder, on every frame it ran on, what `ballPixels` says (its crop's place and intrinsics always);
+///   - the slab's full-resolution crop on every frame the detector used one (`TrackerOutput.slabDetail`).
 /// Use: before processing a frame, convert its image if the tracker needs it (`detectionDue`, a tap) or
 /// `needsImage(at:tracker:)`; after, `record` it and append the result (`RecordingWriter.append(record.frame, image:
 /// depth:ball:)`). If the disk falls behind, drop pixels rather than lines: a replay uses the phone's recorded
@@ -246,7 +266,7 @@ public struct RecordingCadence {
         if depth == nil { rf.depthIntrinsics = nil }
         if !ballRan { rf.ballIntrinsics = nil; rf.ballCrop = nil }
         let ball = ballRan && ballPixels == .crop ? tf.ballImage : nil
-        return FrameRecord(frame: rf, image: keepImage ? image : nil, depth: depth, ball: ball)
+        return FrameRecord(frame: rf, image: keepImage ? image : nil, depth: depth, ball: ball, slab: output.slabDetail?.luma)
     }
 }
 

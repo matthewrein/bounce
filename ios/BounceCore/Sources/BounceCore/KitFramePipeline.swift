@@ -16,6 +16,8 @@ import Foundation
 ///     camera image's own size, the app's integer block average, `FrameConversion.lumaCrop`);
 ///   - while locked, LiDAR depth when the frame has it (BDP2 read as a `DepthMap`, metres) with the video intrinsics
 ///     scaled by depth width / video width;
+///   - on frames the detector runs on, the slab's full-resolution crop when the tracker asks for one (`slabDetail`,
+///     planned on the phone's camera image like the ball's, its pixels from the video);
 ///   - `trackingNormal` from the frame's ARKit tracking state ("normal").
 ///
 /// How this differs from the phone, so a score is read for what it is:
@@ -28,7 +30,8 @@ import Foundation
 ///     shrink), with the intrinsics scaled per axis. A video smaller than the app's processing frame is used at its own
 ///     size. The ball finder's image has the phone's geometry (the same crop, size and intrinsics, so the ball is as
 ///     many pixels across as on the phone and the finder's pixel thresholds mean the same), but less detail: it is
-///     resampled from the video, which has a quarter fewer pixels across than the phone's 1920 px image.
+///     resampled from the video, which has a quarter fewer pixels across than the phone's 1920 px image. So is the
+///     slab's full-resolution crop: the phone's rectangle and intrinsics, the video's detail.
 ///   - **Frames.** Ordinary shots keep every other ARKit frame (30 fps), drops every frame (60 fps), while the app
 ///     processes every frame at 60 fps: the tracker's search, confirm and re-check moments fall on other frames.
 ///   - **Depth.** The kit keeps LiDAR depth on about one frame a second (millimetres), the app reads it on every locked
@@ -252,8 +255,9 @@ public struct KitFramePipeline {
            let b = ballImage(img, slab: s, video: video) {
             ballPlane = b.image; ballK = b.intrinsics; crop = b.crop
         }
-        let tf = TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: d?.0, depthIntrinsics: d?.1,
+        var tf = TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: d?.0, depthIntrinsics: d?.1,
                               ballImage: ballPlane, ballIntrinsics: ballK, tap: nil, floorY: nil, trackingNormal: f.tracking.isNormal)
+        if let img = image { tf.slabDetail = { q in self.slabDetail(img, outline: q, processing: pview, video: video) } }
         return Frame(tracker: tf, video: video, converted: converted, ballCrop: crop)
     }
 

@@ -78,6 +78,7 @@ extension TrackerSettings: Codable {
         .init("launchRule", \.launchRule),
         .init("recheckInterval", \.recheckInterval),
         .init("searchInterval", \.searchInterval),
+        .init("minDetectionGap", \.minDetectionGap),
         .init("confirmCount", \.confirmCount),
         .init("matchDistance", \.matchDistance),
         .init("matchAngleDegrees", \.matchAngleDegrees),

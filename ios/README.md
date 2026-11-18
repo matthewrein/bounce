@@ -117,7 +117,12 @@ opens them by itself.
   "Capture kit (developer tool)" below).
 - **Record session**: records what the app sees and does, so the session can be replayed on a computer (see below).
 - **Copy diagnostics**: copies a block of text (JSON) to the clipboard and shows it. Paste it into your message. It shows
-  the build, the lens, what the app found, and its counters: numbers and settings, no pictures.
+  the build, the lens, what the app found, and its counters: numbers and settings, no pictures. `framePacing` shows how
+  the camera's frames came and went, over the last 10 seconds and since the camera started: frames delivered,
+  processed, skipped because processing had fallen behind, and never delivered by the camera; how long frames took to
+  reach the app and to process (median, 95th percentile, largest); and how often the slab search, the lock's re-check
+  and the ball finder ran. `captureLockSettle` says how long the camera took to settle before its focus, exposure and
+  white balance were locked, and `slabCrop` where the last full-resolution close-up of the slab was cut.
 - **Reset tracking**: forgets the slab and looks for it again.
 - **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
@@ -138,9 +143,10 @@ opens them by itself.
 
 A recording holds every frame's camera position, lens and tracking state with what the app made of it (60 a second),
 the phone's motion, pictures at 480x360 (in black and white with colour detail) about 5-8 times a second, the ball
-finder's close-up of the slab and the space above it 10 times a second while the slab is locked, and LiDAR depth where
-the phone has it. That comes to about **25 MB per 10 seconds** while the app is still looking for the slab and roughly
-**60-120 MB per 10 seconds** once it is locked (most of it the ball finder's close-ups; a little more with LiDAR), and
+finder's close-up of the slab and the space above it 10 times a second while the slab is locked, the full-resolution
+close-up of the slab its edges were measured on (about 0.3 MB) on every frame the slab detector used one, and LiDAR
+depth where the phone has it. That comes to about **25-50 MB per 10 seconds** while the app is still looking for the
+slab and roughly **70-130 MB per 10 seconds** once it is locked (most of it the close-ups; a little more with LiDAR), and
 the zip is not compressed. So use **AirDrop**, **Save to Files** or iCloud Drive; Mail switches to Mail Drop above about
 20 MB. Once the zip is made, the app deletes the unzipped copy. A recording stops by itself at 1.5 GB (a few minutes),
 or if the phone runs out of space, and the pill (and Settings > Developer) says why.
@@ -214,7 +220,17 @@ phone** on the app's last screen removes it and its parts.
   formats. With `-demo YES -kitFast YES` the kit runs on the demo scene at a quarter of its timings (the UI tests).
 - Recordings are version 2 of the format in `BounceCore/Sources/BounceCore/Recording.swift`: a line for every frame the
   tracker processed, with what was done to the tracker and its result on the phone, so a replay can compare frame by
-  frame.
+  frame. Frames whose slab detection used the camera's full-resolution pixels keep that crop (`s<NNNNNN>.pgm`), and the
+  replay hands it back to the tracker; older recordings, without crops, replay as before.
+- The frame pipeline's rules are BounceCore types, tested on Linux, that ARController applies to every frame:
+  `FramePacer` (skip a frame that waited in the queue behind slow processing: older than ARKit's usual delivery
+  latency by more than a frame, never more than 0.25 s without processing one; its numbers are the diagnostics'
+  `framePacing`), the tracker's `minDetectionGap` (the slab detector runs at most 20 times a second whatever forces
+  it), `SlabImageCrop` (where to cut the full-resolution luma for the slab's edges: the processing frame at a quarter
+  size finds the slab, the camera's own pixels place its edges, `TrackerFrame.slabDetail`), `CaptureLockGate` (lock
+  focus, exposure and white balance once the camera has stopped adjusting them, at most 2.5 s after the slab locks)
+  and `VideoFormatWatch` (a new video format, as when the capture kit opens, is a world-frame discontinuity: the lock is
+  kept only unconfirmed until the slab is seen again in the new format).
 - To replay one of your recordings: unzip it and run
   `BOUNCE_RECORDING=/path/to/slab-....bouncerec swift test --filter ReplayTests` in `ios/BounceCore`.
 - CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It then repeats the owner's steps on a

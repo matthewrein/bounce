@@ -15,20 +15,43 @@ public struct NullSlabDetector: SlabDetecting {
 /// SlabFinder behind the tracker's detector interface. It keeps the edge refiner's memory (which edge of each side is
 /// the top face's, by position) from one call to the next while the tracker follows the slab, and forgets it when the
 /// tracker searches afresh.
+///
+/// With a finer image (`detect(..., detail:)`, the tracker's full-resolution crop around the slab) the finder refines
+/// the edges of the outlines the image covers on it (`SlabFinder.find(detail:)`); `refine` re-runs the finder on one
+/// outline a search found, following it as it follows a lock, with the finer image.
 public final class SlabFinderDetector: SlabDetecting {
     public var finder: SlabFinder
     private var choice: EdgeChoice?
-    /// A finer luma image of the same view (e.g. a full-resolution crop around the slab) for the next call's edges.
+    /// A finer luma image of the same view (e.g. a full-resolution crop around the slab) for the next call's edges, when
+    /// the call does not bring its own.
     public var detail: DetailImage?
 
     public init(finder: SlabFinder = SlabFinder()) { self.finder = finder }
 
     public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
-        let cands = finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: detail,
+        detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: nil)
+    }
+
+    public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?,
+                       detail d: DetailImage?) -> [DetectedOutline] {
+        let cands = finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: d ?? detail,
                                 choice: near != nil ? choice : nil)
         detail = nil
         if let c = cands.first { choice = c.choice } else if near == nil { choice = nil }
-        return cands.map { DetectedOutline(quad: $0.quad, score: $0.score, sideModes: $0.sides.map { $0.mode.rawValue }) }
+        return cands.map(SlabFinderDetector.outline)
+    }
+
+    public func refine(outline: [Vec2], frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
+                       detail: DetailImage) -> [DetectedOutline] {
+        let cands = finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, near: outline, detail: detail, choice: choice)
+        if let c = cands.first { choice = c.choice }
+        return cands.map(SlabFinderDetector.outline)
+    }
+
+    public func forgetPixelMemory() { choice = nil; detail = nil }
+
+    static func outline(_ c: SlabCandidate) -> DetectedOutline {
+        DetectedOutline(quad: c.quad, score: c.score, sideModes: c.sides.map { $0.mode.rawValue })
     }
 }
 
