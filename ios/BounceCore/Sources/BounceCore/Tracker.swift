@@ -498,6 +498,15 @@ public final class SlabTracker {
     /// The same for a frame without a tap.
     public func detectionDue(at t: Double) -> Bool { detectionDue(at: t, tap: false) }
 
+    /// Whether `process` will run the slab detector on the next frame (time t; `tap`: it brings a tap; `trackingNormal`:
+    /// its tracking state is normal), exactly: the detector is all that reads the frame's colour image
+    /// (`TrackerFrame.frame`), so a caller may hand a blank one otherwise (the app converts the colour frame only then).
+    /// (A tap, and a reset still pending from an earlier tap, only ever make a run due sooner, and `detectionDue` with
+    /// `tap` already counts them; `process` then runs the detector only if tracking is normal.)
+    public func detectorWillRun(at t: Double, tap: Bool, trackingNormal: Bool) -> Bool {
+        trackingNormal && detectionDue(at: t, tap: tap)
+    }
+
     /// a rectangular slab whose long side the evidence has not settled yet: re-check at the search rate to gather it
     private var sidesUndecided: Bool {
         settings.spec.sideU != settings.spec.sideV && settings.sideDecidedEvidence > 0 && abs(sideEvidence) < settings.sideDecidedEvidence

@@ -4,7 +4,7 @@ import Foundation
 /// One timed stage.
 struct StageResult: Codable {
     /// where it runs in the app: on the processing queue (what the app runs per frame), for comparison only (not what the
-    /// app runs), on the session recorder's own queue, or a cut candidate's prototype
+    /// app runs), on the session recorder's own queue, or the code a behaviour-preserving cut replaced
     enum Role: String, Codable { case app, comparison, recorderQueue = "recorder queue", candidate }
     /// convert, crop, slab, ball, lidar, kit, recording, fixtures, candidate
     var group: String
@@ -117,7 +117,7 @@ final class StageBench {
         }
         let img = s.processingImage()   // (cheap next to what follows)
         timeStage("convert", "YCCImage -> ColorFrame (ycc.colorFrame)", input: "480x360", .fast,
-             note: "the app converts it before tracker.process whenever it converted the image, though the tracker reads it only when its detector runs") {
+             note: "the app converts it only when the slab detector will run (SlabTracker.detectorWillRun): the detector is all that reads it") {
             _ in blackHole(img.colorFrame)
         }
         timeStage("convert", "mean luma, every 8th pixel (KitImageStats.meanLuma)", input: "1920x1440 luma, 8 buffers in turn", .fast,

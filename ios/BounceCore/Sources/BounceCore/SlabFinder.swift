@@ -455,29 +455,39 @@ final class FinderRun {
     /// The colour match (squared distance below t2) and the 3-4 chamfer distance of each matching pixel to the nearest
     /// non-matching one (or the search area's edge), in `dist`: a forward sweep, then a backward one.
     func chamfer(t2: Float, roi: ROI) {
-        let D = dist, C = cdist, w = self.w
+        // row pointers, and the neighbouring row's three values carried along in registers (the same minima in the same
+        // order: the same distances; this is the slab search's innermost loop, two passes per region and tolerance)
+        guard let D = dist.baseAddress, let C = cdist.baseAddress else { return }
+        let w = self.w
         let X0 = roi.x0, Y0 = roi.y0, X1 = roi.x1, Y1 = roi.y1
         for x in X0..<X1 { D[Y0 * w + x] = 0; D[(Y1 - 1) * w + x] = 0 }
-        for y in (Y0 + 1)..<(Y1 - 1) {
-            let row = y * w
-            D[row + X0] = 0; D[row + X1 - 1] = 0
-            var left = D[row + X0]
-            for x in (X0 + 1)..<(X1 - 1) {
-                let i = row + x
-                var d: UInt16 = 0
-                if C[i] < t2 { d = min(min(left, D[i - w]) &+ 3, min(D[i - w - 1], D[i - w + 1]) &+ 4) }
-                D[i] = d; left = d
+        var y = Y0 + 1
+        while y < Y1 - 1 {
+            let row = D + y * w, up = row - w, c = C + y * w
+            row[X0] = 0; row[X1 - 1] = 0
+            var left: UInt16 = 0, ul = up[X0], uc = up[X0 + 1]
+            var x = X0 + 1
+            while x < X1 - 1 {
+                let ur = up[x + 1]
+                let d: UInt16 = c[x] < t2 ? min(min(left, uc) &+ 3, min(ul, ur) &+ 4) : 0
+                row[x] = d; left = d; ul = uc; uc = ur
+                x += 1
             }
+            y += 1
         }
-        for y in stride(from: Y1 - 2, through: Y0 + 1, by: -1) {
-            let row = y * w
-            var right = D[row + X1 - 1]
-            for x in stride(from: X1 - 2, through: X0 + 1, by: -1) {
-                let i = row + x
-                var d = D[i]
-                if d != 0 { d = min(d, min(right, D[i + w]) &+ 3, min(D[i + w + 1], D[i + w - 1]) &+ 4); D[i] = d }
-                right = d
+        y = Y1 - 2
+        while y >= Y0 + 1 {
+            let row = D + y * w, dn = row + w
+            var right = row[X1 - 1], dr = dn[X1 - 1], dc = dn[X1 - 2]
+            var x = X1 - 2
+            while x >= X0 + 1 {
+                let dl = dn[x - 1]
+                var d = row[x]
+                if d != 0 { d = min(d, min(right, dc) &+ 3, min(dr, dl) &+ 4); row[x] = d }
+                right = d; dr = dc; dc = dl
+                x -= 1
             }
+            y -= 1
         }
     }
 

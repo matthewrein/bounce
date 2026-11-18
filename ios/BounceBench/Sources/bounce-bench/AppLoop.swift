@@ -237,8 +237,10 @@ final class AppLoop {
         let needImage = tracker.detectionDue(at: t, tap: false) || recImg
         let ycc: YCCImage? = needImage ? s.processingImage() : nil
         let tc = nowNs()
-        let cf = ycc?.colorFrame ?? AppLoop.blank
-        let colorMs = ycc != nil ? msSince(tc) : 0
+        // as the app: the colour frame only when the detector will run (an image converted for the recording alone is not)
+        let detects = tracker.detectorWillRun(at: t, tap: false, trackingNormal: true)
+        let cf = (detects ? ycc?.colorFrame : nil) ?? AppLoop.blank
+        let colorMs = ycc != nil && detects ? msSince(tc) : 0
         let convert = msSince(t0)
 
         let t1 = nowNs()

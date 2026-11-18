@@ -71,7 +71,7 @@ struct BenchReport: Codable {
             case .app: fl = FrameBudget.flag(r.stats.p95).isEmpty ? "" : "**\(FrameBudget.flag(r.stats.p95))**"
             case .comparison: fl = "(comparison)"
             case .recorderQueue: fl = "(own queue)"
-            case .candidate: fl = "(prototype)"
+            case .candidate: fl = "(before the cut)"
             }
             let role = r.role == .app ? "processing queue" : r.role.rawValue
             m.append("| \(r.group) | \(cell(r.name)) | \(cell(r.input)) | \(role) | \(f(r.stats.min, 3)) | \(f(r.stats.p50, 3)) | \(f(r.stats.p95, 3)) | \(f(r.stats.max, 3)) | \(r.stats.n) |"
@@ -290,8 +290,8 @@ struct BenchReport: Codable {
             m.append("")
         }
 
-        // candidate savings
-        m.append("#### Cut candidates measured here (behaviour-preserving prototypes)")
+        // the behaviour-preserving cuts
+        m.append("#### Behaviour-preserving cuts in BounceCore (the code before them, timed here next to BounceCore's own)")
         m.append("")
         func ref(_ c: StageResult) -> StageResult? {
             if c.name.hasPrefix("bi-planar") { return stages.first { $0.group == "convert" && $0.name.hasPrefix("bi-planar") && $0.role == .app } }
@@ -300,16 +300,20 @@ struct BenchReport: Codable {
             if c.name.hasPrefix("depth map -> BDP1") { return stages.first { $0.group == "recording" && $0.name.hasPrefix("whole depth map") } }
             return nil
         }
-        m.append("| cut | today min / p50 | prototype min / p50 | saved, min to min | check |")
+        m.append("| cut | before min / p50 | BounceCore now min / p50 | saved, min to min | check |")
         m.append("|---|--:|--:|--:|---|")
         for c in stages where c.role == .candidate {
             guard let r = ref(c) else { continue }
-            m.append("| \(cell(c.name)) | \(f(r.stats.min, 3)) / \(f(r.stats.p50, 3)) | \(f(c.stats.min, 3)) / \(f(c.stats.p50, 3)) | \(f(r.stats.min - c.stats.min, 3)) ms (\(f(100 * (1 - c.stats.min / r.stats.min), 0))%) | \(cell(c.note ?? "")) |")
+            m.append("| \(cell(c.name)) | \(f(c.stats.min, 3)) / \(f(c.stats.p50, 3)) | \(f(r.stats.min, 3)) / \(f(r.stats.p50, 3)) | \(f(c.stats.min - r.stats.min, 3)) ms (\(f(100 * (1 - r.stats.min / c.stats.min), 0))%) | \(cell(c.note ?? "")) |")
         }
-        if let rec = sessions.first(where: { $0.recording }), let pi = rec.kind(.plainImage), let cfp = pi.colorFrameP50 {
-            let perSecond = Double(pi.count) / max(rec.seconds, 1e-9)
-            m.append("| skip ycc.colorFrame unless a detection is due (the tracker reads it only in its detector) | \(f(cfp, 3)) (colorFrame p50 on a plain + image frame) | 0 | "
-                     + "\(f(cfp, 3)) ms on each of \(f(perSecond, 1)) frames/s while recording (\(f(cfp * perSecond, 1)) ms/s) | the same tracker input (it never reads the frame then) |")
+        if let rec = sessions.first(where: { $0.recording }) {
+            if let pi = rec.kind(.plainImage), let cfp = pi.colorFrameP50 {
+                let perSecond = Double(pi.count) / max(rec.seconds, 1e-9)
+                m.append("| skip ycc.colorFrame unless the detector will run | \(f(cfp, 3)) (colorFrame p50 on a plain + image frame) | - | "
+                         + "\(f(cfp, 3)) ms on each of \(f(perSecond, 1)) frames/s while recording (\(f(cfp * perSecond, 1)) ms/s) | NOT applied in this build |")
+            } else {
+                m.append("| skip ycc.colorFrame unless the detector will run (SlabTracker.detectorWillRun) | about 2.6 ms on each plain + image frame (2.6 a second while recording) | 0 | all of it | applied: the tracker reads the colour frame only in its detector (SpeedupIdentityTests) |")
+            }
         }
         m.append("")
 

@@ -675,7 +675,10 @@ final class ARController: NSObject, ARSessionDelegate {
         let recImg = recorder != nil && cadence.needsImage(at: t, tracker: tracker)
         let needImage = tracker.detectionDue(at: t, tap: tap != nil) || recImg
         let ycc: YCCImage? = needImage ? f.ycc() : nil
-        let colorFrame = ycc?.colorFrame ?? ColorFrame(gray: Plane(width: 2, height: 2))
+        // the colour frame (chroma upsampled) only when the slab detector will run: it is all that reads it (an image
+        // converted for the recording alone is recorded as it is)
+        let detects = tracker.detectorWillRun(at: t, tap: tap != nil, trackingNormal: f.trackingNormal)
+        let colorFrame = (detects ? ycc?.colorFrame : nil) ?? ColorFrame(gray: Plane(width: 2, height: 2))
 
         // LiDAR depth, when the slab is locked (or for the recording)
         var depth: (DepthMap, CameraIntrinsics)? = nil

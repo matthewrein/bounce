@@ -164,14 +164,21 @@ public struct Plane: Equatable {
     public func pgmData(blockSum k: Int) -> Data {
         precondition(k >= 1 && k <= 16)
         if k == 1 { return pgmData() }
-        let kk = Float(k * k), maxval = 255 * k * k
-        var d = Data("P5\n\(width) \(height)\n\(maxval)\n".utf8)
-        d.reserveCapacity(d.count + 2 * data.count)
-        for v in data {
-            let s = UInt16(clamp((v * kk).rounded(), 0, Float(maxval)))
-            d.append(UInt8(s >> 8)); d.append(UInt8(s & 255))
+        let kk = Float(k * k), maxval = 255 * k * k, mf = Float(maxval)
+        // the samples into a byte array first (appending to Data a byte at a time is what made this slow: it runs on the
+        // recorder's queue for every ball crop a session recording keeps)
+        var out = Array("P5\n\(width) \(height)\n\(maxval)\n".utf8)
+        let head = out.count
+        out.append(contentsOf: repeatElement(0, count: 2 * data.count))
+        out.withUnsafeMutableBufferPointer { o in
+            data.withUnsafeBufferPointer { d in
+                for i in 0..<d.count {
+                    let s = UInt16(clamp((d[i] * kk).rounded(), 0, mf))
+                    o[head + 2 * i] = UInt8(s >> 8); o[head + 2 * i + 1] = UInt8(s & 255)
+                }
+            }
         }
-        return d
+        return Data(out)
     }
 
     /// Whether every value is an average of k x k 8-bit pixels (so `pgmData(blockSum: k)` keeps it exactly).
