@@ -40,6 +40,64 @@ jobs:
           { cat synthetic-scores.md; echo; echo "#### With the truth-based ball finder (--truth-ball): the scorer's own check"; echo
             cat synthetic-scores-truth-ball.md; } >> "$GITHUB_STEP_SUMMARY"
 
+  # The hand-off of a real kit (ios/CaptureKit.md, "When the kit is uploaded"), dry-run from nothing: a synthetic kit
+  # written as the phone writes it (here at a quarter of the plan's timings; the full-length run is local), bundled as
+  # the app bundles it, committed to a local stand-in for the private captures repository the way GitHub's web upload
+  # does, then the one command (ios/tools/kit-uploaded.sh) after each upload: part of a kit, the rest, a second kit,
+  # the same parts again, a damaged part, a repository it cannot fetch. Nothing it makes is kept or committed.
+  handoff-linux:
+    name: Hand-off dry run (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    timeout-minutes: 45
+    steps:
+      # git before the checkout, so the checkout is a real clone (the scripts ask git for the repository's root)
+      - name: Tools the hand-off needs
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null
+          ffmpeg -hide_banner -version | head -1
+      - uses: actions/checkout@v4
+      - name: Dry run of the hand-off (quarter-length kit)
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ios/tools/handoff-dryrun.sh --short --dir "$RUNNER_TEMP/handoff" | tee handoff.log
+          { echo "### Hand-off dry run"; echo '```'; grep -E "^(===|  ok|  FAILED|dry run)" handoff.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The phone-sized kit's unit test, with ffmpeg
+        timeout-minutes: 20
+        run: swift test --package-path ios/BounceCore --filter KitHandoffTests
+
+  # The bundle the real app made in the Simulator (testCaptureKitFlow: a synthetic demo kit, built by the app's own code
+  # with Apple's DEFLATE) through the same path: a stand-in repository, then the one command. Never committed.
+  app-bundle-linux:
+    name: The app's bundle through the hand-off (Linux)
+    needs: app-macos
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    timeout-minutes: 30
+    steps:
+      - name: Tools the hand-off needs
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: demo-kit-bundle
+          path: ${{ runner.temp }}/demo-kit-bundle
+      - name: The one command on the app's bundle
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ls -l "$RUNNER_TEMP/demo-kit-bundle"
+          ios/tools/handoff-dryrun.sh --app-bundle "$RUNNER_TEMP/demo-kit-bundle" --dir "$RUNNER_TEMP/handoff" | tee app-bundle.log
+          { echo "### The app's bundle through the hand-off"; echo '```'; grep -E "^(===|  ok|  FAILED|dry run)" app-bundle.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   app-macos:
     name: App (${{ matrix.xcode }} Xcode)
     runs-on: macos-15
@@ -119,6 +177,7 @@ jobs:
           xcrun simctl io "$UDID" screenshot simulator.png
           xcrun simctl terminate "$UDID" "$BID" || true
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          echo "APP_BID=$BID" >> "$GITHUB_ENV"
 
       # The app's demo (a synthetic slab, as ARKit has no camera in the Simulator) driven by XCUITest: it must lock,
       # show the right tilt / apex / drop, re-lock after the slab is slid, copy diagnostics, record and share.
@@ -146,6 +205,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ $status -ne 0 ]; then echo "--- last lines of the test log ---"; tail -80 e2e.log; fi
           exit $status
+
+      # testCaptureKitFlow made a bundle with the app's own code (KitBundle with Apple's DEFLATE): its parts go to the
+      # app-bundle-linux job, which puts them through the hand-off. A synthetic demo kit, but never committed all the same.
+      - name: Copy the capture kit's bundle out of the Simulator
+        if: matrix.xcode == 'default' && always()
+        run: |
+          mkdir -p demo-kit-bundle
+          DATA=$(xcrun simctl get_app_container "$SIM_UDID" "$APP_BID" data) || { echo "no app container"; exit 0; }
+          find "$DATA/Documents/Kits" -type f -name '*-part*of*.zip' -exec cp {} demo-kit-bundle/ \; 2>/dev/null || true
+          ls -l demo-kit-bundle
+      - name: Keep the capture kit's bundle (for the app-bundle-linux job)
+        if: matrix.xcode == 'default' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-kit-bundle
+          path: demo-kit-bundle
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Keep the Simulator screenshot, the end-to-end video, log and results
         if: matrix.xcode == 'default' && always()

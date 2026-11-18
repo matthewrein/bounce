@@ -3,10 +3,12 @@
 # outside the repository and compares them with the previous run (ios/CaptureKit.md, "Scoring").
 #
 #   ios/tools/score-kits.sh [bundle parts (.zip) or folders holding them ...] [--kits DIR] [--scores DIR]
-#                           [--measured] [--fail-on-regression]
+#                           [--measured] [--fail-on-regression] [--no-synthetic]
 #
 # Bundle parts (<kitId>-partNofM.zip) are unzipped together into the kits folder (default ~/bounce-private/kits), so
-# all the parts of a kit rebuild it. Every kit in that folder is scored, then the synthetic kit. The scores are saved
+# all the parts of a kit rebuild it. Every kit in that folder is scored, then the synthetic kit (unless --no-synthetic:
+# it takes a few minutes, and it is the same for every kit; ios/tools/kit-uploaded.sh is the one command for a kit
+# the owner uploaded, and checks the parts before it calls this). The scores are saved
 # as ~/bounce-private/scores/<UTC date>-<git short hash>.json (-measured.json with --measured; --scores for another
 # folder), compared with the newest earlier file there scored the same way (with or without --measured), and printed
 # as Markdown. Kits are private: both folders must be outside this repository, and nothing here prints their paths.
@@ -22,13 +24,15 @@ scores="$private/scores"
 extra=()
 inputs=()
 measured=0
+synthetic=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --kits) [ $# -ge 2 ] || { echo "--kits needs a folder" >&2; exit 1; }; kits=$2; shift 2 ;;
     --scores) [ $# -ge 2 ] || { echo "--scores needs a folder" >&2; exit 1; }; scores=$2; shift 2 ;;
     --measured) extra+=("$1"); measured=1; shift ;;
     --fail-on-regression) extra+=("$1"); shift ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-synthetic) synthetic=0; shift ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 1 ;;
     *) inputs+=("$1"); shift ;;
   esac
@@ -90,8 +94,11 @@ else
 fi
 
 args=()
-if find "$kits" -mindepth 2 -maxdepth 2 -name kit.json | grep -q .; then args+=("$kits"); else echo "no kits in the kits folder: scoring the synthetic kit only" >&2; fi
-args+=(--synthetic --markdown --json "$out" --scorer "$hash")
+if find "$kits" -mindepth 2 -maxdepth 2 -name kit.json | grep -q .; then args+=("$kits")
+elif [ "$synthetic" = 1 ]; then echo "no kits in the kits folder: scoring the synthetic kit only" >&2
+else echo "no kits in the kits folder, and --no-synthetic: nothing to score" >&2; exit 1; fi
+if [ "$synthetic" = 1 ]; then args+=(--synthetic); fi
+args+=(--markdown --json "$out" --scorer "$hash")
 if [ -n "$previous" ]; then args+=(--compare "$previous"); echo "comparing with the scores of $(basename "$previous" .json)" >&2; fi
 status=0
 "$bin" "${args[@]}" ${extra[@]+"${extra[@]}"} || status=$?
