@@ -8,7 +8,8 @@ import Foundation
 /// Version 2 of the format: every frame the tracker processed gets a line (`RecordingCadence` decides which pixels go
 /// with it). Lines are never dropped: if the disk falls behind, a frame's image and ball picture are left out (a replay
 /// then uses the phone's results for it), never its line or depth. Any write error (a full disk, say), the size limit or
-/// the file limit stops the recording and is reported; nothing here crashes the app.
+/// the file limit stops the recording and is reported (and logged: `AppLog`, area "session-rec"); nothing here crashes the
+/// app.
 final class SessionRecorder {
     enum RecorderError: LocalizedError {
         case notRecording, writeFailed(String)
@@ -63,7 +64,9 @@ final class SessionRecorder {
         if firstError != nil { lock.unlock(); return }
         if pending >= SessionRecorder.maxPendingFrames {
             firstError = "the phone's storage fell too far behind"
+            let n = written
             lock.unlock()
+            AppLog.error("session-rec", "stopped writing after \(n) frames: the phone's storage fell too far behind")
             return
         }
         let behind = pending > SessionRecorder.behindFrames
@@ -77,16 +80,21 @@ final class SessionRecorder {
             let stopped = self.firstError != nil, full = self.files + newFiles > SessionRecorder.maxFiles
             if full && !stopped { self.firstError = "file limit reached" }
             self.lock.unlock()
+            if full && !stopped { AppLog.error("session-rec", "stopped writing: the file limit (\(SessionRecorder.maxFiles)) was reached") }
             var err: String? = nil
+            var cause: Error? = nil
             if !stopped && !full {
-                do { try self.writer.append(frame, image: img, depth: depth, ball: b) } catch { err = SessionRecorder.describe(error) }
+                do { try self.writer.append(frame, image: img, depth: depth, ball: b) } catch { err = SessionRecorder.describe(error); cause = error }
             }
             self.lock.lock()
             self.pending -= 1
+            var first = false
             if !stopped && !full {
-                if let e = err { if self.firstError == nil { self.firstError = e } } else { self.written += 1; self.files += newFiles }
+                if let e = err { if self.firstError == nil { self.firstError = e; first = true } } else { self.written += 1; self.files += newFiles }
             }
+            let n = self.written
             self.lock.unlock()
+            if first, let c = cause { AppLog.error("session-rec", "stopped writing after \(n) frames", c) }
         }
     }
 
@@ -100,11 +108,15 @@ final class SessionRecorder {
             let free = (try? zip.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage
             let size = try? ZipWriter.archiveSize(folder: self.folder)
+            self.lock.lock(); let frames = self.written, dropped = self.dropped, failure = self.firstError; self.lock.unlock()
             do {
                 try ZipWriter.zip(folder: self.folder, to: zip, availableBytes: free)
-                try? fm.removeItem(at: self.folder)
+                do { try fm.removeItem(at: self.folder) } catch { AppLog.warn("session-rec", "could not remove the unzipped recording", error) }
+                AppLog.info("session-rec", "recording saved: \(frames) frames, \(dropped) without pixels, \(size ?? -1) bytes zipped"
+                            + (failure.map { "; it had stopped early: " + $0 } ?? ""))
                 done(.success(zip), size)
             } catch {
+                AppLog.error("session-rec", "the recording (\(frames) frames) could not be zipped; its folder is kept", error)
                 try? fm.removeItem(at: zip)
                 done(.failure(RecorderError.writeFailed(SessionRecorder.describe(error))), nil)
             }

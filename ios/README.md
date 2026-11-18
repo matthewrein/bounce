@@ -124,6 +124,16 @@ opens them by itself.
   where it lands instead of the corner plane's. Both apply when Settings closes.
 - **Build** shows the build label (e.g. n7), and the line under it the tracker's live state, including its hints, which
   the main screen never shows.
+- **Pre-flight** (at the bottom, under "First run on a phone"): a 10-second check for the first run on a new phone. Tap
+  **Run**, point the phone at the room and hold it fairly still. It checks the camera permission, ARKit's tracking,
+  LiDAR depth, the motion sensors, whether there is room for a capture kit, and makes a 2-second test recording with
+  the kit's recorder, reads it back and deletes it. Each line then says **PASS**, **WARN**, **FAIL** or **N/A** (the
+  phone does not have it and the app does not need it, e.g. no LiDAR) with the reason. **Copy results** copies them to
+  paste into your message. It never runs by itself, keeps nothing and changes nothing.
+- **Copy log**: copies the app's log and shows its last lines. The app writes a line for every error in the capture
+  kit, the recorders, the camera and the motion sensors, and a short line for each kit step (started, kept, skipped,
+  stopped, bundle made), so if something fails on the phone, one Copy log tells us what happened. Words and numbers
+  only: no pictures, no file paths, no names. It keeps about the last 1 MB. **Clear log** empties it (after asking).
 
 ### Recording a session
 
@@ -166,7 +176,8 @@ above the slab, you can enter its height afterwards: stand a ruler on the slab r
 height of the ball's bottom, or leave it empty. You can tap **Quit** at any time: everything done so far is
 kept, and **Resume** carries on where you stopped. If it asks whether the slab has moved since you stopped, answer
 honestly; it then reads the slab's tilt again first. If the phone rings or you leave the app in the middle of a shot,
-that shot is not kept: tap **Start** to take it again.
+that shot is not kept: tap **Start** to take it again. Nothing that was already kept is ever lost that way: if a
+**Retry** fails or is cut short, **Keep earlier** keeps the take you already had.
 
 **Sending it, privately.** The kit shows your room, so it goes into a **private** GitHub repository, never this public
 one. You need only Safari on the iPhone.
@@ -212,6 +223,9 @@ phone** on the app's last screen removes it and its parts.
   `KitQuality`), `KitViews.swift` (the screens and diagrams) and `KitRecorder.swift` (video, frames, motion and depth for
   one shot); ARController hands it each frame while a kit shot records. `CaptureKit.md` describes the kit's design and
   formats. With `-demo YES -kitFast YES` the kit runs on the demo scene at a quarter of its timings (the UI tests).
+- The pre-flight is `PreflightRunner.swift` (it watches ARController through `setPreflight` and records its test clip
+  with `KitRecorder`) and `PreflightView.swift`; BounceCore's `Preflight.swift` judges what it saw. The developer log is
+  `AppLog.swift`, on BounceCore's `DevLog` (Application Support/Logs on the phone).
 - Recordings are version 2 of the format in `BounceCore/Sources/BounceCore/Recording.swift`: a line for every frame the
   tracker processed, with what was done to the tracker and its result on the phone, so a replay can compare frame by
   frame.

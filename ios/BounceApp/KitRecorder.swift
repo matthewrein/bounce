@@ -14,6 +14,10 @@ import Foundation
 /// when the encoder is ready for it, and only appended frames get a line. Ordinary shots keep 30 of ARKit's 60 frames a
 /// second (the first frame of each 1/30 s slot of time), high-frame-rate shots (drops) every frame. The recording stops by itself after the shot's seconds of
 /// frame time; `finish` then completes the video asynchronously and reports a `Result` on the recorder's queue.
+///
+/// Every failure (the encoder could not start or stopped, a frame could not be appended or written, a file could not be
+/// closed) goes to the developer log (`AppLog`, area "recorder") with the error's domain and code, and each recording
+/// ends with one summary line: frames kept, frames dropped and why, depth, motion, codec, size and bytes.
 final class KitRecorder {
     struct Result {
         var frames: Int = 0
@@ -44,6 +48,8 @@ final class KitRecorder {
     let keepEvery: Int
     let keptFps: Double
     let wantsDepth: Bool
+    /// what the log calls this recording ("shot p1-tilt", "pre-flight clip")
+    let label: String
 
     private let io = DispatchQueue(label: "slabbounce.kit.recorder", qos: .userInitiated)
     private let lock = NSLock()
@@ -67,6 +73,14 @@ final class KitRecorder {
     private var videoSize: (width: Int, height: Int)? = nil
     private var stopped = false
 
+    // shared (lock): frames lost before the encoder, for the summary
+    /// no buffer from the pool (the encoder still held a dozen)
+    private var poolMisses = 0
+    /// the picture could not be scaled into the buffer
+    private var fillFailures = 0
+    /// the pool could not be made at all
+    private var poolFailed = false
+
     // recorder queue
     private var writer: AVAssetWriter? = nil
     private var input: AVAssetWriterInput? = nil
@@ -78,20 +92,29 @@ final class KitRecorder {
     private var result = Result()
     private var lastPts: CMTime? = nil
     private var finishing = false
+    /// depth files that could not be written, motion samples that could not be (logged once each, then counted)
+    private var depthWriteFailures = 0
+    private var motionWriteFailures = 0
 
     /// `sourceFps`: the camera's frame rate (ARKit's kit format, usually 60; the demo's about 12).
-    init(folder: URL, video: Bool, duration: Double, highFrameRate: Bool, sourceFps: Double, wantsDepth: Bool,
+    init(folder: URL, video: Bool, duration: Double, highFrameRate: Bool, sourceFps: Double, wantsDepth: Bool, label: String = "recording",
          onStart: @escaping (Double) -> Void, completion: @escaping (Result) -> Void) throws {
         self.folder = folder
         recordsVideo = video
         self.duration = duration
-        keepEvery = highFrameRate ? 1 : max(1, Int((sourceFps / 30).rounded()))
+        keepEvery = PreflightStorageEstimate.keepEvery(sourceFps: sourceFps, highFrameRate: highFrameRate)
         keptFps = sourceFps / Double(keepEvery)
         self.wantsDepth = wantsDepth
+        self.label = label
         self.onStart = onStart
         self.completion = completion
-        motionFile = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.motion))
-        if video { framesFile = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.frames)) }
+        do {
+            motionFile = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.motion))
+            if video { framesFile = try KitJSONLWriter(url: folder.appendingPathComponent(KitClipFiles.frames)) }
+        } catch {
+            AppLog.error("recorder", "\(label): could not create its files", error)
+            throw error
+        }
         result.keptFps = video ? keptFps : 0
     }
 
@@ -130,13 +153,24 @@ final class KitRecorder {
             let h = Int((Double(full.height) * Double(w) / Double(full.width)).rounded()) / 2 * 2
             videoSize = (w, h)
             pool = KitRecorder.makePool(width: w, height: h)
+            if pool == nil {
+                lock.lock(); poolFailed = true; lock.unlock()
+                AppLog.error("recorder", "\(label): could not make the \(w)x\(h) pixel buffer pool (camera \(full.width)x\(full.height))")
+            }
         }
         guard let size = videoSize, let pool = pool else { return true }
         var pbOut: CVPixelBuffer? = nil
         let aux = [kCVPixelBufferPoolAllocationThresholdKey as String: 12] as CFDictionary
         // no buffer (the encoder holds a dozen already): this frame is not recorded
         guard CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool, aux, &pbOut) == kCVReturnSuccess,
-              let pb = pbOut, f.fillVideo(pb) else { return true }
+              let pb = pbOut else {
+            lock.lock(); poolMisses += 1; lock.unlock()
+            return true
+        }
+        guard f.fillVideo(pb) else {
+            lock.lock(); fillFailures += 1; lock.unlock()
+            return true
+        }
         if keepEvery > 1 { lastSlot = slot }
         if firstClock == nil { firstClock = f.clock }
 
@@ -194,6 +228,8 @@ final class KitRecorder {
                 try file.append(s)
                 self.result.motionSamples += 1
             } catch {
+                self.motionWriteFailures += 1
+                if self.motionWriteFailures == 1 { AppLog.error("recorder", "\(self.label): could not write a motion sample", error) }
                 if self.result.error == nil { self.result.error = "could not write the motion samples" }
             }
         }
@@ -210,7 +246,8 @@ final class KitRecorder {
     /// Throw the recording away: nothing more is written and nothing is reported. Blocks until the recorder's queue has
     /// stopped writing, so the caller can delete the attempt folder right after.
     func cancel() {
-        lock.lock(); cancelled = true; lock.unlock()
+        lock.lock(); let already = cancelled; cancelled = true; lock.unlock()
+        if !already { AppLog.info("recorder", "\(label): cancelled") }
         io.sync {
             // a video already being finished is left to finish (cancelling it then is not allowed); it reports nothing
             if !self.finishing, let w = self.writer, w.status == .writing { w.cancelWriting() }
@@ -226,16 +263,30 @@ final class KitRecorder {
         if let w = writer, let input = input, w.status == .writing {
             input.markAsFinished()
             w.finishWriting {
+                if w.status != .completed {
+                    AppLog.error("recorder", "\(self.label): the video could not be finished (writer status \(w.status.rawValue))"
+                                 + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
+                }
                 self.io.async { self.complete(videoOK: w.status == .completed) }
             }
         } else {
+            if let w = writer, w.status != .writing {
+                AppLog.error("recorder", "\(label): the video writer was not writing at the end (status \(w.status.rawValue))"
+                             + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
+            }
             complete(videoOK: false)
         }
     }
 
     private func complete(videoOK: Bool) {
-        do { try framesFile?.close() } catch { if result.error == nil { result.error = "could not write the frame list" } }
-        do { try motionFile?.close() } catch { if result.error == nil { result.error = "could not write the motion samples" } }
+        do { try framesFile?.close() } catch {
+            AppLog.error("recorder", "\(label): could not close the frame list", error)
+            if result.error == nil { result.error = "could not write the frame list" }
+        }
+        do { try motionFile?.close() } catch {
+            AppLog.error("recorder", "\(label): could not close the motion samples", error)
+            if result.error == nil { result.error = "could not write the motion samples" }
+        }
         guard !isCancelled else { return }
         if recordsVideo {
             if result.frames == 0 {
@@ -248,7 +299,35 @@ final class KitRecorder {
                                             frameCount: result.frames, fileBytes: bytes)
             }
         }
+        logSummary()
         completion(result)
+    }
+
+    /// One line at the end of a recording: what was kept, what was lost and why (recorder queue).
+    private func logSummary() {
+        lock.lock(); let misses = poolMisses, fills = fillFailures, noPool = poolFailed; lock.unlock()
+        var parts: [String] = []
+        if recordsVideo {
+            let normal = result.stats.filter { $0.trackingNormal }.count
+            parts.append(String(format: "%d frames at %.1f a second kept", result.frames, keptFps))
+            parts.append("tracking normal on \(normal) of \(result.stats.count)")
+            parts.append("dropped: \(result.notAppended) encoder not ready, \(misses) no buffer, \(fills) not scaled" + (noPool ? ", no pool" : ""))
+            if wantsDepth { parts.append("depth \(result.depthFrames)" + (depthWriteFailures > 0 ? " (\(depthWriteFailures) not written)" : "")) }
+            if let v = result.video {
+                parts.append("\(v.codec) \(v.width)x\(v.height), \(v.fileBytes) bytes")
+            } else {
+                parts.append("codec \(codec), no finished video")
+            }
+        }
+        parts.append("motion \(result.motionSamples)" + (motionWriteFailures > 0 ? " (\(motionWriteFailures) not written)" : ""))
+        let line = "\(label) done: " + parts.joined(separator: "; ")
+        if let e = result.error {
+            AppLog.error("recorder", line + "; failed: " + e)
+        } else if result.notAppended + misses + fills > 0 || depthWriteFailures + motionWriteFailures > 0 {
+            AppLog.warn("recorder", line)
+        } else {
+            AppLog.info("recorder", line)
+        }
     }
 
     // MARK: writing (recorder queue)
@@ -259,6 +338,8 @@ final class KitRecorder {
         guard let w = writer, let input = input, let adaptor = adaptor else { return }
         guard w.status == .writing else {
             result.error = "the video encoder stopped" + KitRecorder.code(w.error)
+            AppLog.error("recorder", "\(label): the video writer stopped (status \(w.status.rawValue)) after \(result.frames) frames"
+                         + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
             return
         }
         guard input.isReadyForMoreMediaData else { result.notAppended += 1; return }
@@ -267,6 +348,8 @@ final class KitRecorder {
         if let last = lastPts, CMTimeCompare(pts, last) <= 0 { result.notAppended += 1; return }
         guard adaptor.append(pb, withPresentationTime: pts) else {
             result.error = "the video encoder stopped" + KitRecorder.code(w.error)
+            AppLog.error("recorder", "\(label): a frame could not be appended (writer status \(w.status.rawValue)) after \(result.frames) frames"
+                         + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
             return
         }
         lastPts = pts
@@ -286,12 +369,16 @@ final class KitRecorder {
                 try KitDepth(depthMap: d).data.write(to: folderURL.appendingPathComponent(name))
                 line.depthFile = name
                 result.depthFrames += 1
-            } catch {}
+            } catch {
+                depthWriteFailures += 1
+                if depthWriteFailures == 1 { AppLog.warn("recorder", "\(label): a depth file could not be written (the frame keeps its line)", error) }
+            }
         }
         do {
             try framesFile?.append(line)
         } catch {
             result.error = "could not write the frame list"
+            AppLog.error("recorder", "\(label): could not write the frame list at frame \(result.frames)", error)
             return
         }
         result.stats.append(stat)
@@ -312,8 +399,17 @@ final class KitRecorder {
     private func setUpWriter(width: Int, height: Int) {
         let url = folder.appendingPathComponent(KitClipFiles.video)
         for type in KitRecorder.codecs {
-            try? FileManager.default.removeItem(at: url)
-            guard let w = try? AVAssetWriter(outputURL: url, fileType: .mp4) else { continue }
+            let name = type == .hevc ? "HEVC" : "H.264"
+            if FileManager.default.fileExists(atPath: url.path) {
+                do { try FileManager.default.removeItem(at: url) } catch {
+                    AppLog.warn("recorder", "\(label): could not remove an earlier video file", error)
+                }
+            }
+            let w: AVAssetWriter
+            do { w = try AVAssetWriter(outputURL: url, fileType: .mp4) } catch {
+                AppLog.error("recorder", "\(label): \(name): the video writer could not be made", error)
+                continue
+            }
             let rate = KitRecorder.bitrate(width: width, height: height, fps: keptFps, hevc: type == .hevc)
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: rate,
@@ -327,7 +423,10 @@ final class KitRecorder {
                 AVVideoHeightKey: height,
                 AVVideoCompressionPropertiesKey: compression,
             ]
-            guard w.canApply(outputSettings: settings, forMediaType: .video) else { continue }
+            guard w.canApply(outputSettings: settings, forMediaType: .video) else {
+                AppLog.warn("recorder", "\(label): \(name) cannot encode \(width)x\(height) at \(rate) bit/s here")
+                continue
+            }
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
             input.expectsMediaDataInRealTime = true
             let attrs: [String: Any] = [
@@ -336,17 +435,26 @@ final class KitRecorder {
                 kCVPixelBufferHeightKey as String: height,
             ]
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: attrs)
-            guard w.canAdd(input) else { continue }
+            guard w.canAdd(input) else {
+                AppLog.warn("recorder", "\(label): \(name): the video writer refused its input")
+                continue
+            }
             w.add(input)
-            guard w.startWriting() else { continue }
+            guard w.startWriting() else {
+                AppLog.error("recorder", "\(label): \(name): the video writer would not start (status \(w.status.rawValue))"
+                             + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
+                continue
+            }
             w.startSession(atSourceTime: .zero)
             writer = w; self.input = input; self.adaptor = adaptor
             codec = type == .hevc ? "hevc" : "h264"
             bitrate = rate
+            AppLog.info("recorder", "\(label): \(name) \(width)x\(height) at \(rate) bit/s, \(String(format: "%.1f", keptFps)) frames a second kept")
             return
         }
         try? FileManager.default.removeItem(at: url)
         result.error = "the phone could not start the video encoder"
+        AppLog.error("recorder", "\(label): no video encoder could be started for \(width)x\(height)")
     }
 
     // MARK: helpers
@@ -354,9 +462,8 @@ final class KitRecorder {
     /// Target bitrate (bits/s): HEVC about 3.5 Mbit/s at 30 fps and 6 Mbit/s at 60 fps for 1440x1080, in proportion to
     /// the pixels for other sizes; H.264 1.5 times as much.
     static func bitrate(width: Int, height: Int, fps: Double, hevc: Bool) -> Int {
-        let base = fps > 45 ? 6_000_000.0 : 3_500_000.0
-        let pixels = Double(width * height) / Double(1440 * 1080)
-        return Int(max(300_000, base * pixels * (hevc ? 1 : 1.5)))
+        // one rule, shared with the pre-flight's storage estimate
+        PreflightStorageEstimate.bitrate(width: width, height: height, fps: fps, hevc: hevc)
     }
 
     /// The pool the camera pictures are scaled into: bi-planar 4:2:0, full range (as ARKit's), IOSurface-backed.
@@ -369,7 +476,11 @@ final class KitRecorder {
         ]
         let poolAttrs: [String: Any] = [kCVPixelBufferPoolMinimumBufferCountKey as String: 4]
         var pool: CVPixelBufferPool? = nil
-        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary, attrs as CFDictionary, &pool) == kCVReturnSuccess else { return nil }
+        let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary, attrs as CFDictionary, &pool)
+        guard status == kCVReturnSuccess else {
+            AppLog.error("recorder", "CVPixelBufferPoolCreate failed (\(status)) for \(width)x\(height)")
+            return nil
+        }
         return pool
     }
 
