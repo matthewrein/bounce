@@ -167,8 +167,9 @@ struct SessionResult: Codable {
     }
 }
 
-/// The time to lock with the frame pacer deciding which frames the tracker sees (slow search frames make the frames
-/// behind them late, and those are skipped), at a given speed relative to the CI Mac.
+/// The time to lock with the app's pipeline deciding which frames the tracker sees (the frames that come while a slow
+/// search runs wait in the hand-off, the latest replacing the others, which are dropped), at a given speed relative to
+/// the CI Mac.
 struct LockTimeResult: Codable {
     var scene: String
     /// time multiplier on this host's (measured) frame times: x1 = the CI Mac (or this host scaled to it)
@@ -179,7 +180,7 @@ struct LockTimeResult: Codable {
     /// camera time to lock (s): median and max over the runs that locked
     var medianSeconds: Double?
     var maxSeconds: Double?
-    /// per run: frames processed and skipped before the lock (means)
+    /// per run: frames processed and dropped before the lock (means)
     var processed: Double
     var skipped: Double
 }
@@ -231,7 +232,7 @@ final class AppLoop {
         let s = source(k), t = Double(k) / 60
         k += 1
         let t0 = nowNs()
-        _ = glue.arrived(t: t, width: s.width, height: s.height)
+        glue.arrived(t: t, width: s.width, height: s.height)
         let recImg = recording.map { $0.needsImage(at: t, tracker: tracker) } ?? false
         let needImage = tracker.detectionDue(at: t, tap: false) || recImg
         let ycc: YCCImage? = needImage ? s.processingImage() : nil
@@ -325,30 +326,42 @@ final class AppLoop {
         return (out, nil)
     }
 
-    /// The same with the app's frame pacer deciding which frames are processed: frame i is captured at i/60, reaches the
-    /// serial queue 30 ms later, waits while earlier frames are handled (each taking its measured time x `scale`), and is
-    /// skipped if late. The tracker sees only the processed frames (at their own capture times). The time to lock runs
-    /// to the end of the locking frame's handling.
+    /// The same with the app's pipeline deciding which frames are processed: frame i is captured at i/60 and reaches
+    /// ARKit's delegate 30 ms later, which hands it to processing through BounceCore's FrameHandoff (taken at once if
+    /// processing is idle, else it waits, replacing any frame already waiting; when a frame's processing ends, each
+    /// taking its measured time x `scale`, the waiting frame is taken). The tracker sees only the processed frames (at
+    /// their own capture times); the dropped ones are skipped. The time to lock runs to the end of the locking frame's
+    /// handling.
     func acquirePaced(maxSeconds: Double, scale: Double, latency: Double = 0.03) -> (seconds: Double?, processed: Int, skipped: Int) {
-        var pacer = FramePacer()
+        let h = FrameHandoff<Int>()
         let dt = 1.0 / 60, start = k
-        var free = -Double.infinity, processed = 0, skipped = 0
-        while Double(k - start) * dt < maxSeconds {
-            let c = Double(k) * dt
-            let at = max(c + latency, free)
-            if pacer.frameArrived(captureTime: c, now: at, nominalInterval: dt) == .skip {
-                skip(); skipped += 1
-                free = at + 2e-5
-                pacer.skippedFrameHandled(seconds: 2e-5)
-                continue
-            }
+        var processed = 0, skipped = 0
+        var busyUntil: Double? = nil, current = 0, out: TrackerOutput? = nil
+        var i = start
+        /// processes frame j from time t (the frames before it that were never processed are skipped); the lock time if
+        /// it locked
+        func run(_ j: Int, at t: Double) -> Double? {
+            while k < j { skip(); skipped += 1 }
             let (smp, o) = step()
             processed += 1
-            let secs = smp.total * scale / 1000
-            free = at + secs
-            pacer.frameProcessed(captureTime: c, seconds: secs, output: o)
+            let end = t + smp.total * scale / 1000
+            current = j; busyUntil = end; out = o
             // locked when the locking frame's handling ends (ARKit's own delivery delay left out)
-            if o.state == .locked { return (free - latency - Double(start) * dt, processed, skipped) }
+            return o.state == .locked ? end - latency - Double(start) * dt : nil
+        }
+        while Double(i - start) * dt < maxSeconds {
+            let c = Double(i) * dt, arrive = c + latency
+            if let b = busyUntil, b <= arrive, let o = out {
+                busyUntil = nil
+                if let j = h.finished(captureTime: Double(current) * dt, seconds: 0, now: b, output: o), let lt = run(j, at: b) {
+                    return (lt, processed, skipped)
+                }
+                continue
+            }
+            if let j = h.deliver(i, captureTime: c, now: arrive, nominalInterval: dt), let lt = run(j, at: arrive) {
+                return (lt, processed, skipped)
+            }
+            i += 1
         }
         return (nil, processed, skipped)
     }

@@ -8,7 +8,7 @@ import QuartzCore
 import UIKit
 
 /// What the pre-flight watches while it runs, handed to ARController (`setPreflight`): every camera frame's tracking state
-/// and depth (processing queue), every device-motion sample (motion queue), and those samples again for the recorder's
+/// and depth (ARKit's delegate queue), every device-motion sample (motion queue), and those samples again for the recorder's
 /// test clip. Thread-safe.
 final class PreflightTap {
     let arkit: PreflightARKitMeter

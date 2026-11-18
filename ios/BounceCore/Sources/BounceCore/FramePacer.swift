@@ -42,6 +42,11 @@ import Foundation
 ///
 /// Both clocks are the system's uptime clock (ARFrame.timestamp and CACurrentMediaTime are). Pure: it reads no clock
 /// itself, so tests drive it with made-up times.
+///
+/// The app's camera frames no longer queue behind processing: they go through a hand-off (`FrameHandoff`) that keeps
+/// at most one frame waiting (the latest), which tells the pacer what happened instead of asking it to decide
+/// (`frameDelivered`, `frameDropped`, `frameStarted`, then `frameProcessed`). The skip rule above (`frameArrived`) is
+/// for frames that do queue (the demo's timer, the bench's model of the old pipeline).
 public struct FramePacer {
     /// The skip rule's constants.
     public struct Rule: Codable, Equatable {
@@ -107,8 +112,16 @@ public struct FramePacer {
     private var lastSkipped = false
 
     // statistics
-    private struct Arrival { var c: Double; var ageMs: Double; var skipped: Bool; var forced: Bool; var lateIdle: Bool }
+    private struct Arrival {
+        var c: Double; var ageMs: Double; var skipped: Bool; var forced: Bool; var lateIdle: Bool
+        /// the hand-off: replaced while it waited (processing was busy), and the frames the app held once it was handed
+        /// over (nil: not through the hand-off)
+        var dropped = false
+        var held: Int? = nil
+    }
     private struct Processed { var c: Double; var ms: Double; var overran: Bool; var search: Bool; var recheck: Bool; var ball: Bool }
+    /// how long frames taken from the hand-off had waited there (capture time, ms)
+    private var waits: [(c: Double, ms: Double)] = []
     private struct Gap { var c: Double; var missing: Int }
     private struct Pause { var c: Double; var seconds: Double }
     private var arrivals: [Arrival] = []
@@ -128,6 +141,10 @@ public struct FramePacer {
         /// processing times by what ran (`ProcessingKind`)
         var byKind = [Histogram](repeating: Histogram(), count: ProcessingKind.allCases.count)
         var longestUnprocessedMs = 0.0, longestSkipRun = 0
+        /// the hand-off: frames dropped because processing was busy, the most frames held, the waits (ms)
+        var droppedBusy = 0
+        var maxHeld: Int?
+        var wait = Histogram()
     }
 
     /// What ran on a processed frame, for the processing times by kind: the slab search, a re-check of the lock, the ball
@@ -154,39 +171,13 @@ public struct FramePacer {
     /// 1 / its frames per second). A frame skipped needs nothing else; a frame processed should be followed by
     /// `frameProcessed`.
     public mutating func frameArrived(captureTime c: Double, now: Double, nominalInterval: Double) -> Decision {
-        let nominal = nominalInterval.isFinite && nominalInterval > 0 ? nominalInterval : (self.nominalInterval ?? 1.0 / 60)
-        self.nominalInterval = nominal
+        let nominal = noteNominal(nominalInterval)
         let age = now - c
-        // a clock that went backwards (a new session): start the estimate again
-        if let last = lastCapture, c <= last - 1e-9 {
-            window = []; recentDeltas = []; lastProcessedCapture = nil; handlerFreeAt = nil; idleBaseline = nil
-            pausedSinceProcessed = 0; pauseExpectedAt = nil
-        }
+        restartIfClockWentBack(c)
         // the frame did not wait in the queue: the handler had been free for a while when it came
         let idleAfter = max(rule.idleSeconds, rule.idleIntervals * effectiveInterval)
         let idle = handlerFreeAt.map { now - $0 >= idleAfter } ?? true
-        // a pause (interrupted, or re-run with another format), or frames the camera never delivered
-        if let last = lastCapture, c > last {
-            let d = c - last
-            let expected = pauseExpectedAt.map { c >= $0 && c - $0 <= rule.pauseWindowSeconds } ?? false
-            if d > rule.pauseSeconds || (expected && d > rule.gapIntervals * nominal) {
-                total.pauses += 1; total.pausedSeconds += d
-                pauses.append(Pause(c: c, seconds: d))
-                pausedSinceProcessed += d
-                if expected { pauseExpectedAt = nil }
-            } else {
-                recentDeltas.append(d)
-                if recentDeltas.count > 31 { recentDeltas.removeFirst(recentDeltas.count - 31) }
-                if rule.countsCameraGaps && d > rule.gapIntervals * nominal {
-                    let missing = max(1, Int((d / nominal).rounded()) - 1)
-                    total.gaps += 1; total.missing += missing
-                    gaps.append(Gap(c: c, missing: missing))
-                }
-            }
-        }
-        if let e = pauseExpectedAt, c - e > rule.pauseWindowSeconds { pauseExpectedAt = nil }
-        lastCapture = c
-        window.removeAll { $0.c < c - rule.baselineSeconds }
+        noteStep(to: c, nominal: nominal)
 
         // the rule
         var late = false
@@ -212,13 +203,7 @@ public struct FramePacer {
         lastSkipped = skip
 
         // statistics
-        if total.first == nil { total.first = c }
-        total.last = c
-        total.received += 1
-        let ageMs = age * 1000
-        if ageMs.isFinite { total.latency.add(ageMs) }
-        arrivals.append(Arrival(c: c, ageMs: ageMs, skipped: skip, forced: forced, lateIdle: lateIdle))
-        if lateIdle { total.lateIdle += 1 }
+        countArrival(c, age: age, skipped: skip, forced: forced, lateIdle: lateIdle, held: nil)
         if skip {
             total.skipped += 1
             consecutiveSkips += 1
@@ -226,16 +211,117 @@ public struct FramePacer {
         } else {
             if forced { total.forced += 1 }
             consecutiveSkips = 0
-            if let p = lastProcessedCapture, c > p {
-                let ms = max(0, c - p - pausedSinceProcessed) * 1000
-                unprocessed.append((c, ms))
-                total.longestUnprocessedMs = max(total.longestUnprocessedMs, ms)
-            }
-            lastProcessedCapture = c
-            pausedSinceProcessed = 0
+            noteProcessingStarts(c)
         }
         trim(c)
         return skip ? .skip : .process
+    }
+
+    /// The frame interval asked for, or the last one when it is not usable.
+    private mutating func noteNominal(_ nominalInterval: Double) -> Double {
+        let nominal = nominalInterval.isFinite && nominalInterval > 0 ? nominalInterval : (self.nominalInterval ?? 1.0 / 60)
+        self.nominalInterval = nominal
+        return nominal
+    }
+
+    /// A clock that went backwards (a new session): the estimate starts again.
+    private mutating func restartIfClockWentBack(_ c: Double) {
+        if let last = lastCapture, c <= last - 1e-9 {
+            window = []; recentDeltas = []; lastProcessedCapture = nil; handlerFreeAt = nil; idleBaseline = nil
+            pausedSinceProcessed = 0; pauseExpectedAt = nil
+        }
+    }
+
+    /// The step from the last frame's capture time to this one's: a pause (interrupted, or re-run with another format),
+    /// frames the camera never delivered, or an ordinary step; then the baseline's window moves on.
+    private mutating func noteStep(to c: Double, nominal: Double) {
+        if let last = lastCapture, c > last {
+            let d = c - last
+            let expected = pauseExpectedAt.map { c >= $0 && c - $0 <= rule.pauseWindowSeconds } ?? false
+            if d > rule.pauseSeconds || (expected && d > rule.gapIntervals * nominal) {
+                total.pauses += 1; total.pausedSeconds += d
+                pauses.append(Pause(c: c, seconds: d))
+                pausedSinceProcessed += d
+                if expected { pauseExpectedAt = nil }
+            } else {
+                recentDeltas.append(d)
+                if recentDeltas.count > 31 { recentDeltas.removeFirst(recentDeltas.count - 31) }
+                if rule.countsCameraGaps && d > rule.gapIntervals * nominal {
+                    let missing = max(1, Int((d / nominal).rounded()) - 1)
+                    total.gaps += 1; total.missing += missing
+                    gaps.append(Gap(c: c, missing: missing))
+                }
+            }
+        }
+        if let e = pauseExpectedAt, c - e > rule.pauseWindowSeconds { pauseExpectedAt = nil }
+        lastCapture = c
+        window.removeAll { $0.c < c - rule.baselineSeconds }
+    }
+
+    /// A delivered frame in the statistics.
+    private mutating func countArrival(_ c: Double, age: Double, skipped: Bool, forced: Bool, lateIdle: Bool, held: Int?) {
+        if total.first == nil { total.first = c }
+        total.last = c
+        total.received += 1
+        let ageMs = age * 1000
+        if ageMs.isFinite { total.latency.add(ageMs) }
+        arrivals.append(Arrival(c: c, ageMs: ageMs, skipped: skipped, forced: forced, lateIdle: lateIdle, held: held))
+        if lateIdle { total.lateIdle += 1 }
+    }
+
+    /// A frame's processing starts: the stretch since the last processed frame (pauses left out).
+    private mutating func noteProcessingStarts(_ c: Double) {
+        if let p = lastProcessedCapture, c > p {
+            let ms = max(0, c - p - pausedSinceProcessed) * 1000
+            unprocessed.append((c, ms))
+            total.longestUnprocessedMs = max(total.longestUnprocessedMs, ms)
+        }
+        lastProcessedCapture = c
+        pausedSinceProcessed = 0
+    }
+
+    // MARK: the latest-frame hand-off (FrameHandoff)
+
+    /// A frame ARKit delivered to the hand-off (`FrameHandoff`), every one, processed or not: counted (received, latency
+    /// at delivery, gaps, pauses), and judged late or not against the baseline as an idle handler's frame is (the
+    /// delegate's queue does only cheap work, so its frames do not wait: a late one is ARKit's own delay,
+    /// `framesLateButIdle`). `held`: the camera frames the app holds once this one is handed over (the one being
+    /// processed and the one waiting: at most 2). Nothing is skipped here: the hand-off keeps the latest frame and drops
+    /// the one it replaces (`frameDropped`).
+    public mutating func frameDelivered(captureTime c: Double, now: Double, nominalInterval: Double, held: Int) {
+        let nominal = noteNominal(nominalInterval)
+        let age = now - c
+        restartIfClockWentBack(c)
+        noteStep(to: c, nominal: nominal)
+        var late = false
+        if age.isFinite { window.append((c, age, true, false)) }
+        let idleAges = window.map { $0.age }
+        if !idleAges.isEmpty { idleBaseline = FramePacer.percentile(idleAges, rule.baselinePercentile) }
+        if window.count >= max(1, rule.minBaselineFrames), age.isFinite, let base = idleBaseline {
+            let threshold = base + rule.lateIntervals * effectiveInterval
+            lastBaseline = base; lastThreshold = threshold
+            late = age > threshold
+        }
+        countArrival(c, age: age, skipped: false, forced: false, lateIdle: late, held: held)
+        total.maxHeld = max(total.maxHeld ?? 0, held)
+        trim(c)
+    }
+
+    /// The hand-off dropped the frame captured at `c`: it waited while processing was busy with an earlier one, and a
+    /// newer frame replaced it (it was released at once, never processed).
+    public mutating func frameDropped(captureTime c: Double) {
+        total.droppedBusy += 1
+        if let i = arrivals.lastIndex(where: { abs($0.c - c) < 1e-9 }) { arrivals[i].dropped = true }
+    }
+
+    /// The hand-off gave the frame captured at `c` to processing, after it had waited `waited` seconds there (0: it
+    /// arrived while processing was idle). `frameProcessed` follows once its handling ends.
+    public mutating func frameStarted(captureTime c: Double, waited: Double) {
+        noteProcessingStarts(c)
+        let ms = max(0, waited) * 1000
+        if ms.isFinite { waits.append((c, ms)); total.wait.add(ms) }
+        if let i = window.lastIndex(where: { abs($0.c - c) < 1e-9 }) { window[i].processed = true }
+        trim(lastCapture ?? c)
     }
 
     /// A frame was processed: how long it took (s), and which detectors ran on it.
@@ -287,6 +373,7 @@ public struct FramePacer {
         gaps.removeAll { $0.c < from }
         pauses.removeAll { $0.c < from }
         unprocessed.removeAll { $0.c < from }
+        waits.removeAll { $0.c < from }
     }
 
     /// The numbers so far, rounded (`FramePacingReport`).
@@ -322,7 +409,9 @@ public struct FramePacer {
             ballSearches: processed.filter { $0.ball }.count,
             processedPerSecond: rate(processed.count, rs),
             searchesPerSecond: rate(processed.filter { $0.search }.count, rs), rechecksPerSecond: rate(processed.filter { $0.recheck }.count, rs),
-            ballSearchesPerSecond: rate(processed.filter { $0.ball }.count, rs))
+            ballSearchesPerSecond: rate(processed.filter { $0.ball }.count, rs),
+            framesDroppedBusy: arrivals.filter { $0.dropped }.count, maxFramesHeld: arrivals.compactMap { $0.held }.max(),
+            handoffWaitMs: stats(waits.map { $0.ms }))
         let ts = total.first.map { max(interval, (total.last ?? $0) - $0 + interval) } ?? 0
         let all = FramePacingReport.Window(
             seconds: r2(ts), framesReceived: total.received, framesProcessed: total.processed, framesSkippedLate: total.skipped,
@@ -333,7 +422,8 @@ public struct FramePacer {
             longestUnprocessedMs: r1(total.longestUnprocessedMs),
             searches: total.searches, rechecks: total.rechecks, ballSearches: total.balls,
             processedPerSecond: rate(total.processed, ts),
-            searchesPerSecond: rate(total.searches, ts), rechecksPerSecond: rate(total.rechecks, ts), ballSearchesPerSecond: rate(total.balls, ts))
+            searchesPerSecond: rate(total.searches, ts), rechecksPerSecond: rate(total.rechecks, ts), ballSearchesPerSecond: rate(total.balls, ts),
+            framesDroppedBusy: total.droppedBusy, maxFramesHeld: total.maxHeld, handoffWaitMs: hstats(total.wait))
         return FramePacingReport(nominalFrameIntervalMs: nominalInterval.map { r2($0 * 1000) }, effectiveFrameIntervalMs: r2(effectiveInterval * 1000),
                                  baselineLatencyMs: lastBaseline.map { r1($0 * 1000) }, lateAfterMs: lastThreshold.map { r1($0 * 1000) },
                                  longestSkipRun: total.longestSkipRun, rule: rule, recent: recent, total: all)
@@ -432,6 +522,14 @@ public struct FramePacingReport: Codable, Equatable {
         public var searchesPerSecond: Double
         public var rechecksPerSecond: Double
         public var ballSearchesPerSecond: Double
+        /// The app's camera frames go through a hand-off (`FrameHandoff`): at most one frame is processed and at most
+        /// one waits, the latest. Frames dropped because processing was busy (a newer frame replaced them while they
+        /// waited; released at once, never processed), the most camera frames the app held at once after a frame was
+        /// handed over (the one being processed and the one waiting: at most 2, whatever processing costs; nil when no
+        /// frame went through the hand-off, as in the demo), and how long the processed frames waited there.
+        public var framesDroppedBusy: Int = 0
+        public var maxFramesHeld: Int? = nil
+        public var handoffWaitMs: Millis? = nil
     }
     /// the video format's frame interval, and the one the rule used (larger when frames come more slowly)
     public var nominalFrameIntervalMs: Double?

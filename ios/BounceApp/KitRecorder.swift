@@ -8,8 +8,9 @@ import Foundation
 /// `KitFrame` per encoded video frame: line n = video frame n), motion.jsonl (every CoreMotion sample while it runs)
 /// and LiDAR depth about once a second. A flat-phone shot records motion.jsonl only (`video: false`).
 ///
-/// ARController hands it every camera (or demo) frame on its processing queue (`consume`). The camera picture is scaled
-/// there, synchronously, into a buffer from the recorder's own pool, so nothing refers to the ARFrame once that call
+/// ARController hands it every camera frame on ARKit's delegate queue, as the frame arrives, with the latest tracker
+/// result (whatever the tracker is busy with), and every demo frame on its processing queue (`consume`; one call at a
+/// time, never two at once: ARController's kitLock). The camera picture is scaled there, synchronously, into a buffer from the recorder's own pool, so nothing refers to the ARFrame once that call
 /// returns; everything else (the encoder, the files) happens on the recorder's serial queue. A frame is appended only
 /// when the encoder is ready for it, and only appended frames get a line. Ordinary shots keep 30 of ARKit's 60 frames a
 /// second (the first frame of each 1/30 s slot of time), high-frame-rate shots (drops) every frame. The recording stops by itself after the shot's seconds of
@@ -65,7 +66,7 @@ final class KitRecorder {
     /// finish() was called: no more frames
     private var ended = false
 
-    // processing queue
+    // the caller's queue (one `consume` at a time)
     /// ordinary shots keep the first frame of each 1 / keptFps slot of time, counted from the first frame offered
     private var slotOrigin: Double? = nil
     private var lastSlot = -1
@@ -124,7 +125,7 @@ final class KitRecorder {
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     private var isEnded: Bool { lock.lock(); defer { lock.unlock() }; return cancelled || ended }
 
-    // MARK: frames (ARController's processing queue)
+    // MARK: frames (ARController's delivery queue, or its processing queue for the demo; one call at a time)
 
     /// Take a frame. Returns false once the recorder wants no more (it has its seconds, or was cancelled): the caller
     /// then detaches it.

@@ -118,12 +118,13 @@ struct BenchReport: Codable {
 
         // time to lock
         if !lockTimes.isEmpty {
-            m.append("#### Time to lock (camera time), with the frame pacer deciding which frames the tracker sees")
+            m.append("#### Time to lock (camera time), with the app's hand-off deciding which frames the tracker sees")
             m.append("")
-            m.append("Every frame processed (the whole-frame runs above) is a lower bound. Paced: frames reach the serial queue 30 ms after "
-                     + "capture and wait behind slower ones; a late one is skipped, so a slow search delays the next. Each frame takes its "
+            m.append("Every frame processed (the whole-frame runs above) is a lower bound. Paced: frames reach ARKit's delegate 30 ms after "
+                     + "capture and are handed to processing (FrameHandoff): taken at once when it is idle, else they wait, the latest "
+                     + "replacing the others (dropped), so a slow search delays the next. Each frame takes its "
                      + "measured time x the factor (x1 = this host taken as the CI Mac\(onMac ? "" : ", here this host itself")). Median (max) seconds over the runs; frames "
-                     + "processed / skipped before the lock per run. The time runs to the end of the locking frame's handling.")
+                     + "processed / dropped before the lock per run. The time runs to the end of the locking frame's handling.")
             m.append("")
             let labels = Array(Set(lockTimes.map(\.label))).sorted { a, b in
                 (lockTimes.first { $0.label == a }?.scale ?? 0) < (lockTimes.first { $0.label == b }?.scale ?? 0)
@@ -150,20 +151,24 @@ struct BenchReport: Codable {
             m.append("#### Budget at 60 fps (16.7 ms a frame)\(onMac ? " on this Mac" : " (this host's times x \(f(b.hostToMac, 3)))")")
             m.append("")
             m.append("Each state run for 30 s of camera time through the app's cadence (search every 0.12 s while searching; re-check every 0.3 s and "
-                     + "ball scan every 0.1 s while locked; at least 0.05 s between detector runs) and BounceCore's FramePacer (frames reach the serial "
-                     + "queue 30 ms after capture; a frame that waited behind slower work and is over a frame late is skipped), each frame costing its "
+                     + "ball scan every 0.1 s while locked; at least 0.05 s between detector runs) and the app's pipeline (frames reach ARKit's "
+                     + "delegate queue 30 ms after capture, which hands each to the processing queue through BounceCore's FrameHandoff: taken at once "
+                     + "when processing is idle, else it waits, the latest replacing and dropping any frame already waiting), each frame costing its "
                      + "kind's whole-frame time measured above (n per kind: the frames behind each cost), the detector runs' kinds taken in the order "
                      + "the app loop saw them. At 60 fps the 0.1 s and 0.3 s intervals come out as 6 or 7 and 18 or 19 frames apart (the frame "
                      + "times' rounding; ARKit's jittered timestamps give the same rates): about 9.2 ball scans and 3.2 re-checks a second. "
-                     + "Load = processing time per second of camera time (% of one core). **Frames held**: the frames the processing queue holds "
-                     + "when one arrives (waiting behind a slow one, or running), since the queue is ARKit's delegate queue and each is an ARFrame "
-                     + "with its camera buffer: ARKit warns when the delegate retains about a dozen and then stops delivering camera frames (a "
-                     + "camera stall, not just pacer skips); the model's queue has no such limit, so where the load passes 100% its "
-                     + "frames held and waits grow without bound (the pacer still lets a frame through every 0.25 s), where the phone would "
-                     + "stall sooner. Flag: THREAT at \(f(FrameBudget.skippedThreat, 0)) skipped frames/s or more than "
+                     + "Load = processing time per second of camera time (% of one core: the processing queue's). **Skipped/s**: frames "
+                     + "not processed, dropped from the hand-off because processing was busy (the overlay updates that many fewer times a "
+                     + "second). **Frames held**: ARKit's frames the app holds when one arrives (the new one, any still in the delegate's "
+                     + "queue, the one being processed and the one waiting): each is an ARFrame with its camera buffer, and ARKit warns when "
+                     + "the delegate retains about a dozen and then stops delivering camera frames. Through the hand-off at most one frame is "
+                     + "processed and one waits, so it stays at 3 at most whatever a search costs, unless the delegate's own work (the kit's "
+                     + "scale) outruns the camera. Flag: THREAT at \(f(FrameBudget.skippedThreat, 0)) skipped frames/s or more than "
                      + "\(FrameBudget.heldThreat) frames held; watch at \(f(FrameBudget.skippedWatch, 1)) skipped/s or more than \(FrameBudget.heldWatch) held. "
-                     + "With the capture kit recording, its work is added to every kept frame, processed or skipped as late (the app gives late "
-                     + "frames to the kit too).")
+                     + "With the capture kit recording, its work is on the delegate's queue, on every kept frame, processed or not. The "
+                     + "ranked table further down also shows, for comparison, the frames held through one queue as before the hand-off (ARKit's "
+                     + "delegate queue = the processing queue, the FramePacer skipping late frames), where they grew without bound once the "
+                     + "load passed 100%.")
             m.append("")
             func table(_ rs: [CadenceResult], _ scs: [Scenario], _ title: String) {
                 m.append(title)
@@ -240,7 +245,8 @@ struct BenchReport: Codable {
             m.append("#### What threatens 60 fps tracking, ranked")
             m.append("")
             m.append("States ranked by skipped frames per second at the CI Mac's p95 costs, then by frames held; the phone columns use p50 costs "
-                     + "(throttled A14: the oldest LiDAR phone, warm; contended A11: the oldest phone the app supports, sharing its core).")
+                     + "(throttled A14: the oldest LiDAR phone, warm; contended A11: the oldest phone the app supports, sharing its core). "
+                     + "The last column: the frames held at the same p95 costs through one queue, as before the hand-off.")
             m.append("")
             let a14 = b.phones.first { $0.chip.chip.hasPrefix("A14") }, a11 = b.phones.first
             var order = Array(b.scenarios.indices)
@@ -248,15 +254,16 @@ struct BenchReport: Codable {
                 let x = b.onMacP95[i], y = b.onMacP95[j]
                 return x.framesSkipped != y.framesSkipped ? x.framesSkipped > y.framesSkipped : x.maxFramesHeld > y.maxFramesHeld
             }
-            m.append("| # | state | skipped/s CI Mac p50 | CI Mac p95 | A14 throttled | A11 contended | frames held: Mac p95 / A14 thr. / A11 cont. | worst frame Mac p95 | flag (Mac p95) |")
-            m.append("|--:|---|--:|--:|--:|--:|---|---|---|")
+            m.append("| # | state | skipped/s CI Mac p50 | CI Mac p95 | A14 throttled | A11 contended | frames held: Mac p95 / A14 thr. / A11 cont. | worst frame Mac p95 | flag (Mac p95) | one queue (before): held / skipped/s, Mac p95 |")
+            m.append("|--:|---|--:|--:|--:|--:|---|---|---|---|")
             for (rank, i) in order.enumerated() {
                 let p50 = b.onMac[i], p95 = b.onMacP95[i]
                 let t14 = a14?.throttled[i], c11 = a11?.contended[i]
                 let fl = FrameBudget.flag(p95)
                 m.append("| \(rank + 1) | \(b.scenarios[i].name) | \(f(p50.framesSkipped, 1)) | \(f(p95.framesSkipped, 1)) | \(t14.map { f($0.framesSkipped, 1) } ?? "-") | "
                          + "\(c11.map { f($0.framesSkipped, 1) } ?? "-") | \(p95.maxFramesHeld) / \(t14.map { "\($0.maxFramesHeld)" } ?? "-") / \(c11.map { "\($0.maxFramesHeld)" } ?? "-") | "
-                         + "\(f(p95.worstFrameMs, 0)) ms (\(p95.worstFrameKind.rawValue)) | \(fl.isEmpty ? "" : "**\(fl)**") |")
+                         + "\(f(p95.worstFrameMs, 0)) ms (\(p95.worstFrameKind.rawValue)) | \(fl.isEmpty ? "" : "**\(fl)**") | "
+                         + "\(b.onMacP95Queue.map { q in i < q.count ? "\(q[i].maxFramesHeld) / \(f(q[i].framesSkipped, 1))" : "-" } ?? "-") |")
             }
             m.append("")
             var lines: [String] = []
@@ -277,11 +284,9 @@ struct BenchReport: Codable {
                 m.append("THREAT only on a contended A11 (the oldest phone, sharing its core): " + a11Only.map { b.scenarios[$0].name }.joined(separator: "; ") + ".")
             }
             m.append("")
-            m.append("Every slow frame here is a slab detector run (a search, a re-check over the whole view, a refine), and frames held past "
-                     + "about a dozen make ARKit stop delivering camera frames. Moving the slab search and the re-check off the processing queue "
-                     + "(another queue on another core, its result applied to a later frame) would leave the processing queue with the plain "
-                     + "and ball frames (0.1-15 ms) and remove the frame retention altogether; making the detector itself cheaper only shortens "
-                     + "the spells.")
+            m.append("Every slow frame here is a slab detector run (a search, a re-check over the whole view, a refine). Through the hand-off "
+                     + "they no longer hold ARKit's frames (at most 3 at a delivery, the arriving one included); what they still cost is the "
+                     + "frames dropped while they run (the overlay's updates), which only making the detector cheaper or rarer reduces.")
             m.append("")
         }
 

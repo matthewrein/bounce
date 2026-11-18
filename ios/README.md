@@ -119,8 +119,10 @@ opens them by itself.
 - **Copy diagnostics**: copies a block of text (JSON) to the clipboard and shows it. Paste it into your message. It shows
   the build, the lens, what the app found, and its counters: numbers and settings, no pictures. `framePacing` shows how
   the camera's frames came and went, over the last 10 seconds and since the camera started: frames delivered,
-  processed, skipped because processing had fallen behind, delivered late by ARKit itself (to an app that was idle:
-  processed, `framesLateButIdle`), and never delivered by the camera; pauses (an interruption, the camera stopping
+  processed, dropped because processing was busy (`framesDroppedBusy`: a newer frame replaced them while they waited;
+  in the demo, `framesSkippedLate`), the most camera frames the app held at once (`maxFramesHeld`: at most 2, the one
+  being processed and the one waiting) and how long processed frames waited (`handoffWaitMs`), delivered late by ARKit
+  itself (`framesLateButIdle`), and never delivered by the camera; pauses (an interruption, the camera stopping
   while the capture kit opens or closes), counted apart from missed frames; how long frames took to reach the app and
   to process (median, 95th percentile, largest), overall and by what ran on the frame (`processingByKind`: a slab
   search, a re-check of the lock, the ball finder alone, or none of them); and how often the slab search, the lock's
@@ -137,13 +139,14 @@ opens them by itself.
   where it lands instead of the corner plane's. Both apply when Settings closes.
 - **Build** shows the build label (e.g. n7), and the line under it the tracker's live state, including its hints, which
   the main screen never shows. Its "frames:" row sums up the last 10 seconds and is refreshed every second, e.g.
-  "frames: 58.9/s in, 3% late-skipped, 1% late from ARKit, 0 gaps, 0 pauses, delivery 21/34 ms, process 6/19 ms
-  (p50/p95; p95 plain 6, ball 9, search 80, re-check 25), detector 8.3/s": frames a second from the camera; the share
-  skipped because they waited behind slower processing, and the share ARKit itself delivered late (processed anyway:
-  the app was not behind); gaps where the camera sent nothing, and pauses; how long frames took to reach the app and to
+  "frames: 58.9/s in, 3% dropped busy, held 2, wait 4/12 ms, 1% late from ARKit, 0 gaps, 0 pauses, delivery 21/34 ms,
+  process 6/19 ms (p50/p95; p95 plain 6, ball 9, search 80, re-check 25), detector 8.3/s": frames a second from the
+  camera; the share dropped because processing was busy (a newer frame took their place), the most frames the app
+  held at once (at most 2; "-" in the demo) and how long the processed frames waited for processing; the share ARKit
+  itself delivered late; gaps where the camera sent nothing, and pauses; how long frames took to reach the app and to
   process (typical and slow, in milliseconds), with the slow time by what ran on the frame: nothing ("plain"), the ball
   finder, a slab search, a re-check of the lock; and how often the slab detector ran. Searches and re-checks are
-  expected to take longer than a frame (tens of milliseconds) a few times a second; many late-skipped frames, or plain
+  expected to take longer than a frame (tens of milliseconds) a few times a second; many dropped frames, or plain
   and ball frames well above 17 ms (one frame at 60 fps), mean the phone is not keeping up.
 - **Pre-flight** (at the bottom, under "First run on a phone"): a 10-second check for the first run on a new phone. Tap
   **Run**, point the phone at the room and hold it fairly still. It checks the camera permission, ARKit's tracking,
@@ -256,18 +259,23 @@ phone** on the app's last screen removes it and its parts.
   frame. Frames whose slab detection used the camera's full-resolution pixels keep that crop (`s<NNNNNN>.pgm`), and the
   replay hands it back to the tracker; older recordings, without crops, replay as before.
 - The frame pipeline's rules are BounceCore types, tested on Linux, that ARController applies to every frame:
-  `FramePacer` (skip a frame that waited in the queue behind slow processing: one handed over while the app was still
-  busy, or had only just finished, and older than ARKit's usual delivery latency by more than a frame; never a frame
-  that reached an idle app, however late ARKit delivered it; never more than 0.25 s without processing one; its numbers
-  are the diagnostics' `framePacing`), the tracker's `minDetectionGap` (the slab detector runs at most 20 times a second whatever forces
+  `FrameHandoff` (ARKit delivers frames on a queue of their own, which does only cheap work and hands each frame to
+  the processing queue: at most one frame is processed and at most one waits, the latest, a newer one replacing it and
+  the old one released at once; so the app never holds more than two of ARKit's frames, however long a slab search
+  takes, and ARKit, which stops delivering once an app holds about a dozen, never stalls; its numbers, kept by a
+  `FramePacer`, are the diagnostics' `framePacing`; the demo's frames, rendered on the processing queue, use the
+  pacer's skip rule instead: skip a frame that waited behind slow processing and is more than a frame late, never more
+  than 0.25 s without processing one), the tracker's `minDetectionGap` (the slab detector runs at most 20 times a second whatever forces
   it), `SlabImageCrop` (where to cut the full-resolution luma for the slab's edges: the processing frame at a quarter
   size finds the slab, the camera's own pixels place its edges, `TrackerFrame.slabDetail`), `CaptureLockGate` (lock
   focus, exposure and white balance once the camera has stopped adjusting them, at most 2.5 s after the slab locks)
   and `VideoFormatWatch` (a new video format, as when the capture kit opens, is a world-frame discontinuity: the lock is
-  kept only unconfirmed until the slab is seen again in the new format). In ARController the pacer comes first: a late
-  frame is skipped before any pixel is read, except that while a capture kit shot records it still goes to the kit's
-  recorder (the kit's video matters more than the tracker; the recorder takes only the frames its video's rate needs)
-  with the last tracker result, and the pacer is told how long that took. The video format is read from the frames themselves, so any re-run of the session is covered, and
+  kept only unconfirmed until the slab is seen again in the new format). In ARController the delivery queue notes the
+  tracking state, relocalisation and the video format on every frame (the notes reach the processing queue ahead of
+  the frame), lets the pre-flight see it, hands it over, and gives it to the capture kit's recorder while a shot
+  records (every frame, whatever the tracker is doing, with the latest tracker result; the recorder scales the picture
+  into its own buffer there and then, keeps nothing of the frame, and takes only the frames its video's rate needs).
+  The video format is read from the frames themselves, so any re-run of the session is covered, and
   the change is noted on a frame of the new run, not on the old run's last frames that ARKit still delivers after the
   ask: a new size on its first frame; a new frame rate alone (the same size) once three frames in a row are spaced at
   the new rate, or a second after the ask if they never are (noted "by time").
