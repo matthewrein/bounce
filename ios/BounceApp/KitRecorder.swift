@@ -32,6 +32,9 @@ final class KitRecorder {
         var motionSamples: Int = 0
         /// frames the encoder was not ready for (not in the file)
         var notAppended: Int = 0
+        /// frames lost before the encoder: no buffer from the pool, the picture could not be scaled
+        var poolMisses: Int = 0
+        var fillFailures: Int = 0
         /// why the recording failed, in plain words (no paths)
         var error: String? = nil
     }
@@ -288,6 +291,7 @@ final class KitRecorder {
             if result.error == nil { result.error = "could not write the motion samples" }
         }
         guard !isCancelled else { return }
+        lock.lock(); result.poolMisses = poolMisses; result.fillFailures = fillFailures; lock.unlock()
         if recordsVideo {
             if result.frames == 0 {
                 if result.error == nil { result.error = "no camera frames were recorded" }

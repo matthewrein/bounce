@@ -447,6 +447,11 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(r.arkit.numbers["missingSeconds"] ?? 0, 8, accuracy: 0.01)
         XCTAssertEqual(r.lidar.status, .fail, r.lidar.line)
         XCTAssertEqual(r.lidar.detail, "Depth stopped 7.5 s before the end.")
+        // the frames that came were on time: that says nothing about the stall (a stuck processing queue looks the same)
+        let timely = meterRun(from: 0.5, to: 2.5, latency: 0.02, processingMs: 8)
+        XCTAssertEqual(timely.arkit.detail, "Frames stopped 7.5 s before the end; the frames that did come were on time "
+                       + "(frames reach it 20 ms after capture, 8 ms of work a frame for a 17 ms frame).")
+        XCTAssertTrue(meterRun(from: 0.5, to: 2.5, latency: 0.2, processingMs: 30).arkit.detail.contains("the app's processing is behind"))
         // frames that only start 8 s in
         let late = meterRun(from: 8, to: 10)
         XCTAssertEqual(late.arkit.status, .fail)

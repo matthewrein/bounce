@@ -629,7 +629,9 @@ public enum Preflight {
             worse(.warn, String(format: "%.1f frames a second (expected %.0f)", fps, expected))
         }
         // too few frames: say whether the app's own processing fell behind or the frames came late from the camera
-        if !problems.isEmpty, let why = processingWords(o, expectedFps: expected) { problems.append(why) }
+        if !problems.isEmpty, let why = processingWords(o, expectedFps: expected, stalled: !coverage.problems.isEmpty) {
+            problems.append(why)
+        }
         if let s = o.secondsToNormal {
             if s > maxSecondsToNormal { worse(.warn, String(format: "took %.1f s to become normal", s)) }
             if let share = o.normalShareAfterFirstNormal, share < minNormalShare {
@@ -869,8 +871,10 @@ public enum Preflight {
 
     /// When frames are too few: is the app's own processing behind (its work per frame is longer than a frame, or frames
     /// reach it more than `behindLatencyFrames` frames after capture), or does it keep up (so the camera or ARKit is the
-    /// cause)? nil when neither number is known.
-    static func processingWords(_ o: PreflightARKitObservation, expectedFps: Double) -> String? {
+    /// cause)? When frames stopped or paused (`stalled`), the frames that came say nothing about the time none came (a
+    /// stuck processing queue looks the same as a stopped camera), so only their timeliness is given. nil when neither
+    /// number is known.
+    static func processingWords(_ o: PreflightARKitObservation, expectedFps: Double, stalled: Bool) -> String? {
         let frameMs = 1000 / max(1, expectedFps)
         let lateMs = o.latencyMedian.map { $0 * 1000 }
         let work = o.processingMs
@@ -879,8 +883,10 @@ public enum Preflight {
         var nums: [String] = []
         if let l = lateMs { nums.append(String(format: "frames reach it %.0f ms after capture", l)) }
         if let w = work { nums.append(String(format: "%.0f ms of work a frame for a %.0f ms frame", w, frameMs)) }
-        return (behind ? "the app's processing is behind, not the camera (" : "the app keeps up, so the camera or ARKit is the cause (")
-            + nums.joined(separator: ", ") + ")"
+        let numbers = " (" + nums.joined(separator: ", ") + ")"
+        if behind { return "the app's processing is behind, not the camera" + numbers }
+        if stalled { return "the frames that did come were on time" + numbers }
+        return "the app keeps up, so the camera or ARKit is the cause" + numbers
     }
 
     /// "a; b" -> "A; b."

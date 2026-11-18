@@ -379,7 +379,8 @@ final class ARController: NSObject, ARSessionDelegate {
             tracker.noteWorldDiscontinuity("relocalized")
             note("relocalized")
         }
-        if let p = preflightTapNow() { p.frame(frame, tracking: kt) }
+        // the pre-flight sees every frame ARKit delivers (ahead of any early return), with the app's work per frame
+        if let p = preflightTapNow() { p.frame(frame, tracking: kt, processingMs: msAverage) }
         let full = FrameConversion.view(camera)
         let factor = max(1, full.intrinsics.width / 480)   // about 480 px wide for the detectors
         lock.lock(); let vp = viewport; lock.unlock()

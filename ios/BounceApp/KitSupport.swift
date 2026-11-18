@@ -26,10 +26,15 @@ enum KitDeflate {
 }
 
 /// The capture kit's beeps and haptics. The tones are made here (short sine beeps) and played through the playback
-/// audio category, so they sound even with the ring switch on silent; they mix with other audio.
+/// audio category, so they sound even with the ring switch on silent; they mix with other audio. Every audio failure
+/// (the session cannot be set up or activated, a tone cannot be made or does not play, a call interrupts the audio)
+/// goes to the developer log, since a drop shot's "let go" beep is the release cue.
 @MainActor
 final class KitFeedback {
     private var players: [Tone: AVAudioPlayer] = [:]
+    /// tones already logged as silent since the kit opened (each is logged once)
+    private var silentLogged: Set<Tone> = []
+    private var interruptionObserver: NSObjectProtocol? = nil
     private let impact: UIImpactFeedbackGenerator
     private let light: UIImpactFeedbackGenerator
     private let notify: UINotificationFeedbackGenerator
@@ -72,29 +77,74 @@ final class KitFeedback {
     }
 
     func prepare() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        silentLogged = []
+        let session = AVAudioSession.sharedInstance()
+        do { try session.setCategory(.playback, mode: .default, options: [.mixWithOthers]) } catch {
+            AppLog.warn("kit", "audio cues: the playback category could not be set (cues may be silent with the ring switch off)", error)
+        }
+        do { try session.setActive(true) } catch {
+            AppLog.warn("kit", "audio cues: the audio session could not be started (a call, or another app holds the audio)", error)
+        }
         for t in Tone.allCases where players[t] == nil {
-            if let p = try? AVAudioPlayer(data: KitFeedback.wav(frequency: t.frequency, seconds: t.seconds)) {
-                p.prepareToPlay()
+            do {
+                let p = try AVAudioPlayer(data: KitFeedback.wav(frequency: t.frequency, seconds: t.seconds))
+                if !p.prepareToPlay() { AppLog.warn("kit", "audio cue \(t): the player could not get ready") }
                 players[t] = p
+            } catch {
+                AppLog.warn("kit", "audio cue \(t) could not be made: it will be silent", error)
             }
+        }
+        if interruptionObserver == nil {
+            interruptionObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: session,
+                                                                          queue: .main) { n in KitFeedback.interruption(n) }
         }
         impact.prepare(); light.prepare(); notify.prepare()
     }
 
     func close() {
         players.values.forEach { $0.stop() }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if let o = interruptionObserver {
+            NotificationCenter.default.removeObserver(o)
+            interruptionObserver = nil
+        }
+        do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) } catch {
+            AppLog.warn("kit", "audio cues: the audio session could not be released", error)
+        }
     }
 
-    /// Play a tone (with its haptic). Returns the uptime when it was started.
+    /// A call (or another app) interrupted the audio: logged, and the session started again when it ends.
+    nonisolated static func interruption(_ n: Notification) {
+        guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            AppLog.warn("kit", "audio cues interrupted (a call, or another app): silent until it ends")
+        case .ended:
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+                AppLog.info("kit", "audio interruption ended: cues on again")
+            } catch {
+                AppLog.warn("kit", "audio interruption ended, but the cues could not be turned on again", error)
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    /// Play a tone (with its haptic). Returns the uptime when it was started. A tone that cannot play is logged (once
+    /// per tone while the kit is open); its haptic still runs.
     @discardableResult
     func play(_ t: Tone) -> Double {
         let now = CACurrentMediaTime()
         if let p = players[t] {
             p.currentTime = 0
-            p.play()
+            if !p.play() && !silentLogged.contains(t) {
+                silentLogged.insert(t)
+                AppLog.warn("kit", "audio cue \(t) did not play (the audio session is not active?)")
+            }
+        } else if !silentLogged.contains(t) {
+            silentLogged.insert(t)
+            AppLog.warn("kit", "audio cue \(t) has no player: it is silent")
         }
         switch t {
         case .tick: light.impactOccurred()

@@ -117,6 +117,9 @@ final class KitSession: ObservableObject {
     private var flatStart = 0.0
     private var flatResult: KitTrueTilt? = nil
     private var runIds: (ar: String, motion: String) = ("", "")
+    /// kits whose bundle is being made (kept across Quit and reopening): another build of the same kit would delete
+    /// this one's working folder, so Make bundle waits for it
+    private var bundlesInFlight: Set<String> = []
 
     init(model: AppModel, controller: ARController) {
         self.model = model
@@ -125,16 +128,28 @@ final class KitSession: ObservableObject {
 
     // MARK: places and settings
 
-    /// Application Support/Kits: the working kits (not shown in the Files app)
+    /// Application Support/Kits: the working kits (not shown in the Files app). nil (and a log line with why) if the
+    /// folder cannot be had.
     nonisolated static var kitsRoot: URL? {
-        try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Kits", isDirectory: true)
+        do {
+            return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("Kits", isDirectory: true)
+        } catch {
+            AppLog.error("kit", "no Application Support folder for the kits", error)
+            return nil
+        }
     }
 
-    /// Documents/Kits: the bundle parts, one folder per kit (shown in Files under On My iPhone > Slab Bounce > Kits)
+    /// Documents/Kits: the bundle parts, one folder per kit (shown in Files under On My iPhone > Slab Bounce > Kits).
+    /// nil (and a log line with why) if the folder cannot be had.
     nonisolated static var outboxRoot: URL? {
-        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Kits", isDirectory: true)
+        do {
+            return try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("Kits", isDirectory: true)
+        } catch {
+            AppLog.error("kit", "no Documents folder for the bundle parts", error)
+            return nil
+        }
     }
 
     /// The plan: the standard one, or at a quarter of its timings for the UI tests (launch argument -kitFast YES).
@@ -159,9 +174,16 @@ final class KitSession: ObservableObject {
         feedback.prepare()
         UIApplication.shared.isIdleTimerDisabled = true
         controller.setKitMode(true, motion: KitSession.motionHandler(route))
-        if let root = KitSession.kitsRoot, let out = KitSession.outboxRoot {
-            for k in KitStore.list(root: root) {
-                KitBundle.removeLeftovers(kitId: k.kitId, in: out.appendingPathComponent(k.kitId, isDirectory: true))
+        if let root = KitSession.kitsRoot {
+            // a kit whose kit.json cannot be read is left out of Resume and Last kit: say which, and why
+            for u in KitStore.unreadable(root: root) {
+                AppLog.warn("kit", "kit folder \(u.name) is left out: its kit.json cannot be read", u.error)
+            }
+            if let out = KitSession.outboxRoot {
+                // (a bundle still being made keeps its working folder)
+                for k in KitStore.list(root: root) where !bundlesInFlight.contains(k.kitId) {
+                    KitBundle.removeLeftovers(kitId: k.kitId, in: out.appendingPathComponent(k.kitId, isDirectory: true))
+                }
             }
         }
         refreshStart()
@@ -560,6 +582,12 @@ final class KitSession: ObservableObject {
                                         reference: s.qualityReference)
             m.quality = q
             if isDemo { m.notes = "demo scene: synthetic frames, no motion samples" }
+            // a retake worse than the take on the phone is not committed: the earlier take stays
+            if let why = s.retakeLoss(spec.id, manifest: m) {
+                discardAttempt()
+                fail("Not saved: \(why). " + retryHint)
+                return
+            }
             try s.commitShot(spec.id, manifest: m, date: Date())
             let seconds = String(format: "%.1f s", duration)
             let video = r.video.map { "\($0.codec) \($0.fileBytes) bytes" } ?? "no video"
@@ -666,6 +694,12 @@ final class KitSession: ObservableObject {
             let q = KitQuality.evaluate(shot: spec, flat: result)
             m.quality = q
             if isDemo { m.notes = "demo scene: synthetic motion with a 1.5 degree camera bump" }
+            // a failed reading never replaces a usable one: the earlier take and its true tilt stay
+            if let why = s.retakeLoss(spec.id, manifest: m) {
+                discardAttempt()
+                fail("Not saved: \(why). " + retryHint)
+                return
+            }
             try s.commitShot(spec.id, manifest: m, date: Date())
             let tilt = result.tiltDegrees.map { String(format: "%.2f deg", $0) } ?? "none"
             AppLog.info("kit", "shot \(spec.id) committed: true tilt \(tilt) (\(result.method.rawValue)), \(r.motionSamples) motion samples, "
@@ -762,6 +796,7 @@ final class KitSession: ObservableObject {
         AppLog.info("kit", "end screen for \(s.kitId): " + (summary?.headline ?? ""))
         finished = s.isFinished
         confirmingDelete = false
+        bundling = bundlesInFlight.contains(s.kitId)
     }
 
     var hasPendingShots: Bool { (summary?.pending ?? 0) > 0 }
@@ -770,6 +805,12 @@ final class KitSession: ObservableObject {
     /// Documents/Kits/<kitId>/, JSON, JSONL and depth deflated with Apple's Compression framework.
     func makeBundle() {
         guard let s = store, !bundling, let outRoot = KitSession.outboxRoot else { return }
+        guard !bundlesInFlight.contains(s.kitId) else {
+            // the first build is still running (Quit and reopened meanwhile): it reports here when done
+            AppLog.info("kit", "the bundle for \(s.kitId) is still being made")
+            bundling = true
+            return
+        }
         error = nil
         if !s.isFinished {
             do { try s.finish(date: Date()) } catch {
@@ -785,14 +826,23 @@ final class KitSession: ObservableObject {
         bundleURLs = []
         let kitFolder = s.folder, outbox = outRoot.appendingPathComponent(s.kitId, isDirectory: true)
         let done = KitSession.bundleCallback(self, kitId: s.kitId)
+        bundlesInFlight.insert(s.kitId)
         DispatchQueue.global(qos: .userInitiated).async {
             done(Result<KitBundleResult, Error>(catching: { try KitBundle.build(kitFolder: kitFolder, outbox: outbox, deflate: KitDeflate.raw) }))
         }
     }
 
     fileprivate func bundleDone(_ r: Result<KitBundleResult, Error>, kitId: String) {
+        bundlesInFlight.remove(kitId)
+        guard store?.kitId == kitId else {
+            // the kit was closed meanwhile: its parts are on the phone (or the failure is in the log)
+            switch r {
+            case .success(let b): AppLog.info("kit", "bundle made for \(kitId) after it was closed: \(b.parts.count) part(s), \(b.totalBytes) bytes")
+            case .failure(let e): AppLog.error("kit", "the bundle for \(kitId) failed after it was closed", e)
+            }
+            return
+        }
         bundling = false
-        guard store?.kitId == kitId else { return }
         switch r {
         case .success(let b):
             bundleURLs = b.urls

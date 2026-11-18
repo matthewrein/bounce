@@ -26,11 +26,13 @@ final class PreflightTap {
         lock.lock(); recorder = r; lock.unlock()
     }
 
-    /// A camera frame (ARKit's delegate queue, during the delegate call: nothing here keeps the frame). About once a
-    /// second its depth map is looked at closely (valid and confident shares, median).
-    func frame(_ frame: ARFrame, tracking: KitTracking) {
+    /// A camera frame (ARKit's delegate queue, during the delegate call: nothing here keeps the frame), with the app's
+    /// running average of its work per frame (ms). How late the frame reached the app is now minus its timestamp (both
+    /// system uptime). About once a second its depth map is looked at closely (valid and confident shares, median).
+    func frame(_ frame: ARFrame, tracking: KitTracking, processingMs: Double) {
         let d = frame.smoothedSceneDepth ?? frame.sceneDepth
-        arkit.frame(time: frame.timestamp, tracking: tracking, hasDepth: d != nil)
+        arkit.frame(time: frame.timestamp, tracking: tracking, hasDepth: d != nil, latency: CACurrentMediaTime() - frame.timestamp,
+                    processingMs: processingMs)
         if let d = d, arkit.wantsDepthSample(time: frame.timestamp), let map = FrameConversion.depth(d) {
             arkit.depth(PreflightDepthSample(map), time: frame.timestamp)
         }
@@ -38,7 +40,7 @@ final class PreflightTap {
 
     /// A device-motion sample (motion queue).
     func motionSample(_ s: KitMotionSample) {
-        motion.sample(time: s.time, gravity: s.gravity)
+        motion.sample(time: s.time, gravity: s.gravity, userAcceleration: s.userAcceleration)
         lock.lock(); let r = recorder; lock.unlock()
         r?.appendMotion(s)
     }
@@ -54,8 +56,10 @@ private final class PreflightBox<T> {
 
 /// The recorder's test: about 2 s of the live frames (camera, or the demo's) through the capture kit's own recorder
 /// (`KitRecorder`, attached the way a kit shot attaches it: the same codec choice, pixel buffer pool, encoder settings,
-/// frames.jsonl and motion.jsonl) into a scratch folder in the temporary directory; then the clip is read back with
-/// AVFoundation (its duration and size, and every frame decoded) and the folder is deleted. Nothing is kept.
+/// frames.jsonl, motion.jsonl and depth) into a scratch folder in the temporary directory; then the clip is read back
+/// with AVFoundation (its duration and size, and every frame decoded) and the folder is deleted. Nothing is kept. It
+/// records as a drop shot does (every camera frame kept, the higher bitrate), the most demanding path, and reports
+/// the frames lost on the way and the depth files written.
 enum PreflightRecorderTest {
     static let folderPrefix = "preflight-"
 
@@ -84,7 +88,7 @@ enum PreflightRecorderTest {
         let box = PreflightBox<KitRecorder.Result>()
         let rec: KitRecorder
         do {
-            rec = try KitRecorder(folder: folder, video: true, duration: seconds, highFrameRate: false, sourceFps: sourceFps,
+            rec = try KitRecorder(folder: folder, video: true, duration: seconds, highFrameRate: true, sourceFps: sourceFps,
                                   wantsDepth: wantsDepth, label: "pre-flight clip", onStart: { _ in }, completion: { r in box.set(r) })
         } catch {
             AppLog.error("preflight", "could not start the test recorder", error)
@@ -93,7 +97,7 @@ enum PreflightRecorderTest {
                                                 cleanedUp: cleaned, simulator: simulator)
         }
         let depthWords = wantsDepth ? ", with depth" : ""
-        AppLog.info("preflight", String(format: "test clip started: %.0f s at %.1f frames a second", seconds, sourceFps) + depthWords)
+        AppLog.info("preflight", String(format: "test clip started: %.0f s at %.1f frames a second, every frame kept", seconds, sourceFps) + depthWords)
         tap.setRecorder(rec)
         controller.attachKitRecorder(rec)
         let t0 = CACurrentMediaTime()
@@ -135,9 +139,12 @@ enum PreflightRecorderTest {
             motionLines: motionLines, codec: r.video?.codec, width: r.video?.width, height: r.video?.height,
             fps: r.video?.fps ?? (r.keptFps > 0 ? r.keptFps : nil), fileBytes: fileBytes,
             readBackSeconds: back?.seconds, readBackFrames: back?.frames, readBackWidth: back?.width, readBackHeight: back?.height,
-            cleanedUp: cleaned, simulator: simulator)
+            cleanedUp: cleaned, simulator: simulator, highFrameRate: true, notAppended: r.notAppended, poolMisses: r.poolMisses,
+            fillFailures: r.fillFailures, depthRequested: wantsDepth, depthFrames: r.depthFrames)
         var line = "test clip: \(r.frames) frames written, \(frameLines) frame lines, "
         line += motionLines.map { "\($0) motion lines, " } ?? "no motion file, "
+        line += "dropped \(obs.droppedFrames), "
+        if wantsDepth { line += "\(r.depthFrames) depth files, " }
         line += "\(fileBytes) bytes, read back "
         if let b = back, let n = b.frames { line += "\(n) frames" } else { line += "nothing" }
         if let secs = back?.seconds { line += String(format: " over %.2f s", secs) }
