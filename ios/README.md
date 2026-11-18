@@ -51,9 +51,14 @@ ready for the phone. If it is red, don't pull yet.
   synthetic kit (108 MB, 4 parts, each at most 24 MB) went through the whole path. GitHub also sends the bundle the
   real app makes in the Simulator through that command on every change.
 - **Bounce analysis.** From a recorded drop the scorer now measures the ball's real path, the impact point on the dish,
-  the rebound and where the ball really lands, and compares that with the app's prediction. Its test drops were
-  rendered on an 18 in slab by my mistake (yours is 7 in); 8 of 12 could be measured and the rebound came out within
-  about 3 points on a typical drop (70% read as 70 ± 2%, 85% as 84 ± 4%). I am redoing them at 7 in.
+  the rebound and where the ball really lands, and compares that with the app's prediction. I redid its 12 test drops on
+  your 7 in slab (the first ones were on an 18 in slab by my mistake), half of them filmed from 3 to 3 1/2 ft, as the
+  kit asks, the rest from 4 to 5 ft. With a stand-in ball finder that knows where the ball is, all 12 are measured and
+  the rebound comes back within 0.1 point, so the analysis itself works. With the app's own ball finder only 4 of 12 are
+  measured, and they read the rebound 4 to 9 points high (76 ± 4% for a true 70%, 89 ± 6% for 85%). The rendered ball's
+  lower half is about the grey of the floor behind it, so the finder often sees only its bright top, takes the ball for
+  smaller and farther away than it is, and throws the reading out. Your real drops will show whether a real ball does
+  the same.
 - **Device budget.** Each step of the per-frame work was timed and scaled to GitHub's Mac (an Apple M1); the Mac's own
   timing of this code is in n9's checks. Once the slab is locked, the app uses about 5 to 30% of one core at 60 frames a
   second, except close up over a speckled floor or with a hand over a corner of the slab, where it still drops some
@@ -67,7 +72,7 @@ ready for the phone. If it is red, don't pull yet.
 
 ### Verified by tests, and only compiled
 
-- **Verified:** 428 tests of the slab, ball, bounce, tracking, recording, capture kit, hand-off and budget code on Linux,
+- **Verified:** 430 tests of the slab, ball, bounce, tracking, recording, capture kit, hand-off and budget code on Linux,
   and again optimised on a Mac; 9 end-to-end tests in the iPhone Simulator on the app's demo scene (lock and tilt,
   sliding the slab, the rebound setting, the ball's drop height, a recording, diagnostics, the whole capture kit
   including quitting mid-recording and resuming, pre-flight, Copy log); the hand-off dry run; the app's own bundle

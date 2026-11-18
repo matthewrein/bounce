@@ -209,6 +209,9 @@ final class KitScoreRun {
     struct ShotRun {
         var results: [FrameResult] = []
         var track: [KitBallSample] = []
+        /// a drop's frames the tracking finder searched: when, the app's crop it searched, that image's intrinsics and
+        /// the camera (full image, world)
+        var ballImages: [(t: Double, crop: BallImageCrop, intrinsics: CameraIntrinsics, view: CameraView)] = []
         var lockBeforeCue: SlabPose? = nil
         var unusableFrames = 0
         var depthErrors = 0
@@ -374,6 +377,7 @@ final class KitScoreRun {
             // resting on the slab (its distance from its size, while the slab is locked)
             if let d = dense, let lock = out.slab ?? lastLock, let b = pipeline.ballImage(img, slab: lock, video: pf.video) {
                 (d as? KitFrameAware)?.prepare(shotId: sh.spec.id, frameIndex: i, time: f.time, view: pf.video)
+                if isDrop { run.ballImages.append((f.time, b.crop, b.intrinsics, pf.video)) }
                 let sc = lock.transformed(by: pf.video.cameraFromWorld)
                 if let x = d.locate(image: b.image, intrinsics: b.intrinsics, slab: sc, spec: settings.spec, ball: settings.ball,
                                     down: pf.video.directionToCamera(down)), x.center.isFinite {

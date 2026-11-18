@@ -158,7 +158,111 @@ final class KitDropPhysicsTests: XCTestCase {
             XCTAssertEqual(t.landingLevel, 0.0175)
             XCTAssertGreaterThan(d.frames.count, 40, shot.id)
             XCTAssertTrue(zip(d.frames, d.frames.dropFirst()).allSatisfy { $0.time < $1.time }, shot.id)
+            // the set's balls touch the dish and the floor only (d11's contact is within a ball's radius of the edge, on
+            // the dish): none of them clips the slab's edges or cut faces or the base on the way down
+            XCTAssertFalse(d.physics.contacts.contains { $0.edge || $0.surface == .base }, "\(shot.id): \(d.physics.contacts.map { $0.surface })")
         }
         XCTAssertEqual(shorter, 1, "d11")
+    }
+
+    /// The set's truth worked out again from first principles, without `KitDish`, the physics' stepping or
+    /// `KitDropAnalysis.compare` (which the analysis shares with the simulator, so an error in them would cancel in
+    /// "measured minus true"): the dish is the sphere through the inscribed circle of the top and 1/8 in below its
+    /// centre; the ball's centre meets the dish where it comes within the sphere's radius less its own of the sphere's
+    /// centre (the free fall from the held ball, its release velocity included, solved by bisection); the contact point
+    /// is on the line from the sphere's centre through the ball's, the normal along it; the bounce reverses e = sqrt
+    /// (rebound) of the normal velocity and keeps 5/7 of the tangential one (a solid sphere that rolls off, with the
+    /// friction to do so); the landing is where that arc comes down to the floor plus a radius. Against the app's
+    /// prediction (its launch point and velocity, from `KitBouncePrediction.app`, the app's own model under test), the
+    /// landing error and the range error are the horizontal distances, worked out here.
+    func testDropTruthFromFirstPrinciples() throws {
+        let maker = KitSyntheticDrops()
+        let G = 9.80665, r = maker.options.ballDiameter / 2, up = Vec3(0, 1, 0)
+        let a = Units.inches(3.5), D = Units.inches(0.125), Rs = (a * a + D * D) / (2 * D)
+        func horizontal(_ v: Vec3) -> Double { (v.x * v.x + v.z * v.z).squareRoot() }
+        func land(_ p: Vec3, _ v: Vec3, _ level: Double) -> Vec3 {
+            let tau = (v.y + (v.y * v.y + 2 * G * (p.y - level)).squareRoot()) / G
+            return p + v * tau - up * (0.5 * G * tau * tau)
+        }
+        for shot in KitDropShot.standardSet {
+            let d = maker.make(shot), t = d.truth, pose = d.slab, id = shot.id
+            let C = pose.center + pose.normal * (Rs - D)
+            let v0 = shot.releaseVelocity
+            func centre(_ s: Double) -> Vec3 { t.held + v0 * s - up * (0.5 * G * s * s) }
+            var lo = 0.0, hi = 2.0
+            XCTAssertLessThan((centre(lo) - C).length, Rs - r, id)
+            for _ in 0..<200 { let mid = (lo + hi) / 2; if (centre(mid) - C).length < Rs - r { lo = mid } else { hi = mid } }
+            let P = centre(lo), n = (C - P).normalized, contact = C - n * Rs
+            // on the cap, inside its rim (where the dish is the sphere)
+            let q = contact - pose.center
+            let rho = (pow(q.dot(pose.axisU), 2) + pow(q.dot(pose.axisV), 2)).squareRoot()
+            XCTAssertLessThan(rho, a, id)
+            XCTAssertEqual(t.impactTime - t.release, lo, accuracy: 1e-6, id)
+            XCTAssertLessThan((t.impactCenter - P).length, 1e-5, id)
+            XCTAssertLessThan((t.contactPoint - contact).length, 1e-5, id)
+            XCTAssertLessThan(t.localNormal.angle(to: n), 1e-5, id)
+            XCTAssertEqual(t.normalTilt, Units.degrees(n.angle(to: pose.normal)), accuracy: 1e-3, id)
+            // the bounce
+            let vin = v0 - up * (G * lo), vn = vin.dot(n), vt = vin - n * vn, e = shot.rebound.squareRoot()
+            XCTAssertLessThan(vt.length * 2 / 7, 0.4 * (1 + e) * -vn, "\(id): friction enough to roll off")
+            let vout = n * (-e * vn) + vt * (5.0 / 7)
+            XCTAssertLessThan((t.velocityIn - vin).length, 1e-5, id)
+            XCTAssertLessThan((t.velocityOut - vout).length, 1e-5, id)
+            // the landing at the floor plus a radius, and the app's prediction against it
+            let level = r
+            XCTAssertEqual(t.landingLevel, level, accuracy: 1e-12, id)
+            let L = land(P, vout, level)
+            XCTAssertLessThan(horizontal(t.landing - L), 2e-5, id)
+            for (rebound, cmp) in [(maker.settings.ball.rebound, t.app), (shot.rebound, t.trueRebound)] {
+                var s = maker.settings
+                s.ball.rebound = rebound
+                let ap = KitBouncePrediction.app(pose: pose, settings: s, held: t.held)
+                let AL = land(ap.start, ap.velocity, level)
+                let c = try XCTUnwrap(cmp, id)
+                XCTAssertEqual(c.landingError, horizontal(L - AL), accuracy: 2e-5, id)
+                XCTAssertEqual(c.rangeError, horizontal(L - P) - horizontal(AL - ap.start), accuracy: 2e-5, id)
+                XCTAssertLessThan(horizontal(c.landing - AL), 1e-9, id)
+            }
+        }
+    }
+
+    /// A ball whose centre comes down outside the slab's outline meets the slab's body, not the floor under it: within
+    /// its radius of the top's edge it bounces off that edge (the normal from the edge to its centre); a little further
+    /// out it falls past the cut face onto the edge of the base (5% wider than the slab, 2 mm under it, as rendered);
+    /// further out still, onto the floor.
+    func testTheSlabsEdgesAndTheBase() throws {
+        let pose = SyntheticScene.slabPose(tilt: 0, heading: 0, yaw: 0, spec: spec)   // the top's centre 2.6 in over the floor
+        let d = KitDish(spec: spec), r = 0.0175, hu = spec.halfU
+        let topY = pose.center.y, baseTop = topY - spec.thickness - 0.002
+        func drop(out x: Double) throws -> KitDropPhysics.Contact {
+            let held = pose.center + Vec3(hu + x, 0.3, 0)
+            return try XCTUnwrap(KitDropPhysics(slab: pose, dish: d, held: held, release: 0).impact)
+        }
+        for x in [0.005, 0.015] {
+            let c = try drop(out: x)
+            XCTAssertEqual(c.surface, .slab, "\(x)")
+            XCTAssertTrue(c.edge, "\(x)")
+            XCTAssertLessThan((c.point - (pose.center + Vec3(hu, 0, 0))).length, 1e-9, "\(x): the top's edge")
+            XCTAssertEqual(c.center.y - topY, (r * r - x * x).squareRoot(), accuracy: 1e-6)
+            XCTAssertLessThan(c.normal.angle(to: Vec3(x, (r * r - x * x).squareRoot(), 0)), 1e-4)
+            XCTAssertGreaterThan(c.velocityOut.x, 0, "\(x): off the edge, outward")
+        }
+        // past the cut face (2 mm clear of it) onto the base's edge, 0.05 hu further out
+        let b = try drop(out: r + 0.002)
+        XCTAssertEqual(b.surface, .base)
+        XCTAssertFalse(b.edge)
+        let dx = hu + r + 0.002 - 1.05 * hu
+        XCTAssertEqual(b.point.x, pose.center.x + 1.05 * hu, accuracy: 1e-9)
+        XCTAssertEqual(b.point.y, baseTop, accuracy: 1e-9)
+        XCTAssertEqual(b.center.y - baseTop, (r * r - dx * dx).squareRoot(), accuracy: 1e-6)
+        // clear of the base: the floor
+        let f = try drop(out: 0.05 * hu + r + 0.002)
+        XCTAssertEqual(f.surface, .floor)
+        XCTAssertEqual(f.center.y, r, accuracy: 1e-6)
+        // without a base it falls past onto the floor
+        var p = KitDropPhysics.Params()
+        p.baseShare = nil
+        let nb = try XCTUnwrap(KitDropPhysics(slab: pose, dish: d, held: pose.center + Vec3(hu + r + 0.002, 0.3, 0), release: 0, params: p).impact)
+        XCTAssertEqual(nb.surface, .floor)
     }
 }

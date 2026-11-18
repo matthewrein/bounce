@@ -159,10 +159,14 @@ public enum KitTangentialModel: Codable, Equatable {
 }
 
 /// A ball dropped onto the slab and bouncing on, as it really goes (not the app's model): free fall from the release;
-/// at each contact with the dish (`KitDish`, inside the slab's outline) or the floor, the velocity's component along the
-/// LOCAL surface normal is reversed and scaled by the restitution, and the component along the surface follows the
-/// tangential model; then free fall again. No air drag (under 0.2% of g for a 35 mm titanium ball at these speeds) and
-/// no spin forces. Contacts are found by stepping each parabola 0.5 ms at a time and bisecting to 0.1 µs.
+/// at each contact with the dish (`KitDish`, inside the slab's outline), the slab's top edges and cut faces (with its
+/// centre outside the outline), the base under the slab or the floor, the velocity's component along the LOCAL surface
+/// normal is reversed and scaled by the restitution, and the component along the surface follows the tangential model;
+/// then free fall again. The slab and the base are the renderer's (`SyntheticScene`): the slab a box `slabThickness`
+/// under its corner plane, the base a box slab-aligned about the vertical, its sides `baseShare` of the slab's, from the
+/// floor up to 2 mm under the slab's lowest bottom corner. No air drag (under 0.2% of g for a 35 mm titanium ball at
+/// these speeds) and no spin forces. Contacts are found by stepping each parabola 0.5 ms at a time and bisecting to
+/// 0.1 µs.
 public struct KitDropPhysics {
     public struct Params {
         public var ballRadius = 0.0175
@@ -170,10 +174,13 @@ public struct KitDropPhysics {
         /// of the drop height a straight-up bounce regains)
         public var rebound = 0.7
         public var tangential = KitTangentialModel.rolling(mu: 0.4)
-        /// the floor (world y) and its rebound
+        /// the floor (world y) and its rebound (the base's too)
         public var floorY = 0.0
         public var floorRebound = 0.3
         public var floorTangential = KitTangentialModel.rolling(mu: 0.5)
+        /// the slab's thickness (m; the owner's 1 in) and the base's sides over the slab's (nil: no base)
+        public var slabThickness = Units.inches(1)
+        public var baseShare: Double? = 1.05
         /// stop after this many contacts, or this long after the release (s)
         public var maxContacts = 12
         public var maxTime = 3.0
@@ -192,7 +199,8 @@ public struct KitDropPhysics {
 
     /// A contact.
     public struct Contact: Equatable {
-        public enum Surface: String, Codable { case slab, floor }
+        /// the slab (its dish, or its top edges and cut faces: `edge`), the base under it, the floor
+        public enum Surface: String, Codable { case slab, base, floor }
         public var time: Double
         public var surface: Surface
         /// the ball's centre at the contact, and the point it touches (world)
@@ -204,6 +212,8 @@ public struct KitDropPhysics {
         public var velocityOut: Vec3
         public var spinIn: Vec3
         public var spinOut: Vec3
+        /// a contact with the slab's top edges or cut faces (the ball's centre outside its outline), not its dish
+        public var edge = false
     }
 
     public var params: Params
@@ -224,17 +234,52 @@ public struct KitDropPhysics {
         simulate(Segment(t0: release, p0: held, v0: releaseVelocity, spin: releaseSpin))
     }
 
-    /// The ball's clearance over whatever is below it: the dish inside the slab's outline (and the floor), else the floor.
-    func clearance(_ p: Vec3) -> (Double, Contact.Surface, Vec3, Vec3) {
-        let floor = p.y - params.floorY - params.ballRadius
+    /// The ball's clearance from the nearest surface (the gap, negative when it would overlap), which surface that is,
+    /// its nearest point (world) and its normal there, and whether it is the slab's top edges or cut faces (the ball's
+    /// centre outside the outline) rather than its dish.
+    func clearance(_ p: Vec3) -> (Double, Contact.Surface, Vec3, Vec3, Bool) {
+        let r = params.ballRadius
+        var best = (p.y - params.floorY - r, Contact.Surface.floor, Vec3(p.x, params.floorY, p.z), Vec3(0, 1, 0), false)
         let q = slab.toSlab(p)
-        if abs(q.x) <= slab.halfU && abs(q.y) <= slab.halfV && q.z > -dish.depth - params.ballRadius {
-            let c = dish.contact(center: q, radius: params.ballRadius)
-            if c.clearance < floor {
-                return (c.clearance, .slab, slab.fromSlab(c.point), slab.directionFromSlab(c.normal).normalized)
+        if abs(q.x) <= slab.halfU && abs(q.y) <= slab.halfV {
+            if q.z > -dish.depth - r {
+                let c = dish.contact(center: q, radius: r)
+                if c.clearance < best.0 { best = (c.clearance, .slab, slab.fromSlab(c.point), slab.directionFromSlab(c.normal).normalized, false) }
+            }
+        } else if let (d, b, n) = Self.boxContact(q, half: Vec3(slab.halfU, slab.halfV, params.slabThickness / 2),
+                                                  center: Vec3(0, 0, -params.slabThickness / 2), radius: r), d < best.0 {
+            // outside the outline: the slab's top edges and cut faces
+            best = (d, .slab, slab.fromSlab(b), slab.directionFromSlab(n).normalized, true)
+        }
+        if let base = baseBox {
+            // the base, in its own axes (along `u`, up, along `v` from its foot under the slab's centre)
+            let rel = p - base.foot, bq = Vec3(rel.dot(base.u), rel.y, rel.dot(base.v))
+            if let (d, b, n) = Self.boxContact(bq, half: base.half, center: Vec3(0, base.half.y, 0), radius: r), d < best.0 {
+                best = (d, .base, base.foot + base.u * b.x + Vec3(0, b.y, 0) + base.v * b.z,
+                        (base.u * n.x + Vec3(0, n.y, 0) + base.v * n.z).normalized, false)
             }
         }
-        return (floor, .floor, Vec3(p.x, params.floorY, p.z), Vec3(0, 1, 0))
+        return best
+    }
+
+    /// The base as the renderer draws it: its foot on the floor under the slab's centre, its horizontal axes and its
+    /// half-sizes (along u, up, along v); nil without one.
+    var baseBox: (foot: Vec3, u: Vec3, v: Vec3, half: Vec3)? {
+        guard let share = params.baseShare else { return nil }
+        let top = slab.topCorners.map { ($0 - slab.normal * params.slabThickness).y }.min()! - 0.002
+        guard top - params.floorY > 0.005 else { return nil }
+        let u = Vec3(slab.axisU.x, 0, slab.axisU.z).normalized
+        return (Vec3(slab.center.x, params.floorY, slab.center.z), u, Vec3(-u.z, 0, u.x),
+                Vec3(slab.halfU * share, (top - params.floorY) / 2, slab.halfV * share))
+    }
+
+    /// A ball (centre `q`, radius `r`) against a box (its centre and half-sizes, in the same axes): the clearance, the
+    /// box's nearest point and the normal there (toward the ball's centre). nil when the centre is inside the box.
+    static func boxContact(_ q: Vec3, half h: Vec3, center c: Vec3, radius r: Double) -> (Double, Vec3, Vec3)? {
+        let b = Vec3(clamp(q.x, c.x - h.x, c.x + h.x), clamp(q.y, c.y - h.y, c.y + h.y), clamp(q.z, c.z - h.z, c.z + h.z))
+        let d = q - b, l = d.length
+        guard l > 1e-12 else { return nil }
+        return (l - r, b, d / l)
     }
 
     mutating func simulate(_ first: Segment) {
@@ -245,7 +290,7 @@ public struct KitDropPhysics {
         while t < end && contacts.count < params.maxContacts {
             let t2 = t + dt
             let p2 = seg.position(at: t2)
-            let (c2, _, _, n2) = clearance(p2)
+            let (c2, _, _, n2, _) = clearance(p2)
             // a contact: the ball reaches the surface while moving into it (a small grace after a bounce lets it leave)
             if c2 < 0 && seg.velocity(at: t2).dot(n2) < 0 && t2 - seg.t0 > 1e-4 {
                 var lo = t, hi = t2
@@ -256,22 +301,26 @@ public struct KitDropPhysics {
                 }
                 let tc = lo
                 let pc = seg.position(at: tc)
-                let (_, surf, point, n) = clearance(pc)
+                let (_, surf, point, n, edge) = clearance(pc)
                 let vin = seg.velocity(at: tc)
                 let e = (surf == .slab ? params.rebound : params.floorRebound).squareRoot()
                 let model = surf == .slab ? params.tangential : params.floorTangential
                 var (vout, wout) = model.bounce(velocity: vin, spin: seg.spin, normal: n, restitution: e, radius: params.ballRadius)
-                // a ball that barely leaves the floor rolls along it (one that barely leaves the slab settles there)
+                // a ball that barely leaves the floor rolls along it (one that barely leaves the dish settles there; off
+                // an edge or the base it carries on along the surface)
+                let settles = surf == .slab && !edge
                 if surf == .floor && vout.dot(n) < 0.05 { vout = vout - n * vout.dot(n) }
-                if surf == .slab && vout.dot(n) < 0.05 { vout = .zero; wout = .zero }
-                contacts.append(Contact(time: tc, surface: surf, center: pc, point: point, normal: n, velocityIn: vin, velocityOut: vout,
-                                        spinIn: seg.spin, spinOut: wout))
+                if settles && vout.dot(n) < 0.05 { vout = .zero; wout = .zero }
+                var contact = Contact(time: tc, surface: surf, center: pc, point: point, normal: n, velocityIn: vin, velocityOut: vout,
+                                      spinIn: seg.spin, spinOut: wout)
+                contact.edge = edge
+                contacts.append(contact)
                 seg = Segment(t0: tc, p0: pc, v0: vout, spin: wout)
                 segments.append(seg)
                 t = tc
                 // rolling on the floor: no more contacts to find; settled on the slab: it stays there
                 if surf == .floor && vout.dot(n) < 0.05 { t = end; break }
-                if surf == .slab && vout == .zero { break }
+                if settles && vout == .zero { break }
                 continue
             }
             t = t2

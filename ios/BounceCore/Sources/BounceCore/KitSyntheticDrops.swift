@@ -17,9 +17,10 @@ public struct KitDropShot: Codable, Equatable {
     /// the slab's true restitution, as a rebound (e²)
     public var rebound: Double
     /// where the camera stands, from the downhill direction (degrees, anticlockwise seen from above), its elevation
-    /// (degrees) and distance from the point it aims at (m; nil: 0.95 m plus the drop height, at most 1.2 m: the held
-    /// ball and the slab in view, the slab 1.2-1.5 m from the camera and 44-56 px across the app's 480 px frame; the
-    /// tracker locked the 7 in slab from 1.55 m but not from 1.7 m)
+    /// (degrees) and distance from the point it aims at (m; nil: 0.6 m plus the drop height, 0.9-1.2 m: for drops of a
+    /// foot or less the slab is then 0.94-1.06 m (3.1-3.5 ft) from the camera, as the kit asks (3 to 4 ft), and for the
+    /// highest up to 1.5 m, with the held ball and the slab in view; the tracker locked the 7 in slab from 1.55 m but not
+    /// from 1.7 m)
     public var cameraAzimuth: Double
     public var cameraElevation: Double = 28
     public var cameraDistance: Double? = nil
@@ -47,14 +48,16 @@ public struct KitDropShot: Codable, Equatable {
     /// the middle of an edge it does so only within 2.8 in of the centre; 2.8 in uphill on the 12° slab is 3 in along its
     /// top) and one 3.3 in out, within the ball's radius of the downhill edge (measured, but left out of the rebound to
     /// bake); rebounds 0.5, 0.6, 0.7, 0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45° and from behind
-    /// and in front of the bounce, with a sloppy release, dropped frames and a ball that leaves the view in some.
+    /// and in front of the bounce, about 1 m (3.1-3.5 ft) from the slab for the drops of a foot or less, as the kit asks,
+    /// except d05 (1.36 m, where the app's ball crop is not shrunk), and 1.2-1.5 m for the higher ones; with a sloppy
+    /// release, dropped frames, and a ball that leaves the view halfway through its bounce (d12).
     public static let standardSet: [KitDropShot] = [
         KitDropShot(id: "d01-centre", tilt: 5, offsetInches: 0, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 90),
         KitDropShot(id: "d02-1in-downhill", tilt: 5, offsetInches: 1, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 60),
         KitDropShot(id: "d03-2in-side", tilt: 8, offsetInches: 2, offsetAzimuth: 90, heightInches: 12, rebound: 0.7, cameraAzimuth: 120),
         KitDropShot(id: "d04-3in-uphill", tilt: 12, offsetInches: 2.8, offsetAzimuth: 160, heightInches: 18, rebound: 0.7, cameraAzimuth: 90),
         KitDropShot(id: "d05-3in-side-low-tilt", tilt: 2, offsetInches: 3, offsetAzimuth: 250, heightInches: 12, rebound: 0.85,
-                    cameraAzimuth: 45),
+                    cameraAzimuth: 45, cameraDistance: 1.2),
         KitDropShot(id: "d06-centre-dropped-frames", tilt: 10, offsetInches: 0, offsetAzimuth: 0, heightInches: 24, rebound: 0.5,
                     cameraAzimuth: 135, droppedFrames: [9, 10, 23, 41, 42]),
         KitDropShot(id: "d07-2in-6in-drop", tilt: 3, offsetInches: 2, offsetAzimuth: 45, heightInches: 6, rebound: 0.85, cameraAzimuth: 90),
@@ -64,7 +67,7 @@ public struct KitDropShot: Codable, Equatable {
         KitDropShot(id: "d10-level-2in", tilt: 0, offsetInches: 2, offsetAzimuth: 0, heightInches: 12, rebound: 0.7, cameraAzimuth: 90),
         KitDropShot(id: "d11-edge-from-behind", tilt: 6, offsetInches: 3.3, offsetAzimuth: 0, heightInches: 9, rebound: 0.6, cameraAzimuth: 180),
         KitDropShot(id: "d12-2in-leaves-view", tilt: 10, offsetInches: 2, offsetAzimuth: 315, heightInches: 30, rebound: 0.7, cameraAzimuth: 95,
-                    cameraElevation: 24, cameraDistance: 1.2, aimDownhill: -0.3),
+                    cameraDistance: 1.0, aimDownhill: -0.3),
     ]
 }
 
@@ -229,7 +232,7 @@ public final class KitSyntheticDrops {
         // the held ball
         let h = Units.inches(shot.heightInches)
         let aim = pose.center + up * (0.08 + 0.45 * h) + downhill * shot.aimDownhill
-        let dist = shot.cameraDistance ?? clamp(0.95 + 1.0 * h, 1.0, 1.2)
+        let dist = shot.cameraDistance ?? clamp(0.6 + 1.0 * h, 0.9, 1.2)
         let el = Units.radians(shot.cameraElevation)
         let K = intrinsics()
         let views = times.map { tt -> CameraView in
@@ -299,7 +302,10 @@ public final class KitSyntheticDrops {
                              normalTilt: Units.degrees(n.angle(to: phys.slab.normal)), velocityIn: c.velocityIn, velocityOut: c.velocityOut,
                              rebound: phys.params.rebound, tangentialRatio: k, apexHeight: apex, landingLevel: level, landing: land.point,
                              landingTime: land.time,
-                             nextContact: next.map { KitDropContact(time: $0.time, center: $0.center, surface: $0.surface == .slab ? .slab : .floor) },
+                             nextContact: next.map { c in
+                                 // (the base under the slab is neither)
+                                 KitDropContact(time: c.time, center: c.center, surface: c.surface == .slab ? .slab : c.surface == .floor ? .floor : .unknown)
+                             },
                              app: nil, trueRebound: nil)
         let lt = truth(phys, level: level, settings: settings)
         t.app = lt?.app

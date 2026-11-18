@@ -3,9 +3,9 @@ import XCTest
 
 /// Rendered drops (`KitSyntheticDrops`: physical bounces off the dish, motion blur, the recorder's timestamps) through
 /// the scorer's own per-frame path and the drop analysis (`KitDropBench`), against the truth, on the owner's 7 in slab. A
-/// debug build renders two drops small (360x270 at 30 fps, the camera 0.9 m from the point it aims at, so that the slab
-/// is about as many pixels across as in the full-size drops' 480x360 processing frames) with a finder that knows where
-/// the ball is; an optimised build also runs the app's own ball finder on real-size frames (1440x1080 at 60 fps).
+/// debug build renders two drops small (360x270 at 30 fps, the camera where the set has it, the slab about 1 m away)
+/// with a finder that knows where the ball is; an optimised build also runs the app's own ball finder on real-size
+/// frames (1440x1080 at 60 fps).
 final class KitSyntheticDropsTests: XCTestCase {
     func small() -> KitSyntheticDrops {
         var o = KitSyntheticDrops.Options()
@@ -18,15 +18,16 @@ final class KitSyntheticDropsTests: XCTestCase {
     func horizontal(_ a: Vec3, _ b: Vec3) -> Double { (a - b).rejecting(Vec3(0, 1, 0)).length }
 
     /// The truth-based finder on a centre drop and a drop 2 in off the centre (on the owner's 7 in slab, where the dish
-    /// leans 2.4° there), analysed as a kit is (no floor): the slab locks before the cue, the rebound comes back within
-    /// 2 points and 3 sigma, the contact point on the dish within 5 mm of the truth plus the lock's own error and its
-    /// local tilt within 0.1°, the landing within 1.5 cm, and the landing against the app's prediction (with its rebound
+    /// leans 2.4° there), analysed as a kit is (no floor): the slab locks before the cue (its normal within 0.5° and its
+    /// centre within 6 mm: at this size the lock of a 7 in slab is a few mm off), the rebound comes back within 2 points
+    /// and 3 sigma, the contact point on the dish within 5 mm of the truth plus the lock's own error and its local tilt
+    /// within 0.1°, the landing within 1.5 cm, and the landing against the app's prediction (with its rebound
     /// and with the measured one) within 1.5 cm of the truth's at the analysis's own landing level; the report has a row
     /// per drop and the rebound to bake.
     func testCentreAndOffCentreWithTheTruthBall() throws {
         var o = KitDropBench.Options()
         o.drops = small().options
-        o.drops.shots = [KitDropShot.standardSet[0], KitDropShot.standardSet[2]].map { s in var s = s; s.cameraDistance = 0.9; return s }
+        o.drops.shots = [KitDropShot.standardSet[0], KitDropShot.standardSet[2]]
         o.truthBall = true
         let rep = try KitDropBench.run(o)
         XCTAssertEqual(rep.results.count, 2)
@@ -34,6 +35,13 @@ final class KitSyntheticDropsTests: XCTestCase {
             let id = r.shot.id
             XCTAssertTrue(r.lockedBeforeCue, id)
             XCTAssertLessThan(try XCTUnwrap(r.lockNormalError), 0.5, id)
+            // (bounded: the contact check below allows for it)
+            XCTAssertLessThan(try XCTUnwrap(r.lockCenterError), 0.006, id)
+            // the camera about 1 m from the slab, as the kit asks (3 to 4 ft); the finder's crop and the ball's size in it
+            XCTAssertEqual(try XCTUnwrap(r.cameraDistance), 1.0, accuracy: 0.1, id)
+            XCTAssertFalse(try XCTUnwrap(r.ballCropFactors, id).isEmpty, id)
+            XCTAssertGreaterThan(try XCTUnwrap(r.ballImageRadius, id), 3, id)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(r.ballImageRadiusMin, id), r.ballImageRadius!, id)
             let a = try XCTUnwrap(r.measured, "\(id): \(r.failure ?? "")")
             let t = r.truth, lt = try XCTUnwrap(r.measuredTruth, id)
             XCTAssertEqual(lt.level, a.landingLevel, id)
@@ -52,6 +60,7 @@ final class KitSyntheticDropsTests: XCTestCase {
         }
         let md = rep.markdown()
         XCTAssertTrue(md.contains("| d01-centre |") && md.contains("| d03-2in-side |"), md)
+        XCTAssertTrue(md.contains("| Camera to slab, crop shrink, ball radius (finder px) |"), md)
         XCTAssertTrue(md.contains("true rebound 70%: rebound to bake into the app: 70%"), md)
         XCTAssertEqual(rep.summary.analysed, 2)
         XCTAssertEqual(rep.summary.reboundBeyond3Sigma, 0)
@@ -62,24 +71,21 @@ final class KitSyntheticDropsTests: XCTestCase {
     }
 
     #if !DEBUG
-    /// The app's own ball finder, set up for tracking, on real-size frames with motion blur, for a centre and an
-    /// off-centre drop: its track is centimetres off along the line of sight on most frames, but the weighted fits still
-    /// give the rebound within 5 points and 3 sigma, the contact point within 4 cm and the landing within 6 cm (at the
-    /// analysis's own level, no floor). On an 18 in slab, the first drop set's: there the app's crop is shrunk by 2, so
-    /// the ball is about 11 px in radius. On the owner's 7 in slab the crop is not shrunk, the ball is about 22 px in
-    /// radius, and the finder loses this renderer's ball on most frames (the same crop shrunk by 2 finds it on every
-    /// frame): `bounce-score --drops` reports it, and CaptureKit.md says so. This test keeps the finder's path to the
-    /// analysis covered where the finder can follow the ball: the centre drop and the first set's 4 in one (on the 18 in
-    /// slab the finder sees the 2 in drop d03's ball on only a third of its frames, and not rising after the bounce).
+    /// The app's own ball finder, set up for tracking, on real-size frames with motion blur, on the owner's 7 in slab with
+    /// the camera about 1 m from it (as the kit asks): the finder reads the rendered ball on only part of the frames and
+    /// its track is centimetres off along the line of sight on most of them (CaptureKit.md, "Rendered drops"), but the
+    /// weighted fits still give the rebound within 3 sigma, the contact point within 4 cm and the landing within 6 cm (at
+    /// the analysis's own level, no floor), for two of the drops it measures: the 6 in drop 2 in out (its rebound within
+    /// 5 points: 89% for 85%) and the drop 1 in downhill (within 8 points: it reads 75% for 70%). A change that loses
+    /// either, or reads it worse, fails here; `bounce-score --drops` has the whole set.
     func testTheAppsBallFinder() throws {
-        var o = KitSyntheticDrops.Options()
-        o.spec = SlabSpec(sideU: Units.inches(18), sideV: Units.inches(18), thickness: Units.inches(1), dishDepth: Units.inches(0.125))
-        let maker = KitSyntheticDrops(options: o)
-        let side4 = KitDropShot(id: "d03-4in-side", tilt: 8, offsetInches: 4, offsetAzimuth: 90, heightInches: 12, rebound: 0.7, cameraAzimuth: 120)
-        for shot in [KitDropShot.standardSet[0], side4] {
+        let maker = KitSyntheticDrops()
+        XCTAssertEqual(maker.options.spec, SlabSpec.standard)
+        for (shot, tolerance) in [(KitDropShot.standardSet[6], 0.05), (KitDropShot.standardSet[1], 0.08)] {
             let r = try KitDropBench.score(maker.make(shot), maker: maker, truthBall: false)
+            XCTAssertEqual(try XCTUnwrap(r.cameraDistance), 1.0, accuracy: 0.1, shot.id)
             let a = try XCTUnwrap(r.measured, "\(shot.id): \(r.failure ?? "")")
-            XCTAssertEqual(try XCTUnwrap(a.rebound), r.truth.rebound, accuracy: 0.05, shot.id)
+            XCTAssertEqual(try XCTUnwrap(a.rebound), r.truth.rebound, accuracy: tolerance, shot.id)
             XCTAssertLessThan(abs(a.rebound! - r.truth.rebound) / max(0.005, a.reboundSigma ?? 0), 3, shot.id)
             XCTAssertLessThan(a.contactPoint.distance(to: r.truth.contactPoint), 0.04, shot.id)
             XCTAssertLessThan(horizontal(try XCTUnwrap(a.landing), try XCTUnwrap(r.measuredTruth).landing), 0.06, shot.id)

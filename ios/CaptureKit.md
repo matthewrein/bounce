@@ -658,62 +658,82 @@ the synthetic kit (`dropHeightError`) are that renderer's, not a measure of the 
 that reflects the scene, with Fresnel, the held ball reads about 11 mm low in the same poses.
 
 **Rendered drops** (`KitSyntheticDrops`, `KitDropPhysics`, `KitDropBench`; `bounce-score --drops`): drops with known,
-physical truth, separate from the synthetic kit (whose drops keep the app's own model). The slab is the owner's, as
-the app has it (`SlabSpec.standard`): 7 in square (`--drop-slab` for another size; the drops' offsets stay in inches),
-1 in thick, dished 1/8 in (the spherical cap above: a sphere of 49 in, leaning 3.5° 3 in out, so an off-centre bounce
-leaves well off the slab's normal), its top centre 4.5 in over the floor, sliding in its cradle as it tilts. (The
-first drop set was rendered on an 18 in slab by mistake; its numbers are gone from here.) The ball (35 mm) falls from
-rest (or with a push or spin when a drop says so) and meets the dish where its centre is the sphere's radius minus its
-own from the sphere's centre; the bounce reverses the velocity along the LOCAL normal at e = sqrt(rebound) and treats
-the velocity along the surface as a solid sphere with friction 0.4 does (it leaves rolling: 5/7 of it kept when it
-came in without spin, the spin taken up with it; it slides throughout only if friction cannot stop the slip within the
-impact); then free flight (no drag: under 0.2% of g) to the next contact, on the dish inside the slab's outline or on
-the floor (rebound 0.3), and so on. The standard set: 12 drops at the centre and about 1, 2 and 3 in from it on
-several sides (the 3 in ones toward the corners: toward the middle of an edge a contact point stays more than the
-ball's radius inside it only within 2.8 in of the centre) and one 3.3 in out, 10 mm inside the downhill edge
-(measured, but left out of the rebound to bake), so the dish leans 0.1-3.9° where they land; rebounds 0.5-0.85, tilts
-0-12°, heights 6-36 in, cameras from the side, at 45°, from behind and in front of the bounce, 1.2-1.5 m from the slab
+physical truth, separate from the synthetic kit (whose drops keep the app's own model). The slab is the owner's, as the
+app has it (`SlabSpec.standard`): 7 in square (`--drop-slab` for another size; the drops' offsets stay in inches), 1 in
+thick, dished 1/8 in (the spherical cap above: a sphere of 49 in, leaning 3.5° 3 in out, so an off-centre bounce leaves
+well off the slab's normal), its top centre 4.5 in over the floor, sliding in its cradle as it tilts. (The first drop
+set was rendered on an 18 in slab by mistake; its numbers are gone from here.) The ball (35 mm) falls from rest (or with
+a push or spin when a drop says so) and meets the dish where its centre is the sphere's radius minus its own from the
+sphere's centre; the bounce reverses the velocity along the LOCAL normal at e = sqrt(rebound) and treats the velocity
+along the surface as a solid sphere with friction 0.4 does (it leaves rolling: 5/7 of it kept when it came in without
+spin, the spin taken up with it; it slides throughout only if friction cannot stop the slip within the impact); then
+free flight (no drag: under 0.2% of g) to the next contact: the dish while the ball's centre is inside the slab's
+outline, the slab's top edges and 1 in cut faces while it is outside (a ball overhanging the edge), the black base under
+the slab (5% wider than it and 2 mm under it, as rendered) and the floor (both rebound 0.3), and so on (no drop of the
+standard set touches an edge or the base: the tests check that, and the edge and base contacts themselves). The standard
+set: 12 drops at the centre and about 1, 2 and 3 in from it on several sides (the 3 in ones toward the corners: toward
+the middle of an edge a contact point stays more than the ball's radius inside it only within 2.8 in of the centre) and
+one 3.3 in out, 10 mm inside the downhill edge (measured, but left out of the rebound to bake), so the dish leans
+0.1-3.9° where they land; rebounds 0.5-0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45°, from behind
+and in front of the bounce, 0.94-1.06 m (3.1-3.5 ft) from the slab for the six drops of a foot or less, as the kit asks
+(3 to 4 ft), and 1.22-1.51 m for the higher ones and for d05, kept at 1.36 m so that one drop's ball crop is not shrunk
 (the tracker did not lock the 7 in slab from 1.7 m), a push at the release, frames the recorder dropped, the ball
-leaving the view; every frame's timestamp jittered by up to 0.4 ms. Each is a shot as a kit records it (6 fps to lock,
-the cue at 2 s, then 60 fps from 0.25 s before the release until 0.25 s after the landing), 1440x1080, with exposure
-motion blur (1/120 s: the ball rendered at 7 instants over it and averaged); the renderer draws the top as the corner
-plane, so a ball sunk into the dish below it is drawn over it. `KitDropBench` runs each through the scorer's own
-per-frame path (`KitScoreRun.runShot`: the frame pipeline, a fresh tracker with the measured slab, the tracking finder
-on every frame), analyses the track with `KitDropAnalysis` as a kit's is (no floor; `--drops-floor` gives it ARKit's
-floor, y = 0, as on the phone) and also analyses a perfect track (the true centre on every frame, the true slab): the
-analysis's own error. The landing and the comparisons are scored against the truth at the analysis's own landing level
-(where the ball came down on the slab again, the floor seen, or the lowest top corner). The report (Markdown, JSON
-with every track) gives the measured minus the true numbers (rebound, contact point, local tilt, drop height, impact
-time, launch direction, landing, and the landing against the app both ways), how many drops are beyond 3 sigma
-(rebound, drop height, landing against the app), and the rebound to bake per true rebound. With the app's finder every
-drop locks, but only 5 of 12 are measured: the finder finds the ball on 9-62% of a drop's frames and its track is
-16-42 mm off on a median frame, and the analysis refuses the rest with the reason: the fall seen on too few frames
-(d03; d12, 17 mm of it), no rise seen after the fall (d05, d06, d11), a track that turns round 86-88 mm below the top
-(d08, d09: wrong frames taken for the ball). On the five measured, medians of measured minus true: rebound 2.1 points
-(worst 10.4: d04, 80% ± 8 for 70%, left out of the bake as an edge hit, its contact point read 14 mm from the edge,
-truly 29 mm), none beyond 3 sigma (rebound, drop height or the landing against the app; the nearest d10, 64% ± 2 for
-70%, 2.5 sigma); the rebound to bake 65% ± 4% from two 70% drops (d01 is left out too: its fall moves sideways at 0.23
-m/s) and 85% ± 7% from the one 85% drop; contact point on the dish 6 mm, its local tilt 0.13°, drop height 14 mm,
-impact time 4.9 ms, launch direction 1.6°, landing 22 mm, the landing against the app 10 mm (its rebound) and 15 mm
-(the measured one) from the truth's. Why the finder does so badly here: on the 7 in slab the app's ball crop is not
-shrunk (674 x 1148 camera pixels at 4 ft), so the ball is about 22 px in radius, and the finder misses this renderer's
-ball (its lower half dark against the grey floor) on most frames, even held still; the same crop shrunk by 2 (as on an
-18 in slab, the ball about 11 px) finds it on every frame of a drop, held and falling. That is the ball finder's to
-fix (or the rendered ball's: real footage will say), not the analysis's. With a finder that knows where the ball is
-(`--truth-ball`: the analysis, the lock and the crop without the finder's errors) all 12 are measured: rebound 0.0
-points (worst 0.1), contact point 0.7 mm (10.5 mm on d09, whose lock is 11 mm and 0.47° off), local tilt 0.01°,
-landing 0.0 mm; the rebound to bake 50% ± 1%, 70% ± 1% and 85% ± 1% (d11, the one 60% drop, is the edge hit). Its
-sigmas are a perfect track's and leave out the lock's error: d06 reads 50.1% ± 0.02 (4.7 sigma for 0.1 point), and 4
-of 12 landings against the app are beyond 3 sigma, by 1-7 mm (d09's by its lock's). The app's crop also limits the
-track on a 7 in slab: it is the slab grown by its own size, so the ball leaves it about 7 in past the slab's edge, and
-on the higher drops (d04, d08, d09, d12) the bounce is followed for only part of its flight and the landing
-extrapolated 0.22-0.35 s. The perfect tracks give the truth back (0.0 points, 0.0 mm; the tests check it with the
-floor and without). What it shows about the app's model: the app launches along the corner plane's normal, but a ball
-dropped straight onto a surface tilted by t leaves at about t + atan(5/7 tan t / e) from vertical, nearly twice as
-far, and on the 7 in dish the surface leans up to 3.9° more, toward the middle: so even with the true rebound its
-landing on the floor is 2-38 cm off, further than the app says on 11 of the 12 (7 cm on the level slab 2 in out, where
-the app goes straight up) and 2 cm short on d11, near the downhill edge, where the dish leans against the slope; its
-paraboloid dish leans half as much as the spherical cap near the middle.
+leaving the picture 0.73 s after the release, halfway through its bounce (d12); every frame's timestamp jittered by up
+to 0.4 ms. Each is a shot as a kit records it (6 fps to lock, the cue at 2 s, then 60 fps from 0.25 s before the release
+until 0.25 s after the landing), 1440x1080, with exposure motion blur (1/120 s: the ball rendered at 7 instants over it
+and averaged); the renderer draws the top as the corner plane, so a ball sunk into the dish below it is drawn over it.
+`KitDropBench` runs each through the scorer's own per-frame path (`KitScoreRun.runShot`: the frame pipeline, a fresh
+tracker with the measured slab, the tracking finder on every frame), analyses the track with `KitDropAnalysis` as a
+kit's is (no floor; `--drops-floor` gives it ARKit's floor, y = 0, as on the phone) and also analyses a perfect track
+(the true centre on every frame, the true slab): the analysis's own error. The landing and the comparisons are scored
+against the truth at the analysis's own landing level (where the ball came down on the slab again, the floor seen, or
+the lowest top corner). The report (Markdown, JSON with every track) gives each drop's camera distance, the shrink of
+the app's ball crop and the true ball's radius in it, the measured minus the true numbers (rebound, contact point, local
+tilt, drop height, impact time, launch direction, landing, and the landing against the app both ways), how many drops
+are beyond 3 sigma (rebound, drop height, landing against the app), and the rebound to bake per true rebound. With the
+app's finder every drop locks (d09's lock 0.47° and 11 mm off, the others within 0.31° and 2.1 mm), but only 4 of 12 are
+measured: the finder finds the ball on 24-69% of a drop's frames, its track is 5-41 mm off on a median frame, and the
+analysis refuses the rest with the reason: no rise seen after the fall (d01, d05, d06, d11), the fall's and the bounce's
+fits not meeting at the impact (d03), a track that turns round 86-88 mm below the top (d08, d09: wrong frames taken for
+the ball), too few frames after the impact (d12). All four measured read the rebound high: 75% ± 5 (d02) and 77% ± 6
+(d10) for 70%, 89% ± 6 (d07) for 85%, and 79% ± 11 (d04) for 70%, left out of the bake as an edge hit (its contact point
+read 6 mm from the edge, truly 29 mm). None is beyond 3 sigma, nor near it: the largest are d10's rebound at 1.3 sigma,
+d02's drop height (26 ± 24 mm high) and rebound at 1.1, and d04's at 0.8-0.9; so the rebound to bake comes out 76% ± 4%
+from the two 70% drops and 89% ± 6% from the one 85% drop, within their sigmas but all on the high side. Medians of
+measured minus true: rebound 6.1 points (worst 8.7), contact point on the dish 9 mm, its local tilt 0.15°, drop height
+19 mm, impact time 7.2 ms, launch direction 1.9°, landing 12 mm, the landing against the app 3 mm (its rebound) and 8 mm
+(the measured one) from the truth's. Why the finder does so badly here: the app's crop is shrunk by 2 on 11 of the 12
+drops, so the ball is 10-15 px in radius in the finder's image (19-21 px on d05, whose crop is not). Logged frame by
+frame against the true ball (d01 and d10, shrunk; d05, not): on 50 of the 65 frames it misses on d01 and d10 (20 of 50
+on d05) the ball's vote peak is the strongest in the search, but its outline is not read: the rendered ball's lower
+half, which reflects the grey floor, is about the grey of the floor behind it, and in the fall motion blur softens its
+top and bottom. The finder then finds nothing there (10 of d01's 66 drop frames, 3 of d10's 67, 28 of d05's 70), or
+reads only the bright upper cap, as a circle 0.7-0.8 of the ball's radius, a size that puts the ball 20-40% too far
+away, beyond the slab, so the locator rejects it (13 frames of d01, 10 of d10, 7 of d05); most of the rest are circles
+it finds only with its radius range narrowed to the true one, or beyond the 8 vote peaks it examines. Where it takes a
+find, the distance is still centimetres off along the line of sight. (A first explanation, that a crop not shrunk made
+the ball too big for the finder, was wrong: shrunk crops fail the same way. An independent check that forced the shrink
+to 2 on the earlier, farther cameras left the drops already shrunk unchanged, bit for bit, and found the ball more often
+on the two that were not, without getting either measured.) That is the ball finder's to fix, or the rendered ball's:
+real footage will say. With a finder that knows where the ball is (`--truth-ball`: the analysis, the lock and the crop
+without the finder's errors) all 12 are measured: rebound 0.0 points (worst 0.1), contact point 0.7 mm (10.5 mm on d09,
+whose lock is 11 mm and 0.47° off), local tilt 0.01°, landing 0.0 mm; the rebound to bake 50% ± 1%, 70% ± 1% and 85% ±
+1% (d11, the one 60% drop, is the edge hit). Its sigmas are a perfect track's and leave out the lock's pose error, so
+millimetres read as many sigma: d06's rebound, 50.1% ± 0.02, is 4.7 sigma for 0.1 point, and 6 of 12 landings against
+the app (its rebound) are beyond 3 sigma, by 0.9-7.1 mm against sigmas of 0.2-0.7 mm: d01 0.9 mm (4.5 sigma), d03 1.7 mm
+(8.9), d05 1.3 mm (7.1), d06 4.7 mm (24), d09 7.1 mm (10.5; 13.7 mm, 20 sigma, with the measured rebound: its lock's
+error) and d12 3.8 mm (6.0). The app's crop also limits the track on a 7 in slab: it is the slab grown by its own size,
+so the ball leaves it about 7 in past the slab's edge, and on the higher drops (d04, d08, d09) the bounce is followed
+for only part of its flight and the landing extrapolated 0.22-0.34 s; d12's ball leaves the picture itself, 0.73 s after
+the release, and its landing is extrapolated 0.33 s. The perfect tracks give the truth back (0.0 points, 0.0 mm; the
+tests check it with the floor and without), and a test works the set's truth out again from first principles (the
+sphere, the bounce, the landing and the comparison with the app's prediction), without the dish geometry and the
+comparison the analysis shares with the simulator. What it shows about the app's model: the app launches along the
+corner plane's normal, but a ball dropped straight onto a surface tilted by t leaves at about t + atan(5/7 tan t / e)
+from vertical, nearly twice as far, and on the 7 in dish the surface leans up to 3.9° more, toward the middle: so even
+with the true rebound its landing on the floor is 2-38 cm off, further than the app says on 11 of the 12 (7 cm on the
+level slab 2 in out, where the app goes straight up) and 2 cm short on d11, near the downhill edge, where the dish leans
+against the slope; its paraboloid dish leans half as much as the spherical cap near the middle.
 
 **Locally** (`ios/tools/score-kits.sh [bundle parts or folders of them]`): unzips all of a kit's parts
 (`<kitId>-partNofM.zip`) into one folder outside the repository (default `~/bounce-private/kits`; a folder inside the

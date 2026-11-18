@@ -11,6 +11,13 @@ public struct KitDropBenchResult: Codable, Equatable {
     public var ballFound: Int
     /// the slab was locked before the cue (the analysis's dish needs the lock)
     public var lockedBeforeCue: Bool
+    /// the camera's distance from the slab's centre at the cue (m)
+    public var cameraDistance: Double?
+    /// the shrink factors of the app's crop the tracking finder searched (`BallImageCrop.factor`) from the cue on, and
+    /// the true ball's radius in that image (pixels, `Bounce.imageRadius`): median over those frames, and its least
+    public var ballCropFactors: [Int]?
+    public var ballImageRadius: Double?
+    public var ballImageRadiusMin: Double?
     /// the lock's normal's angle from the true one (degrees) and its centre's distance from the true one (m)
     public var lockNormalError: Double?
     public var lockCenterError: Double?
@@ -159,14 +166,18 @@ public struct KitDropBenchReport: Codable, Equatable {
             md.append(String(format: "- true rebound %.0f%%: ", r * 100) + KitDropAnalysis.bakeLine(g.compactMap { $0.measured }))
         }
         md.append("")
-        md.append("| Drop | Tilt | Height | Contact u, v (in, the true slab's axes) true / measured | Local tilt true / measured | Rebound true / measured | "
-                  + "Impact centre (fits) | Landing | vs app: true / measured | vs true or measured rebound: true / measured | Found |")
-        md.append("|---|---|---|---|---|---|---|---|---|---|---|")
+        md.append("| Drop | Tilt | Height | Camera to slab, crop shrink, ball radius (finder px) | Contact u, v (in, the true slab's axes) true / measured | "
+                  + "Local tilt true / measured | Rebound true / measured | Impact centre (fits) | Landing | vs app: true / measured | "
+                  + "vs true or measured rebound: true / measured | Found |")
+        md.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in results {
             let t = r.truth
             let found = "\(r.ballFound)/\(r.dropFrames)"
+            var cam = r.cameraDistance.map { String(format: "%.2f m", $0) } ?? "-"
+            if let k = r.ballCropFactors { cam += ", /" + k.map(String.init).joined(separator: "-") }
+            if let b = r.ballImageRadius { cam += String(format: ", %.0f px", b) + (r.ballImageRadiusMin.map { String(format: " (least %.0f)", $0) } ?? "") }
             guard let a = r.measured else {
-                md.append("| \(r.shot.id) | \(String(format: "%.0f°", r.shot.tilt)) | \(String(format: "%.0f in", r.shot.heightInches)) | "
+                md.append("| \(r.shot.id) | \(String(format: "%.0f°", r.shot.tilt)) | \(String(format: "%.0f in", r.shot.heightInches)) | \(cam) | "
                           + String(format: "%.1f, %.1f / - | %.2f° / - | %.0f%% / - | | | | | ", Units.toInches(t.offsetU), Units.toInches(t.offsetV),
                                    t.normalTilt, t.rebound * 100) + "\(found) |")
                 continue
@@ -180,7 +191,7 @@ public struct KitDropBenchReport: Codable, Equatable {
                 guard let x = x else { return "-" }
                 return String(format: "%.0f mm", x.landingError * 1000) + (x.bearingError.map { String(format: " %+.0f°", $0) } ?? "")
             }
-            md.append("| \(r.shot.id) | \(String(format: "%.0f°", r.shot.tilt)) | \(String(format: "%.0f in", r.shot.heightInches)) | "
+            md.append("| \(r.shot.id) | \(String(format: "%.0f°", r.shot.tilt)) | \(String(format: "%.0f in", r.shot.heightInches)) | \(cam) | "
                       + String(format: "%.1f, %.1f / ", Units.toInches(t.offsetU), Units.toInches(t.offsetV)) + off + " | "
                       + String(format: "%.2f° / ", t.normalTilt) + tilt + " | " + String(format: "%.0f%% / ", t.rebound * 100) + reb + " | "
                       + imp + " | " + land + " | " + cmp(r.measuredTruth?.app) + " / " + cmp(a.app) + " | " + cmp(r.measuredTruth?.trueRebound)
@@ -287,6 +298,15 @@ public enum KitDropBench {
         var res = KitDropBenchResult(shot: d.shot, truth: d.truth, frames: d.frames.count, dropFrames: d.frames.filter { $0.time >= cue }.count,
                                      ballFound: sr.track.filter { $0.t >= cue }.count, lockedBeforeCue: sr.lockBeforeCue != nil)
         res.track = sr.track
+        if let i = d.frames.firstIndex(where: { $0.time >= cue }) { res.cameraDistance = d.views[i].position.distance(to: d.slab.center) }
+        let searched = sr.ballImages.filter { $0.t >= cue }
+        if !searched.isEmpty {
+            res.ballCropFactors = Array(Set(searched.map { $0.crop.factor })).sorted()
+            let radii = searched.compactMap { im in
+                Bounce.imageRadius(ballCenter: im.view.toCamera(d.physics.position(at: im.t)), intrinsics: im.intrinsics, ball: settings.ball)
+            }
+            if !radii.isEmpty { res.ballImageRadius = KitStats.median(radii); res.ballImageRadiusMin = radii.min() }
+        }
         let errs = sr.track.map { $0.p.distance(to: d.physics.position(at: $0.t)) }
         if !errs.isEmpty {
             res.trackErrorMedian = KitStats.median(errs)
