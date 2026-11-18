@@ -9,7 +9,9 @@ name: iOS
 
 on:
   push:
-    branches: [native-ios]
+    # native-ios is what the owner builds; a candidate is first pushed to a claude/ branch and must pass there before
+    # native-ios moves to it, so native-ios only ever gets builds that passed
+    branches: [native-ios, "claude/**"]
     paths: ["ios/**", ".github/workflows/ios.yml"]
   pull_request:
     paths: ["ios/**", ".github/workflows/ios.yml"]
@@ -122,7 +124,6 @@ jobs:
 
       # The app's demo (a synthetic slab, as ARKit has no camera in the Simulator) driven by XCUITest: it must lock,
       # show the right tilt / apex / drop, re-lock after the slab is slid, copy diagnostics, record and share.
-      # Informational (does not fail the build) until the slab and ball detectors are merged; then blocking.
       - name: End-to-end UI tests in the Simulator (demo scene)
         # Blocking: a failing end-to-end test fails the run. A test that fails is run once more (a slow shared
         # Simulator can miss a time limit); its first failure still shows in the log and the summary below.
