@@ -42,7 +42,9 @@ enum FrameConversion {
     }
 
     /// Scale a bi-planar 4:2:0 camera image into another bi-planar 4:2:0 buffer of any size (vImage, Lanczos; luma and
-    /// interleaved chroma each scaled on their own). Synchronous: when it returns, nothing refers to `src`.
+    /// interleaved chroma each scaled on their own), with the camera image's colour attachments (YCbCr matrix,
+    /// primaries, transfer function), so the encoder can tag the kit's video as the camera's. Synchronous: when it
+    /// returns, nothing refers to `src`.
     static func scale(_ src: CVPixelBuffer, into dst: CVPixelBuffer) -> Bool {
         guard CVPixelBufferGetPlaneCount(src) >= 2, CVPixelBufferGetPlaneCount(dst) >= 2 else { return false }
         CVPixelBufferLockBaseAddress(src, .readOnly)
@@ -63,6 +65,7 @@ enum FrameConversion {
                                  : vImageScale_CbCr8(&sb, &db, nil, vImage_Flags(kvImageNoFlags))
             if err != kvImageNoError { return false }
         }
+        CVBufferPropagateAttachments(src, dst)
         return true
     }
 

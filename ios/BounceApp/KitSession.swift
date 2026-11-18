@@ -64,7 +64,9 @@ final class KitSession: ObservableObject {
     @Published private(set) var report: KitQualityReport? = nil
     @Published private(set) var trueTilt: KitTrueTilt? = nil
     @Published private(set) var heightAsked = false
+    /// empty until the owner types a height: the shot's nominal height is only the placeholder, never a value
     @Published var heightText = ""
+    @Published private(set) var heightPlaceholder = "inches"
     @Published private(set) var heightNote: String? = nil
     /// a passing note (e.g. a shot thrown away when the app went to the background)
     @Published private(set) var notice: String? = nil
@@ -322,7 +324,7 @@ final class KitSession: ObservableObject {
         }
         phase = .ready
         if spec.isForm {
-            fillForm(s.manifest.measurements)
+            fillForm(s.manifest.measurements, entered: s.manifest.measurementsEntered)
             screen = .measurements
         } else {
             screen = .shot
@@ -359,7 +361,13 @@ final class KitSession: ObservableObject {
 
     // MARK: step 1, the measurements
 
-    private func fillForm(_ m: KitMeasurements) {
+    /// The form shows what the owner entered before (a retake of step 1), else nothing: the app's built-in slab and ball
+    /// are only the placeholders, so Start never records them as if they had been measured.
+    private func fillForm(_ m: KitMeasurements, entered: Bool) {
+        guard entered else {
+            widthText = ""; depthText = ""; thicknessText = ""; dishText = ""; ballText = ""
+            return
+        }
         widthText = KitSession.fmt(m.slabWidthInches)
         depthText = KitSession.fmt(m.slabDepthInches)
         thicknessText = KitSession.fmt(m.slabThicknessInches)
@@ -370,6 +378,11 @@ final class KitSession: ObservableObject {
     /// Start (step 1): the values are checked and stored in the kit's kit.json only (never in the app's settings).
     func commitMeasurements() {
         guard let s = store else { return }
+        let required = [widthText, depthText, thicknessText, ballText].map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !required.contains(where: { $0.isEmpty }) else {
+            formProblems = ["Enter the slab's width, depth and thickness and the ball's diameter as you measured them, or tap Skip (the kit then keeps the app's built-in slab and ball)."]
+            return
+        }
         let dish = dishText.trimmingCharacters(in: .whitespaces)
         let m = KitMeasurements(slabWidthInches: KitSession.number(widthText) ?? .nan, slabDepthInches: KitSession.number(depthText) ?? .nan,
                                 slabThicknessInches: KitSession.number(thicknessText) ?? .nan,
@@ -443,7 +456,8 @@ final class KitSession: ObservableObject {
         controller.attachKitRecorder(rec)
         phase = .recording
         secondsLeft = seconds
-        feedback.play(.phase)
+        // a drop shot's only beep after the countdown is the one to let go at (`recordingStarted` plays it)
+        if spec.kind.releaseCue == nil { feedback.play(.phase) }
         let t0 = CACurrentMediaTime()
         var stopped = false
         while tk == token && phase == .recording {
@@ -502,7 +516,8 @@ final class KitSession: ObservableObject {
             try s.commitShot(spec.id, manifest: m, date: Date())
             report = q
             heightAsked = spec.asksHeight
-            heightText = spec.nominalHeightInches.map(KitSession.fmt) ?? ""
+            heightText = ""
+            heightPlaceholder = spec.nominalHeightInches.map { "about " + KitSession.fmt($0) } ?? "inches"
             phase = .review
         } catch {
             discardAttempt()
@@ -542,13 +557,19 @@ final class KitSession: ObservableObject {
             demoFeed = feed
         }
         phase = .flat
-        feedback.play(.phase)
-        var changes = 0
+        // Two cues only, as the instructions say: the turn beep when reading A is done (the phone may be picked up),
+        // and a lower tone when it is all done. None when a reading starts or starts over, and no haptics while the
+        // phone lies on the slab.
+        var lastPhase = fr.snapshot().phase
         while tk == token {
             fr.advance(to: CACurrentMediaTime())
             let snap = fr.snapshot()
             flat = snap
-            if snap.changes != changes { changes = snap.changes; feedback.play(.phase) }
+            if snap.phase != lastPhase {
+                if snap.phase == .waitingForLift { feedback.play(.turn) }
+                if snap.phase == .done { feedback.play(.done) }
+                lastPhase = snap.phase
+            }
             if snap.phase == .done { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }

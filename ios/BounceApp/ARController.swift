@@ -246,20 +246,25 @@ final class ARController: NSObject, ARSessionDelegate {
         }
     }
 
-    /// One 100 Hz sample (motion queue): kept for the session recording, handed to the kit.
+    /// One 100 Hz sample (motion queue): kept for the session recording, handed to the kit. Only while the kit is open:
+    /// a sample CoreMotion had already queued when the kit closed (or the app stopped) is dropped, so no stale sample is
+    /// kept for later.
     private func kitMotion(_ m: CMDeviceMotion) {
         let q = m.attitude.quaternion
         let s = KitMotionSample(time: m.timestamp, gravity: Vec3(m.gravity.x, m.gravity.y, m.gravity.z),
                                 userAcceleration: Vec3(m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z),
                                 rotationRate: Vec3(m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
                                 attitude: KitQuaternion(x: q.x, y: q.y, z: q.z, w: q.w))
-        lock.lock(); latestKitMotion = m; let h = kitMotionHandler; lock.unlock()
+        lock.lock()
+        let h = kitMotionHandler
+        if h != nil { latestKitMotion = m }
+        lock.unlock()
         h?(s)
     }
 
-    /// The latest device motion, whichever way it is running.
+    /// The latest device motion, whichever way it is running (the kit's cached sample only while the kit is open).
     private func currentMotion() -> CMDeviceMotion? {
-        lock.lock(); let k = latestKitMotion; lock.unlock()
+        lock.lock(); let k = kitMotionHandler != nil ? latestKitMotion : nil; lock.unlock()
         return k ?? motion.deviceMotion
     }
 

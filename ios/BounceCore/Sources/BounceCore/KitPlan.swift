@@ -130,7 +130,8 @@ public struct KitShotSpec: Codable, Equatable {
     public var startsPosition: KitPositionSpec?
     /// optional shots (the third tilt) can be skipped as a group
     public var optional: Bool
-    /// after the shot, ask the owner for the measured height of the ball's bottom above the slab's top
+    /// after the shot, ask the owner for the measured height of the ball's bottom above the slab's surface right under it
+    /// (a ruler stood on the slab under the ball, so in the dish): the app's drop height (`Bounce.drop`)
     public var asksHeight: Bool
     /// the height the instruction asks for (inches), as a hint for the height entry and the scorer
     public var nominalHeightInches: Double?
@@ -232,7 +233,7 @@ public struct KitPlan: Codable, Equatable {
             KitStepSpec(number: 11, title: "Off-centre bounce"),
             KitStepSpec(number: 12, title: "Negatives"),
         ]
-        let flatDetail = "When it beeps, pick it up, turn it around (top toward you), lay it down in the middle again and let go."
+        let flatDetail = "At the long beep (the screen says to turn it), pick it up, turn it around (top toward you), lay it down in the middle again and let go. A low tone means it is done."
         var shots: [KitShotSpec] = [
             KitShotSpec(id: "s01-measure", step: 1, title: "Measure",
                         instruction: "Measure the slab and the ball, and enter the numbers.",
@@ -260,7 +261,7 @@ public struct KitPlan: Codable, Equatable {
         for t in tilts {
             let opt = t.optional ? " Optional: tap Skip to leave the slab at tilt \(t.n - 1)." : ""
             shots.append(KitShotSpec(id: "s05-tilt\(t.n)-flat", step: 5, title: "Tilt \(t.n): true tilt",
-                                     instruction: "Prop one edge of the slab up to tilt it about \(t.deg)°. Lay the phone flat in its middle, top pointing away. Let go.",
+                                     instruction: "Slide the slab in its cradle to tilt it about \(t.deg)°. Lay the phone flat in its middle, top pointing away. Let go.",
                                      detail: flatDetail + opt, diagram: .flatPhoneTilted, kind: .flat, countdown: 5,
                                      startsPosition: KitPositionSpec(id: t.pos, label: "tilt \(t.n)"), optional: t.optional))
             shots.append(KitShotSpec(id: "s05-tilt\(t.n)-still", step: 5, title: "Tilt \(t.n): hold still",
@@ -296,7 +297,7 @@ public struct KitPlan: Codable, Equatable {
                         kind: .video(seconds: 5, highFrameRate: false, releaseCue: nil), countdown: 3,
                         expect: KitExpectations(slab: .forbidden, ball: .required, motion: .still)),
             KitShotSpec(id: "s08-ball-centre", step: 8, title: "Ball on the slab",
-                        instruction: "Rest the ball in the middle of the slab's dish. Hold still, slab in the middle of the screen.",
+                        instruction: "Rest the ball in the slab's dish, as near the middle as it will stay. Hold still, slab in the middle of the screen.",
                         detail: "This ties the ball's size to the slab's distance.", diagram: .ballOnSlab,
                         kind: .video(seconds: 6, highFrameRate: false, releaseCue: nil), countdown: 3, expect: ballAndSlab),
         ]
@@ -304,20 +305,20 @@ public struct KitPlan: Codable, Equatable {
         for (name, text, diagram, inches) in held {
             shots.append(KitShotSpec(id: "s09-held-\(name)", step: 9, title: "Ball held \(name == "mid" ? "middle" : name)",
                                      instruction: "Hold the ball about \(text) above the middle of the slab. Keep both in view and hold still.",
-                                     detail: "Afterwards you can enter the measured height of the ball's bottom above the slab, or skip that.",
+                                     detail: "Afterwards you can enter the measured height of the ball's bottom above the slab right under it (a ruler stood on the slab under the ball), or skip that.",
                                      diagram: diagram, kind: .video(seconds: 5, highFrameRate: false, releaseCue: nil), countdown: 3,
                                      expect: ballAndSlab, asksHeight: true, nominalHeightInches: inches))
         }
         for n in 1...3 {
             shots.append(KitShotSpec(id: "s10-drop\(n)", step: 10, title: "Drop \(n) of 3",
-                                     instruction: "Hold the ball about 1 ft over the middle of the slab and let go at the beep.",
+                                     instruction: "Hold the ball about 1 ft over the middle of the slab and let go at the high beep (Drop now).",
                                      detail: "Keep the slab and the floor around it in view until the recording stops.",
                                      diagram: .dropCentre, kind: .video(seconds: 6, highFrameRate: true, releaseCue: 2), countdown: 3,
                                      expect: ballAndSlab, nominalHeightInches: 12))
         }
         shots += [
             KitShotSpec(id: "s11-drop-edge", step: 11, title: "Drop near an edge",
-                        instruction: "Hold the ball about 1 ft over the slab, just inside one edge, and let go at the beep.",
+                        instruction: "Hold the ball about 1 ft over the slab, just inside one edge, and let go at the high beep (Drop now).",
                         detail: "Keep the slab and the floor around it in view until the recording stops.",
                         diagram: .dropEdge, kind: .video(seconds: 6, highFrameRate: true, releaseCue: 2), countdown: 3,
                         expect: ballAndSlab, nominalHeightInches: 12),

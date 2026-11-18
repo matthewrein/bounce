@@ -43,12 +43,32 @@ final class KitFeedback {
     enum Tone: CaseIterable {
         /// the countdown's seconds
         case tick
-        /// recording started or stopped, a flat-phone phase changed
+        /// a recording started (not in drop shots) or stopped
         case phase
-        /// "drop now"
+        /// "drop now": the only beep in a drop shot after the countdown
         case drop
-        var frequency: Double { switch self { case .tick: return 880; case .phase: return 1320; case .drop: return 1760 } }
-        var seconds: Double { switch self { case .tick: return 0.08; case .phase: return 0.18; case .drop: return 0.35 } }
+        /// flat-phone shot: "turn it around now" (reading A is done), the only beep while the phone lies on the slab
+        case turn
+        /// flat-phone shot: done (a lower tone)
+        case done
+        var frequency: Double {
+            switch self {
+            case .tick: return 880
+            case .phase: return 1320
+            case .drop: return 1760
+            case .turn: return 1320
+            case .done: return 660
+            }
+        }
+        var seconds: Double {
+            switch self {
+            case .tick: return 0.08
+            case .phase: return 0.18
+            case .drop: return 0.35
+            case .turn: return 0.5
+            case .done: return 0.5
+            }
+        }
     }
 
     func prepare() {
@@ -80,6 +100,8 @@ final class KitFeedback {
         case .tick: light.impactOccurred()
         case .phase: notify.notificationOccurred(.success)
         case .drop: impact.impactOccurred()
+        // the phone lies on the slab: sound only, so nothing shakes it
+        case .turn, .done: break
         }
         return now
     }
@@ -114,7 +136,7 @@ final class KitFlatRunner {
         var progress: Double
         var secondsLeft: Double?
         var result: KitTrueTilt?
-        /// phase changes so far (the screen beeps on each new one)
+        /// phase changes so far
         var changes: Int
         var samples: Int
     }

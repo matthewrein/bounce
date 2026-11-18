@@ -121,11 +121,12 @@ struct KitMeasurementsView: View {
                         Text(kit.shot?.instruction ?? "").accessibilityIdentifier("kitInstruction")
                     }
                 }
-                Section(header: Text("Slab, inches")) {
+                Section(header: Text("Slab, inches"),
+                        footer: Text("Enter only what you measured; the grey numbers are the app's built-in slab and ball. Leave the dish empty if you did not measure it. Did not measure? Tap Skip.")) {
                     field("Width", text: $kit.widthText, placeholder: "7", id: "kitWidth")
                     field("Depth", text: $kit.depthText, placeholder: "7", id: "kitDepth")
                     field("Thickness", text: $kit.thicknessText, placeholder: "1", id: "kitThickness")
-                    field("Dish depth", text: $kit.dishText, placeholder: "0.125 if not measured", id: "kitDish")
+                    field("Dish depth", text: $kit.dishText, placeholder: "empty if not measured", id: "kitDish")
                 }
                 Section(header: Text("Ball, mm")) {
                     field("Diameter", text: $kit.ballText, placeholder: "35", id: "kitBall")
@@ -184,6 +185,8 @@ struct KitMeasurementsView: View {
 
 struct KitShotView: View {
     @ObservedObject var kit: KitSession
+    /// Discard was tapped on the review card: ask before the capture is deleted
+    @State private var confirmDiscard = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -329,9 +332,9 @@ struct KitShotView: View {
             }
             if kit.heightAsked {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Height of the ball's bottom above the slab's top (inches), if you measured it:").font(.caption)
+                    Text("Height of the ball's bottom above the slab right under it (stand a ruler on the slab under the ball), in inches, if you measured it:").font(.caption)
                     HStack(spacing: 8) {
-                        TextField("inches", text: $kit.heightText)
+                        TextField(kit.heightPlaceholder, text: $kit.heightText)
                             .keyboardType(.decimalPad)
                             .textFieldStyle(.roundedBorder)
                             .foregroundColor(.primary)
@@ -365,20 +368,42 @@ struct KitShotView: View {
                     .accessibilityIdentifier("shotSkip")
             }
         case .review, .failed:
-            HStack(spacing: 12) {
-                Button("Retry") { kit.retry() }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .accessibilityIdentifier("shotRetry")
-                if kit.phase == .review {
-                    Button(action: { kit.next() }) { Text("Next").frame(maxWidth: .infinity) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("shotNext")
+            if kit.phase == .review && confirmDiscard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Delete the shot you just recorded and skip it? Next keeps it.")
+                        .font(.callout)
+                        .accessibilityIdentifier("discardQuestion")
+                    HStack(spacing: 12) {
+                        Button("Delete and skip", role: .destructive) { confirmDiscard = false; kit.skip() }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("shotDiscardConfirm")
+                        Button("Keep it") { confirmDiscard = false }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("shotDiscardCancel")
+                    }
                 }
-                Button("Skip") { kit.skip() }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .accessibilityIdentifier("shotSkip")
+            } else {
+                HStack(spacing: 12) {
+                    Button("Retry") { confirmDiscard = false; kit.retry() }
+                        .buttonStyle(.bordered)
+                        .tint(.white)
+                        .accessibilityIdentifier("shotRetry")
+                    if kit.phase == .review {
+                        Button(action: { kit.next() }) { Text("Next").frame(maxWidth: .infinity) }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("shotNext")
+                        // after a capture, skipping deletes it: say so, and ask first
+                        Button("Discard") { confirmDiscard = true }
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                            .accessibilityIdentifier("shotDiscard")
+                    } else {
+                        Button("Skip") { kit.skip() }
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                            .accessibilityIdentifier("shotSkip")
+                    }
+                }
             }
         case .countdown, .recording, .flat, .saving:
             EmptyView()
@@ -623,7 +648,11 @@ enum KitDiagramPainter {
             let tilt: CGFloat = d == .flatPhoneTilted ? 12 : 0
             slab(&ctx, centre: mid, width: w * 0.62, tilt: tilt)
             if tilt > 0 {
-                ctx.fill(Path(CGRect(x: w * 0.8, y: mid.y - 2, width: 7, height: 12)), with: .color(.brown))
+                // slid in its cradle (nothing propped under it): a short arrow along the slab's front
+                let a = Double(tilt) * .pi / 180
+                let from = CGPoint(x: mid.x - w * 0.12, y: mid.y + w * 0.16 + w * 0.12 * CGFloat(sin(a)))
+                let to = CGPoint(x: mid.x + w * 0.12, y: mid.y + w * 0.16 - w * 0.12 * CGFloat(sin(a)))
+                arrow(&ctx, from: from, to: to)
             }
             var g = ctx
             g.translateBy(x: mid.x, y: mid.y - w * 0.08)

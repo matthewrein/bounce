@@ -267,10 +267,20 @@ final class SlabBounceUITests: XCTestCase {
         // an unfinished kit left by an earlier run is replaced (after confirming)
         if element(app, "kitNewConfirm").waitForExistence(timeout: 2) { element(app, "kitNewConfirm").tap() }
 
-        // step 1: the measurements, prefilled
+        // step 1: the measurements. The form starts empty (the built-in slab and ball are only its placeholders), so
+        // Start on it records nothing and says what is missing; then the values are typed in, as measured (the ball
+        // first, lowest on the form, before the keyboard is up)
         XCTAssertTrue(element(app, "kitStart").waitForExistence(timeout: 10), "no measurements form")
         let formProgress = label(app, "kitProgress")
         screenshot(app, "kit measurements")
+        element(app, "kitStart").tap()
+        XCTAssertTrue(element(app, "kitFormProblems").waitForExistence(timeout: 5), "Start took an empty form as measured")
+        for (id, value) in [("kitBall", "35"), ("kitWidth", "7"), ("kitDepth", "7"), ("kitThickness", "1")] {
+            let field = app.textFields[id]
+            XCTAssertTrue(field.waitForExistence(timeout: 5), "no \(id) field")
+            field.tap()
+            field.typeText(value)
+        }
         element(app, "kitStart").tap()
 
         // step 2: the room scan, a video shot

@@ -65,6 +65,25 @@ final class KitScoreReportTests: XCTestCase {
         XCTAssertTrue(md.contains("New kits: slab-kit-20261119-090000."))
     }
 
+    /// A kit scored with the measured slab and ball is not compared with the same kit scored with the app's settings:
+    /// the settings alone change the scores, and that is no regression.
+    func testOnlyRunsWithTheSameSettingsAreCompared() {
+        var measured = report(tilt: 0.9, lock: 0.5)
+        measured.settings = "measured"
+        let c = KitScoreSet(reports: [measured]).compare(previous: KitScoreSet(reports: [report()]))
+        XCTAssertFalse(c.hasRegressions)
+        XCTAssertTrue(c.changes.isEmpty)
+        XCTAssertEqual(c.settingsChanged, ["slab-kit-20261117-153000"])
+        XCTAssertTrue(c.kitsAdded.isEmpty && c.kitsRemoved.isEmpty)
+        XCTAssertTrue(c.markdown().contains("Not compared, scored with other settings than before"), c.markdown())
+        // a set holding both: each is compared with its own kind
+        let before = KitScoreSet(reports: [report(), { var r = report(); r.settings = "measured"; return r }()])
+        let after = KitScoreSet(reports: [report(), measured])
+        let d = after.compare(previous: before)
+        XCTAssertEqual(Set(d.regressions.map { $0.metric }), ["tiltErrorMedian", "lockRate", "tiltErrorP90"])
+        XCTAssertTrue(d.settingsChanged.isEmpty)
+    }
+
     func testFormattingAndMarkdown() throws {
         XCTAssertEqual(KitMetric(id: "lockRate", value: 0.9333).formatted, "93.3%")
         XCTAssertEqual(KitMetric(id: "tiltErrorMedian", value: 0.123).formatted, "0.12°")

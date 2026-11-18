@@ -125,17 +125,34 @@ public struct KitVideoProbe: Equatable {
     public var frames: Int?
 
     /// Full range (0-255) when the stream says so ("pc", or a "yuvj" pixel format); otherwise limited (16-235 luma,
-    /// 16-240 chroma), which is what H.264 and HEVC streams are when they do not say.
+    /// 16-240 chroma). A stream without a tag reads as limited here; the scorer judges such a stream from its samples
+    /// instead (`KitVideoDecoder.rangeCheck`).
     public var isFullRange: Bool {
         if let r = colorRange?.lowercased(), ["pc", "jpeg", "full"].contains(r) { return true }
         return pixelFormat.hasPrefix("yuvj")
     }
 }
 
+/// How a video's samples are to be read, full or limited range, judged from the samples themselves and the camera's own
+/// mean luma (`KitVideoDecoder.rangeCheck`).
+public struct KitRangeCheck: Equatable {
+    /// the samples are full range (0-255)
+    public var fullRange: Bool
+    /// how it was decided, in plain English
+    public var reason: String
+    /// share of luma samples outside the limited range (below 10 or above 245; a limited-range stream has hardly any)
+    public var outsideShare: Double
+    /// mean |decoded mean luma - frames.jsonl luma| with the samples read as full range, and as limited range (nil: no
+    /// frame had a luma to compare)
+    public var fullLumaError: Double?
+    public var limitedLumaError: Double?
+}
+
 /// Decodes a kit's video (video.mp4) frame by frame with ffmpeg, into full-range 8-bit YCbCr 4:2:0 `YCCImage`s at the
-/// video's size, without holding the whole video in memory. Limited-range streams (the usual for H.264 and HEVC, and
-/// any stream without a range tag) are expanded to full range (BT.601: luma (Y - 16) x 255/219, chroma
-/// (C - 128) x 255/224 + 128), matching the phone's full-range camera buffer. Every decoded frame is kept as it is
+/// video's size, without holding the whole video in memory. Limited-range streams (the usual for H.264 and HEVC) are
+/// expanded to full range (BT.601: luma (Y - 16) x 255/219, chroma (C - 128) x 255/224 + 128), matching the phone's
+/// full-range camera buffer. A stream without a range tag is read the way its samples say (`rangeCheck`, given to the
+/// decoder as `fullRange`). Every decoded frame is kept as it is
 /// (no frames dropped or repeated to a constant rate), and the rotation tag, if any, is ignored: the frames stay in the
 /// sensor's orientation, which frames.jsonl's intrinsics describe.
 ///
@@ -180,6 +197,61 @@ public final class KitVideoDecoder: KitFrameSource {
         return KitVideoProbe(codec: s["codec_name"] as? String ?? "?", width: w, height: h, pixelFormat: s["pix_fmt"] as? String ?? "?",
                              colorRange: range, frames: int("nb_read_packets") ?? int("nb_frames"))
     }
+
+    /// The range a kit's video is in, from its first frames (up to `maxFrames`, decoded as they are): samples outside
+    /// 10-245 on more than 0.2% of the luma (every 8th pixel) mean full range (a limited-range stream keeps luma within
+    /// 16-235, give or take the encoder's ringing). Otherwise the frames' mean luma (every 8th pixel), read either way,
+    /// is compared with the camera's own mean luma on the same frames (frames.jsonl `luma`, full range, every 8th pixel
+    /// of the camera image), and the closer reading wins when they differ by more than 1.5 levels. Near mid-grey the
+    /// two readings hardly differ; then it is full range, as the app's recorder gives the encoder full-range samples.
+    public static func rangeCheck(url: URL, luma: [Double?], maxFrames: Int = 8) throws -> KitRangeCheck {
+        let raw = try KitVideoDecoder(url: url, fullRange: true)
+        defer { raw.close() }
+        let t = expansionTables()
+        var outside = 0, samples = 0
+        var errFull = 0.0, errLimited = 0.0, compared = 0
+        var i = 0
+        while i < maxFrames, let f = try raw.next() {
+            var sum = 0, sumExpanded = 0, n = 0
+            var y = 0
+            while y < f.height {
+                var x = 0
+                let row = y * f.width
+                while x < f.width {
+                    let v = f.y[row + x]
+                    if v < 10 || v > 245 { outside += 1 }
+                    sum += Int(v); sumExpanded += Int(t.y[Int(v)]); n += 1
+                    x += 8
+                }
+                y += 8
+            }
+            samples += n
+            if i < luma.count, let l = luma[i], l.isFinite, n > 0 {
+                errFull += abs(Double(sum) / Double(n) - l)
+                errLimited += abs(Double(sumExpanded) / Double(n) - l)
+                compared += 1
+            }
+            i += 1
+        }
+        let share = samples > 0 ? Double(outside) / Double(samples) : 0
+        let eF = compared > 0 ? errFull / Double(compared) : nil, eL = compared > 0 ? errLimited / Double(compared) : nil
+        if share > 0.002 {
+            return KitRangeCheck(fullRange: true, reason: String(format: "%.1f%% of its luma is outside 16-235, so it is full range", share * 100),
+                                 outsideShare: share, fullLumaError: eF, limitedLumaError: eL)
+        }
+        if let f = eF, let l = eL, abs(f - l) > 1.5 {
+            let full = f < l
+            return KitRangeCheck(fullRange: full, reason: String(format: "its mean luma matches the camera's when read as %@ range (%.1f against %.1f levels off)",
+                                                               full ? "full" : "limited", min(f, l), max(f, l)),
+                                 outsideShare: share, fullLumaError: eF, limitedLumaError: eL)
+        }
+        return KitRangeCheck(fullRange: true, reason: "its samples do not show which range they are in; read as full range, as the app records",
+                             outsideShare: share, fullLumaError: eF, limitedLumaError: eL)
+    }
+
+    /// A word on the colour range for the report, if there is anything to say: how an untagged stream is read, or a
+    /// tagged one whose samples look like the other range (nil: tagged, and the samples agree).
+    public var rangeNote: String? = nil
 
     /// Starts decoding. `fullRange`: override the stream's range tag (nil: as the stream says).
     public init(url: URL, expectedFrames: Int? = nil, fullRange: Bool? = nil) throws {
@@ -303,20 +375,22 @@ public final class KitVideoDecoder: KitFrameSource {
 }
 
 /// Encodes frames into an MP4 with ffmpeg (for tests and synthetic kits): H.264 (libx264) or HEVC (libx265), full or
-/// limited range (limited: the frames are converted to 16-235 / 16-240 and tagged "tv"; full: kept and tagged "pc").
+/// limited range (limited: the frames are converted to 16-235 / 16-240 and tagged "tv"; full: kept and tagged "pc";
+/// `tagRange` false leaves the tag out, as an encoder may).
 public enum KitVideoEncoder {
     public enum Codec: String { case h264 = "libx264", hevc = "libx265" }
 
     /// Writes `frames` (all the same size) at `fps`. `crf`: quality (lower is better; 18 is nearly lossless to the eye).
-    public static func encode(_ frames: [YCCImage], fps: Double, codec: Codec, fullRange: Bool, crf: Int = 18, to url: URL) throws {
+    public static func encode(_ frames: [YCCImage], fps: Double, codec: Codec, fullRange: Bool, tagRange: Bool = true, crf: Int = 18,
+                              to url: URL) throws {
         guard let first = frames.first else { throw KitVideoError.badFrame("no frames") }
         guard let exe = KitFFmpeg.find("ffmpeg") else { throw KitVideoError.toolMissing("ffmpeg") }
         let w = first.width, h = first.height
         // a closed pipe must throw, not kill the process
         signal(SIGPIPE, SIG_IGN)
-        var args = ["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "\(w)x\(h)", "-r", String(format: "%.6g", fps),
-                    "-color_range", fullRange ? "pc" : "tv", "-i", "pipe:0", "-c:v", codec.rawValue, "-pix_fmt", "yuv420p",
-                    "-color_range", fullRange ? "pc" : "tv", "-crf", String(crf)]
+        let tag = tagRange ? ["-color_range", fullRange ? "pc" : "tv"] : []
+        var args = ["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "\(w)x\(h)", "-r", String(format: "%.6g", fps)]
+            + tag + ["-i", "pipe:0", "-c:v", codec.rawValue, "-pix_fmt", "yuv420p"] + tag + ["-crf", String(crf)]
         if codec == .hevc { args += ["-x265-params", "log-level=error", "-tag:v", "hvc1"] }
         args += [url.path]
         let p = Process()

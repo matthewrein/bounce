@@ -56,23 +56,29 @@ public enum KitScoreError: Error, Equatable, CustomStringConvertible {
 ///   - **slabFoundRate / slabLockedRate** (shots where the slab must not be in view: ball-only shots, `s12-no-slab`):
 ///     the share of frames on which the tracker was confirming or locked / locked.
 ///   - **ballDetectionRate** (shots expecting the ball): of the frames on which the app's ball finder ran (only while
-///     locked, every `ballInterval`), the share that found a ball. **ballFalsePositiveRate** (shots where the ball must
-///     not be in view): the same share where there is no ball. n/a without a ball finder (`AppDetectors.ball()` is nil)
-///     or when the slab never locked (the app looks for the ball only on a lock).
-///   - **ballDistanceError** (the ball resting in the dish, `s08`): the ball's distance from the camera from its size
-///     (the ball finder's centre) minus the distance along the same ray to where its centre must be, the ball's radius
-///     above the dish's bottom (the lock's plane less the dish depth); median over frames (mm).
+///     locked, every `ballInterval`), the share that found a ball there. A ball the app holds over from an earlier
+///     search (`BallObservation.missedUpdates` > 0: it keeps showing a missed ball for a couple of searches) is not a
+///     find. **ballFalsePositiveRate** (shots where the ball must not be in view): the same share where there is no
+///     ball. n/a without a ball finder (`AppDetectors.ball()` is nil), when the slab never locked (the app looks for the
+///     ball only on a lock), and for the ball resting on the slab when the app's finder does not look that low.
+///   - **ballDistanceError** (the ball resting on the slab, `s08`): the ball's distance from the camera from its size
+///     (the tracking finder's centre, every locked frame: `trackingLocator`) minus the distance along the same ray to where its centre must be resting on the dish
+///     where it was found (a radius above the dish's surface along its own normal there; on a tilted slab the ball
+///     cannot stay in the middle); median over the frames with a ball found over the slab's top (mm).
 ///   - **dropHeightError** (held ball with an entered height, `s09`): the app's drop height (the ball's bottom above
-///     the dish where it would land, `Readouts.dropHeight` while it comes from the ball), median over frames, minus the
-///     entered height (mm). The owner measures to the slab's top: up to the dish's depth of it can be how it was measured.
-///   - **bounce** (drops, `s10`/`s11`): the ball finder is also run on every frame (a separate instance, on the app's
-///     crop around the lock), the release is looked for after `releaseTime` (else `startTime + releaseCue`), and the
-///     track is analysed as `KitBounceAnalysis` describes: `landingError`, `landingDistanceError`, `apexError`,
-///     `impactPointError` against the app's prediction (`Bounce.compute` with the lock before the release and the held
+///     the dish straight below it, `Readouts.dropHeight` while it comes from the ball), median over frames, minus the
+///     entered height (mm). The app asks for the same height: the ball's bottom above the slab right under it, a ruler
+///     stood on the slab under the ball (in the dish, not on the corners' plane 1/8 in above it).
+///   - **bounce** (drops, `s10`/`s11`): a second ball finder runs on every frame, on the app's crop around the lock:
+///     the app's `BallLocator` set up for tracking (`trackingLocator`: each frame on its own, so every sample of the
+///     track is a measurement of that frame, not a ball held over or smoothed). The release is looked for after
+///     `releaseTime` (else `startTime + releaseCue`), and the track is analysed as `KitBounceAnalysis` describes (a
+///     track that does not hold together as a drop is n/a, with the reason): `landingError`, `landingDistanceError`, `apexError`,
+///     `impactHeightError` against the app's prediction (`Bounce.compute` with the lock before the release and the held
 ///     ball) and the `rebound` measured from the bounce.
 /// Aggregates: lockRate is the mean over slab shots, timeToLock the median over shots that locked, neverLocked a count;
-/// tilt and normal errors pool every frame; cornerRms, slabSizeError, landing, apex and impact errors are medians over
-/// shots (signed errors as medians of their absolute values); the false-positive and detection rates pool frames.
+/// tilt and normal errors pool every frame; cornerRms, slabSizeError, landing, apex and impact height errors are medians
+/// over shots (signed errors as medians of their absolute values); the false-positive and detection rates pool frames.
 /// Anything that cannot be measured is n/a with the reason.
 public struct KitScorer {
     /// What the frame source is given.
@@ -89,6 +95,9 @@ public struct KitScorer {
         public var useMeasurements = false
         public var makeDetector: () -> SlabDetecting = { AppDetectors.slab() }
         public var makeBallLocator: () -> BallLocating? = { AppDetectors.ball() }
+        /// the ball finder for a drop's dense track (every frame); nil: `makeBallLocator`'s, set up for tracking
+        /// (`KitScorer.trackingLocator`)
+        public var makeTrackingBallLocator: (() -> BallLocating?)? = nil
         /// where the video frames come from; nil: the kit's video.mp4 through ffmpeg (macOS and Linux)
         public var frames: FrameProvider? = nil
         /// "kit", or "synthetic" for the synthetic kit
@@ -103,15 +112,37 @@ public struct KitScorer {
 
     public init(kitFolder: URL, options: Options = Options()) { self.kitFolder = kitFolder; self.options = options }
 
-    /// The kit's video.mp4 through ffmpeg (macOS and Linux).
+    /// The kit's video.mp4 through ffmpeg (macOS and Linux). The colour range is the stream's tag; a stream without one
+    /// (the phone's encoder may leave it out) is read the way its samples say (`KitVideoDecoder.rangeCheck`, against
+    /// frames.jsonl's `luma`), and the decoder's `rangeNote` says how, or that a tagged stream's samples disagree.
     public static func videoFrames(_ s: ShotInput) throws -> KitFrameSource {
         #if os(macOS) || os(Linux)
         let url = s.folder.appendingPathComponent(KitClipFiles.video)
         guard FileManager.default.fileExists(atPath: url.path) else { throw KitScoreError.unreadable(KitClipFiles.video) }
-        return try KitVideoDecoder(url: url, expectedFrames: s.frames.count)
+        let probe = try KitVideoDecoder.probe(url)
+        let tagged = probe.colorRange != nil || probe.pixelFormat.hasPrefix("yuvj")
+        let check = try? KitVideoDecoder.rangeCheck(url: url, luma: s.frames.map { $0.luma })
+        let dec = try KitVideoDecoder(url: url, expectedFrames: s.frames.count, fullRange: tagged ? nil : (check?.fullRange ?? true))
+        if !tagged {
+            dec.rangeNote = "the video has no colour range tag: " + (check?.reason ?? "read as full range, as the app records")
+        } else if let c = check, c.fullRange != probe.isFullRange,
+                  c.outsideShare > 0.002 || abs((c.fullLumaError ?? 0) - (c.limitedLumaError ?? 0)) > 1.5 {
+            dec.rangeNote = "the video is tagged \(probe.isFullRange ? "full" : "limited") range, but \(c.reason); read as tagged"
+        }
+        return dec
         #else
         throw KitScoreError.noDecoder
         #endif
+    }
+
+    /// A ball finder for following a drop frame by frame: the app's `BallLocator` with `BallLocator.Options.tracking`
+    /// (every frame stands on its own: no hold-over, no smoothing, no follow box, no 5 cm floor, on the slab or not), so
+    /// each sample of the track is a measurement of that frame. Any other finder is used as it is.
+    public static func trackingLocator(_ l: BallLocating?) -> BallLocating? {
+        guard let b = l as? BallLocator else { return l }
+        b.options = BallLocator.Options.tracking(b.options)
+        b.reset()
+        return b
     }
 
     /// Scores every video shot of the kit.
@@ -159,7 +190,10 @@ final class KitScoreRun {
         /// the frame's detected outline cast onto the lock's plane: long and short side (m)
         var sides: (long: Double, short: Double)? = nil
         var ballSearched = false
+        /// the ball finder found a ball in this frame (a ball the app holds over from an earlier search does not count)
         var ballFound = false
+        /// the app showed a ball held over from an earlier search
+        var ballHeldOver = false
         var ballDistanceError: Double? = nil
         var dropHeight: Double? = nil
     }
@@ -180,6 +214,8 @@ final class KitScoreRun {
     var shots: [Shot] = []
     var links: [String: KitMotionLink.Estimate] = [:]
     var hasBallLocator = false
+    /// the app's ball finder reports a ball only this high over the slab (m; `BallLocator.Options.minHeight`), if it says
+    var appBallMinHeight: Double? = nil
     var notes: [String] = []
     /// pooled values for the aggregates
     var tiltErrors: [Double] = [], normalErrors: [Double] = []
@@ -212,7 +248,9 @@ final class KitScoreRun {
         notes.append(String(format: "Slab %.2f x %.2f in, %.2f in thick, %.3f in dish; ball %.1f mm; rebound %.0f%%.",
                             Units.toInches(s.sideU), Units.toInches(s.sideV), Units.toInches(s.thickness), Units.toInches(s.dishDepth),
                             settings.ball.diameter * 1000, settings.ball.rebound * 100))
-        hasBallLocator = options.makeBallLocator() != nil
+        let probe = options.makeBallLocator()
+        hasBallLocator = probe != nil
+        appBallMinHeight = (probe as? BallLocator)?.options.minHeight
         if !hasBallLocator { notes.append("No ball finder in this build (AppDetectors.ball() is nil): the ball and bounce metrics are n/a.") }
         loadShots()
 
@@ -272,13 +310,19 @@ final class KitScoreRun {
         let input = KitScorer.ShotInput(shotId: sh.spec.id, folder: sh.folder, manifest: m, frames: sh.frames)
         let source = try (options.frames ?? KitScorer.videoFrames)(input)
         defer { source.close() }
+        #if os(macOS) || os(Linux)
+        if let n = (source as? KitVideoDecoder)?.rangeNote { notes.append("\(sh.spec.id): \(n).") }
+        #endif
         let pipeline = KitFramePipeline(videoWidth: source.width, videoHeight: source.height, cameraFormat: m.cameraFormat)
         let locator = options.makeBallLocator()
         let tracker = SlabTracker(settings: settings, detector: options.makeDetector(), ballLocator: locator)
         let isDrop = sh.spec.kind.highFrameRate && sh.spec.kind.releaseCue != nil
-        let dense: BallLocating? = isDrop ? options.makeBallLocator() : nil
-        dense?.reset()
         let isBallOnSlab = sh.spec.diagram == .ballOnSlab
+        // drops and the ball resting on the slab: the ball finder set up for tracking, on every frame (the app's own
+        // looks only every `ballInterval`, holds a missed ball over, smooths, and ignores a ball under 5 cm)
+        let dense: BallLocating? = isDrop || isBallOnSlab
+            ? (options.makeTrackingBallLocator?() ?? KitScorer.trackingLocator(options.makeBallLocator())) : nil
+        dense?.reset()
         var run = ShotRun()
         var lastLock: SlabPose? = nil
         let down = ARKitConvention.worldDown
@@ -313,21 +357,26 @@ final class KitScoreRun {
             }
             if out.ballSearched {
                 r.ballSearched = true
-                r.ballFound = out.ball != nil
-                if isBallOnSlab, let b = out.ball, let s = out.slab {
-                    r.ballDistanceError = KitScoreRun.ballDistanceError(ballWorld: b.center, slab: s, view: pf.tracker.view, settings: settings)
-                }
+                // a ball the app's locator holds over from an earlier search (it keeps a missed ball for a couple of
+                // searches) is what the app shows, but not something found in this frame
+                r.ballHeldOver = out.ball != nil && ((locator as? BallLocator)?.current?.missedUpdates ?? 0) > 0
+                r.ballFound = out.ball != nil && !r.ballHeldOver
             }
-            run.results.append(r)
-            // the drop's dense ball track: the ball finder on every frame, on the app's crop around the lock
+            // the tracking finder on every frame, on the app's crop around the lock: a drop's dense track, and the ball
+            // resting on the slab (its distance from its size, while the slab is locked)
             if let d = dense, let lock = out.slab ?? lastLock, let b = pipeline.ballImage(img, slab: lock, video: pf.video) {
                 (d as? KitFrameAware)?.prepare(shotId: sh.spec.id, frameIndex: i, time: f.time, view: pf.video)
                 let sc = lock.transformed(by: pf.video.cameraFromWorld)
                 if let x = d.locate(image: b.image, intrinsics: b.intrinsics, slab: sc, spec: settings.spec, ball: settings.ball,
                                     down: pf.video.directionToCamera(down)), x.center.isFinite {
-                    run.track.append(KitBallSample(t: f.time, p: pf.video.toWorld(x.center)))
+                    let w = pf.video.toWorld(x.center)
+                    if isDrop { run.track.append(KitBallSample(t: f.time, p: w)) }
+                    if isBallOnSlab, out.state == .locked, let s = out.slab {
+                        r.ballDistanceError = KitScoreRun.ballDistanceError(ballWorld: w, slab: s, view: pf.video, settings: settings)
+                    }
                 }
             }
+            run.results.append(r)
         }
         #if os(macOS) || os(Linux)
         if let dec = source as? KitVideoDecoder { try dec.finish() }
@@ -336,16 +385,28 @@ final class KitScoreRun {
     }
 
     /// The ball's distance from the camera from its size minus the distance along the same ray to the place its centre
-    /// must be when it rests in the dish: the ball's radius above the dish's bottom (m).
+    /// must be when it rests on the dish where it was found: a radius above the dish's surface along the dish's own
+    /// normal there (`Dish.at`; the ball need not rest in the middle: on a tilted slab it rests wherever the dish holds
+    /// it, or rolls to the rim). The contact point is found by intersecting the ray with the tangent plane a few times
+    /// over. nil when the ball is not over the slab's top (it rolled to the rim or off), or the ray grazes the dish (m).
     static func ballDistanceError(ballWorld: Vec3, slab: SlabPose, view: CameraView, settings: TrackerSettings) -> Double? {
         let c = view.toCamera(ballWorld), dist = c.length
         guard dist > 1e-6 else { return nil }
         let p = slab.transformed(by: view.cameraFromWorld)
-        let point = p.center + p.normal * (settings.ball.radius - settings.spec.dishDepth)
-        let dir = c / dist, den = dir.dot(p.normal)
-        guard abs(den) > 0.05 else { return nil }
-        let t = point.dot(p.normal) / den
-        guard t > 0 else { return nil }
+        let dir = c / dist, R = settings.ball.radius
+        var (u, v) = p.local(c)
+        var t = dist
+        for _ in 0..<4 {
+            guard abs(u) <= p.halfU, abs(v) <= p.halfV else { return nil }
+            let d = Dish.at(pose: p, depth: settings.spec.dishDepth, u: u, v: v)
+            let centre = p.point(u: u, v: v) - p.normal * d.depth + d.normal * R
+            let den = dir.dot(d.normal)
+            guard abs(den) > 0.05 else { return nil }
+            t = centre.dot(d.normal) / den
+            guard t > 0 else { return nil }
+            (u, v) = p.local(dir * t - d.normal * R)
+        }
+        guard abs(u) <= p.halfU, abs(v) <= p.halfV else { return nil }
         return dist - t
     }
 
@@ -451,6 +512,9 @@ final class KitScoreRun {
         }
         if expect.ball == .required {
             if let r = ballReason() { metrics.append(.na("ballDetectionRate", r)) }
+            else if sh.spec.diagram == .ballOnSlab, let h = appBallMinHeight, h > 0.01 {
+                metrics.append(.na("ballDetectionRate", String(format: "the app looks for a ball only %.0f cm or more above the slab, not one resting on it", h * 100)))
+            }
             else { metrics.append(KitMetric(id: "ballDetectionRate", value: Double(searched.filter { $0.ballFound }.count) / Double(searched.count),
                                             count: searched.count)) }
         }
@@ -462,7 +526,7 @@ final class KitScoreRun {
         if sh.spec.diagram == .ballOnSlab {
             let e = res.compactMap { $0.ballDistanceError }
             if let r = ballReason() { metrics.append(.na("ballDistanceError", r)) }
-            else if e.isEmpty { metrics.append(.na("ballDistanceError", "the ball was not found on the slab")) }
+            else if e.isEmpty { metrics.append(.na("ballDistanceError", "the ball was not found resting over the slab's top")) }
             else { metrics.append(KitMetric(id: "ballDistanceError", value: KitStats.median(e) * 1000, count: e.count)) }
         }
         if sh.spec.asksHeight {
@@ -476,7 +540,7 @@ final class KitScoreRun {
 
         // the bounce
         if sh.spec.kind.highFrameRate && sh.spec.kind.releaseCue != nil {
-            let ids = ["landingError", "landingDistanceError", "apexError", "impactPointError", "rebound"]
+            let ids = ["landingError", "landingDistanceError", "apexError", "impactHeightError", "rebound"]
             var reason: String? = nil
             if !hasBallLocator { reason = "no ball finder in this build" }
             else if c == nil { reason = "shot.json has neither releaseTime nor startTime and releaseCue" }
@@ -491,7 +555,7 @@ final class KitScoreRun {
                     metrics.append(a.landingError.map { KitMetric(id: "landingError", value: $0 * 1000, count: a.postSamples) } ?? .na("landingError", noPred))
                     metrics.append(a.landingDistanceError.map { KitMetric(id: "landingDistanceError", value: $0 * 1000) } ?? .na("landingDistanceError", noPred))
                     metrics.append(a.apexError.map { KitMetric(id: "apexError", value: $0 * 1000) } ?? .na("apexError", noPred))
-                    metrics.append(a.impactPointError.map { KitMetric(id: "impactPointError", value: $0 * 1000) } ?? .na("impactPointError", noPred))
+                    metrics.append(a.impactHeightError.map { KitMetric(id: "impactHeightError", value: $0 * 1000) } ?? .na("impactHeightError", noPred))
                     metrics.append(KitMetric(id: "rebound", value: a.rebound, count: a.preSamples + a.postSamples))
                 case let .failed(why): reason = why
                 }
@@ -675,7 +739,7 @@ final class KitScoreRun {
         out.append(medianOf("landingError", fallback: "no drop scored"))
         out.append(medianOf("landingDistanceError", abs: true, fallback: "no drop scored"))
         out.append(medianOf("apexError", abs: true, fallback: "no drop scored"))
-        out.append(medianOf("impactPointError", fallback: "no drop scored"))
+        out.append(medianOf("impactHeightError", abs: true, fallback: "no drop scored"))
         out.append(medianOf("rebound", fallback: "no drop scored"))
         return out
     }

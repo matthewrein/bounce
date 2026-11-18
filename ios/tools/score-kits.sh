@@ -7,9 +7,10 @@
 #
 # Bundle parts (<kitId>-partNofM.zip) are unzipped together into the kits folder (default ~/bounce-private/kits), so
 # all the parts of a kit rebuild it. Every kit in that folder is scored, then the synthetic kit. The scores are saved
-# as ~/bounce-private/scores/<UTC date>-<git short hash>.json (--scores for another folder), compared with the newest
-# earlier file there, and printed as Markdown. Kits are private: both folders must be outside this repository, and
-# nothing here prints their paths. Needs ffmpeg (to decode the kits' video), unzip and a Swift toolchain.
+# as ~/bounce-private/scores/<UTC date>-<git short hash>.json (-measured.json with --measured; --scores for another
+# folder), compared with the newest earlier file there scored the same way (with or without --measured), and printed
+# as Markdown. Kits are private: both folders must be outside this repository, and nothing here prints their paths.
+# Needs ffmpeg (to decode the kits' video), unzip and a Swift toolchain.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -20,11 +21,13 @@ kits="$private/kits"
 scores="$private/scores"
 extra=()
 inputs=()
+measured=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --kits) [ $# -ge 2 ] || { echo "--kits needs a folder" >&2; exit 1; }; kits=$2; shift 2 ;;
     --scores) [ $# -ge 2 ] || { echo "--scores needs a folder" >&2; exit 1; }; scores=$2; shift 2 ;;
-    --measured|--fail-on-regression) extra+=("$1"); shift ;;
+    --measured) extra+=("$1"); measured=1; shift ;;
+    --fail-on-regression) extra+=("$1"); shift ;;
     -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 1 ;;
     *) inputs+=("$1"); shift ;;
@@ -76,8 +79,15 @@ bin="$(swift build -c release --package-path "$pkg" --show-bin-path)/bounce-scor
 
 hash=$(git -C "$repo" rev-parse --short HEAD)
 if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then hash="$hash-dirty"; fi
-out="$scores/$(date -u +%Y%m%d-%H%M%S)-$hash.json"
-previous=$(find "$scores" -maxdepth 1 -type f -name '*.json' | sort | tail -1)
+# scores made with --measured are kept apart (-measured.json): the settings alone change the scores, so a run is only
+# compared with an earlier one scored the same way
+if [ "$measured" = 1 ]; then
+  out="$scores/$(date -u +%Y%m%d-%H%M%S)-$hash-measured.json"
+  previous=$(find "$scores" -maxdepth 1 -type f -name '*-measured.json' | sort | tail -1)
+else
+  out="$scores/$(date -u +%Y%m%d-%H%M%S)-$hash.json"
+  previous=$(find "$scores" -maxdepth 1 -type f -name '*.json' ! -name '*-measured.json' | sort | tail -1)
+fi
 
 args=()
 if find "$kits" -mindepth 2 -maxdepth 2 -name kit.json | grep -q .; then args+=("$kits"); else echo "no kits in the kits folder: scoring the synthetic kit only" >&2; fi

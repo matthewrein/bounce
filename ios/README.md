@@ -122,7 +122,7 @@ opens them by itself.
 - **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
   where it lands instead of the corner plane's. Both apply when Settings closes.
-- **Build** shows the build label (e.g. n6), and the line under it the tracker's live state, including its hints, which
+- **Build** shows the build label (e.g. n7), and the line under it the tracker's live state, including its hints, which
   the main screen never shows.
 
 ### Recording a session
@@ -156,9 +156,14 @@ improved against your own room without more help from you. You do it **once, whe
 
 **Taking it.** Tap **New kit** (or **Resume** if you started one before). Each screen says which step you are on ("Step 4
 of 12") and what to do, with a small picture. Tap **Start**: it counts down, records by itself and checks the result
-(Good, Fair or Poor, with the reason). Then tap **Next**, **Retry** to take it again, or **Skip**. **Every step can be
-skipped.** For the drops, let go of the ball when it beeps. For the slab's tilt, the phone lies flat on the slab and the
-screen tells you, in big letters, when to turn it around. You can tap **Quit** at any time: everything done so far is
+(Good, Fair or Poor, with the reason). Then tap **Next** to keep it, or **Retry** to take it again. **Every step can be
+skipped**: **Skip** is next to **Start**; once a shot is recorded, **Discard** deletes it (after asking) and skips it.
+In the first step, enter only what you measured with the ruler (the grey numbers are the app's own; leave the dish
+empty if you did not measure it), or tap **Skip**. For the drops, let go of the ball at the high beep, when the screen
+says **Drop now** (the countdown's ticks come before it). For the slab's tilt, the phone lies flat on the slab: at the
+long beep, when the screen says so in big letters, turn it around; a low tone means it is done. For the ball held
+above the slab, you can enter its height afterwards: stand a ruler on the slab right under the ball and read the
+height of the ball's bottom, or leave it empty. You can tap **Quit** at any time: everything done so far is
 kept, and **Resume** carries on where you stopped. If it asks whether the slab has moved since you stopped, answer
 honestly; it then reads the slab's tilt again first. If the phone rings or you leave the app in the middle of a shot,
 that shot is not kept: tap **Start** to take it again.
@@ -169,11 +174,12 @@ one. You need only Safari on the iPhone.
 Once, to make the private repository (in Safari on the iPhone):
 
 1. Open **github.com/new** and sign in if asked.
-2. Under **Repository name**, type `bounce-captures`. Choose **Private**. Tick **Add a README file**. Tap **Create
+2. Under **Repository name**, type `bounce-captures`. Choose **Private**. Turn on **Add README** (a switch or a tick
+   box, depending on the page; without it the repository stays empty and has no upload page). Tap **Create
    repository**.
-3. Open **github.com/settings/installations**, tap **Claude**, then **Configure**. Under **Repository access**, if it says
-   **Only select repositories**, add `bounce-captures` and tap **Save**. (If it says **All repositories**, there is
-   nothing to do.)
+3. Open **github.com/settings/installations** and tap **Configure** next to **Claude**. Under **Repository access**, if
+   it says **Only select repositories**, add `bounce-captures` and tap **Save**. (If it says **All repositories**, there
+   is nothing to do.)
 
 For each kit:
 
@@ -181,8 +187,9 @@ For each kit:
    `slab-kit-20261117-153000-part1of3.zip`, each at most 24 MB (under GitHub's 25 MB limit for uploads).
 2. In Safari, open **github.com/matthewrein/bounce-captures/upload/main**. If the page shows no upload area, tap **aA**
    in the address bar, then **Request Desktop Website**.
-3. Tap **choose your files**, then **Browse**, then **On My iPhone > Slab Bounce > Kits**, and open the kit's folder. Tap
-   **Select**, select every part, then tap **Open**.
+3. Tap **choose your files**, then **Choose Files** in the menu that opens, then **Browse**, then **On My iPhone >
+   Slab Bounce > Kits**, and open the kit's folder. Tap **Select**, select every part, then tap **Open**. (If the page
+   says the repository is empty, it has no README yet: add one on the repository's page first.)
 4. Wait until all the parts are listed, then tap **Commit changes**.
 5. Tell Claude in the session: "kit uploaded".
 

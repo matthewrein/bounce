@@ -76,7 +76,7 @@ public struct KitMetric: Codable, Equatable {
         "landingError": Kind(title: "Landing error", unit: .millimetres, direction: .lower, tolerance: 5),
         "landingDistanceError": Kind(title: "Landing distance error", unit: .millimetres, direction: .towardZero, tolerance: 5),
         "apexError": Kind(title: "Apex height error", unit: .millimetres, direction: .towardZero, tolerance: 5),
-        "impactPointError": Kind(title: "Impact point error", unit: .millimetres, direction: .lower, tolerance: 3),
+        "impactHeightError": Kind(title: "Launch height error (predicted minus measured impact)", unit: .millimetres, direction: .towardZero, tolerance: 3),
         "rebound": Kind(title: "Rebound measured", unit: .share, direction: .info, tolerance: 0.02),
     ]
 
@@ -213,6 +213,8 @@ public struct KitScoreSet: Codable, Equatable {
     }
 
     public func report(_ kitId: String) -> KitScoreReport? { reports.first { $0.kitId == kitId } }
+    /// The report of a kit scored with the given settings ("app" or "measured").
+    public func report(_ kitId: String, settings: String) -> KitScoreReport? { reports.first { $0.kitId == kitId && $0.settings == settings } }
 
     public func json() throws -> Data { try KitJSON.encode(self) }
     public static func read(_ data: Data) throws -> KitScoreSet {
@@ -260,6 +262,9 @@ public struct KitScoreComparison: Codable, Equatable {
     /// kits in only one of the two
     public var kitsAdded: [String]
     public var kitsRemoved: [String]
+    /// kits scored with other settings than before ("app" against "measured"): not compared, since their scores
+    /// would differ for that reason alone
+    public var settingsChanged: [String] = []
 
     public var regressions: [KitMetricChange] { changes.filter { $0.isRegression } }
     public var improvements: [KitMetricChange] { changes.filter { $0.status == .better } }
@@ -284,17 +289,22 @@ public struct KitScoreComparison: Codable, Equatable {
 }
 
 extension KitScoreSet {
-    /// Every metric compared with an earlier run's, kit by kit (matched by kit id), with direction-aware tolerances
-    /// (`KitMetric.catalogue`): `regressions` are the metrics that got worse, or lost their value.
+    /// Every metric compared with an earlier run's, kit by kit (matched by kit id and the settings it was scored with,
+    /// `KitScoreReport.settings`), with direction-aware tolerances (`KitMetric.catalogue`): `regressions` are the
+    /// metrics that got worse, or lost their value. A kit scored with other settings than before is not compared
+    /// (`settingsChanged`): scoring with the measured slab and ball instead of the app's changes the scores by itself.
     public func compare(previous: KitScoreSet) -> KitScoreComparison {
         var changes: [KitMetricChange] = []
+        var settingsChanged: [String] = []
         let beforeIds = Set(previous.reports.map { $0.kitId }), afterIds = Set(reports.map { $0.kitId })
         for r in reports {
-            guard let p = previous.report(r.kitId) else { continue }
-            changes += r.compare(previous: p)
+            if let p = previous.report(r.kitId, settings: r.settings) { changes += r.compare(previous: p) }
+            else if previous.report(r.kitId) != nil { settingsChanged.append(r.kitId) }
         }
-        return KitScoreComparison(changes: changes, kitsAdded: reports.map { $0.kitId }.filter { !beforeIds.contains($0) },
-                                  kitsRemoved: previous.reports.map { $0.kitId }.filter { !afterIds.contains($0) })
+        var c = KitScoreComparison(changes: changes, kitsAdded: reports.map { $0.kitId }.filter { !beforeIds.contains($0) },
+                                   kitsRemoved: previous.reports.map { $0.kitId }.filter { !afterIds.contains($0) })
+        c.settingsChanged = settingsChanged
+        return c
     }
 }
 
@@ -377,11 +387,11 @@ extension KitScoreReport {
         let ballShots = shots.filter { s in ballIds.contains { s.metric($0) != nil } }
         if !ballShots.isEmpty {
             md.append("")
-            md.append("| Shot | Ball found | False ball | Ball distance | Drop height | Landing (impact point) | Apex | Rebound |")
+            md.append("| Shot | Ball found | False ball | Ball distance | Drop height | Landing (launch height) | Apex | Rebound |")
             md.append("|---|---|---|---|---|---|---|---|")
             for s in ballShots {
                 func v(_ id: String) -> String { s.metric(id).map { $0.formatted } ?? "" }
-                let landing = s.metric("landingError") == nil ? "" : "\(v("landingError")) (\(v("impactPointError")))"
+                let landing = s.metric("landingError") == nil ? "" : "\(v("landingError")) (\(v("impactHeightError")))"
                 md.append("| \(s.shotId) | \(v("ballDetectionRate")) | \(v("ballFalsePositiveRate")) | \(v("ballDistanceError")) | "
                           + "\(v("dropHeightError")) | \(landing) | \(v("apexError")) | \(v("rebound")) |")
             }
@@ -415,6 +425,10 @@ extension KitScoreComparison {
         var md: [String] = ["### Compared with the previous scores", ""]
         if !kitsAdded.isEmpty { md.append("New kits: " + kitsAdded.joined(separator: ", ") + ".") }
         if !kitsRemoved.isEmpty { md.append("Kits no longer scored: " + kitsRemoved.joined(separator: ", ") + ".") }
+        if !settingsChanged.isEmpty {
+            md.append("Not compared, scored with other settings than before (the app's against the measured slab and ball): "
+                      + settingsChanged.joined(separator: ", ") + ".")
+        }
         func table(_ title: String, _ rows: [KitMetricChange]) {
             guard !rows.isEmpty else { return }
             md.append("")

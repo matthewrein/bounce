@@ -64,13 +64,19 @@ public struct KitBouncePrediction: Codable, Equatable {
 ///   - **landing**: where the post-impact fit comes back down to the impact point's height; the landing distance is
 ///     horizontal, from the impact point. Beyond the last fitted sample the fit is extrapolated
 ///     (`landingExtrapolation`, seconds).
+/// A track that does not hold together as a drop is not analysed (`.failed`, with the reason), rather than give numbers
+/// that are only the track's errors: the two fits must meet between the frames around the impact (within 0.02 s);
+/// the speed in must match the fall (|v_in|² within 20% of 2 g x the fall height); the rebound must be between 0 and
+/// 1.1; and the landing may be extrapolated over at most half the flight.
 /// Against the prediction (`KitBouncePrediction`, from the lock before the release and the held ball):
 ///   - **landingError**: horizontal distance between the predicted landing (where the predicted bounce comes back to
 ///     its own start height) and the measured one;
 ///   - **landingDistanceError**: predicted minus measured landing distance (each from its own start);
 ///   - **apexError**: predicted minus measured apex height;
-///   - **impactPointError**: horizontal distance between the predicted launch (the ball's centre over the dish) and the
-///     measured impact point.
+///   - **impactHeightError**: the predicted launch's height (the ball's centre a radius above the dish, straight below
+///     the held ball) minus the measured impact point's (m, signed). Both lie straight below the held ball, so only the
+///     height says anything about the lock (its plane and the dish depth); the horizontal distance between them is
+///     about 0 whatever the lock.
 public struct KitBounceAnalysis: Codable, Equatable {
     public var held: Vec3
     /// when the ball was let go (s), from the pre-impact fit
@@ -101,7 +107,7 @@ public struct KitBounceAnalysis: Codable, Equatable {
     public var landingError: Double?
     public var landingDistanceError: Double?
     public var apexError: Double?
-    public var impactPointError: Double?
+    public var impactHeightError: Double?
     public var notes: [String]
 
     /// The outcome of analysing a drop.
@@ -200,24 +206,33 @@ public struct KitBounceAnalysis: Codable, Equatable {
         let dPre = (s[jm].p - pre.position(s[jm].t)).length, dPost = (s[jm].p - postFit.position(s[jm].t)).length
         if dPre <= dPost { preEnd = jm + 1; if let f = Fit.fit(s[k0..<preEnd], t0: t0) { pre = f } }
         else { postStart = jm; kept.insert(s[jm], at: 0); if let f = Fit.fit(kept[...], t0: t0) { postFit = f } }
-        var notes: [String] = []
+        let notes: [String] = []
         // impact: where the heights meet (the difference of two free falls is linear in time)
         let db = pre.b.y - postFit.b.y
-        var ti: Double
+        let ti: Double
         if abs(db) > 1e-6 {
             ti = t0 + (postFit.a.y - pre.a.y) / db
         } else {
             ti = (s[preEnd - 1].t + s[postStart].t) / 2
         }
         let lo = s[preEnd - 1].t - 0.02, hi = s[postStart].t + 0.02
-        if !(ti >= lo && ti <= hi) {
-            notes.append("the two fits do not meet between the frames around the impact; the impact is put between them")
-            ti = (s[preEnd - 1].t + s[postStart].t) / 2
+        guard ti >= lo && ti <= hi else {
+            return .failed("the track does not hold together as a drop: the fall's and the bounce's fits do not meet between the frames around the impact")
         }
         let impact = (pre.position(ti) + postFit.position(ti)) / 2
         let vin = pre.velocity(ti), vout = postFit.velocity(ti)
         guard vin.lengthSquared > 1e-6 else { return .failed("the ball hardly moved before the impact") }
         let G = Units.gravity
+        // the speed in must be the fall's: |v_in|² = 2 g x the fall height (from rest at the held height)
+        let fall = held.y - impact.y, expected = 2 * G * fall
+        guard fall > 0.02, abs(vin.lengthSquared - expected) <= 0.2 * expected else {
+            return .failed(String(format: "the track does not hold together as a drop: the speed into the bounce (%.2f m/s) does not match a fall of %.0f mm",
+                                  vin.length, fall * 1000))
+        }
+        let rebound = vout.lengthSquared / vin.lengthSquared
+        guard rebound >= 0, rebound <= 1.1 else {
+            return .failed(String(format: "the track does not hold together as a drop: it gives a rebound of %.0f%%", rebound * 100))
+        }
         let tr = pre.t0 + pre.b.y / G
         // apex and landing, from the post-impact fit
         let ta = postFit.t0 + postFit.b.y / G
@@ -228,12 +243,17 @@ public struct KitBounceAnalysis: Codable, Equatable {
         let up = Vec3(0, 1, 0)
         let landDist = (landing - impact).rejecting(up).length
         let lastPost = kept.last?.t ?? s[postStart].t
+        let extrapolation = max(0, tl - lastPost)
+        guard extrapolation <= 0.5 * (tl - ti) else {
+            return .failed(String(format: "the bounce was seen for too little of its flight: %.0f%% of it is extrapolated",
+                                  100 * extrapolation / max(1e-9, tl - ti)))
+        }
         var a = KitBounceAnalysis(held: held, releaseTime: tr, impactTime: ti, impactPoint: impact, velocityIn: vin, velocityOut: vout,
-                                  rebound: vout.lengthSquared / vin.lengthSquared, fallHeight: held.y - impact.y,
+                                  rebound: rebound, fallHeight: fall,
                                   apexHeight: apex.y - impact.y, apex: apex, landing: landing, landingDistance: landDist,
-                                  landingExtrapolation: max(0, tl - lastPost), preSamples: preEnd - k0, postSamples: kept.count,
+                                  landingExtrapolation: extrapolation, preSamples: preEnd - k0, postSamples: kept.count,
                                   preRms: pre.rms, postRms: postFit.rms, prediction: nil, landingError: nil, landingDistanceError: nil,
-                                  apexError: nil, impactPointError: nil, notes: notes)
+                                  apexError: nil, impactHeightError: nil, notes: notes)
         if let p = predict?(held) {
             a.prediction = p
             if !p.fromBall { a.notes.append("the held ball was not over the slab: the app predicted from its default drop height") }
@@ -241,7 +261,7 @@ public struct KitBounceAnalysis: Codable, Equatable {
             a.landingError = (pl - landing).rejecting(up).length
             a.landingDistanceError = (pl - p.start).rejecting(up).length - landDist
             a.apexError = p.apexHeight - a.apexHeight
-            a.impactPointError = (p.start - impact).rejecting(up).length
+            a.impactHeightError = p.start.dot(up) - impact.dot(up)
         }
         return .analyzed(a)
     }

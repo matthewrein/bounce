@@ -9,9 +9,11 @@ import Foundation
 ///     tracker will run its detector on this frame (`SlabTracker.detectionDue`); other frames get the app's 2x2 blank;
 ///   - its camera is the frame's ARKit pose in BounceCore's CV axes (`ARKitConvention`) with the video intrinsics scaled
 ///     to the processing frame;
-///   - while the slab is locked and the ball finder is due (`SlabTracker.ballDue`), the ball finder's image is a crop of
-///     the full-resolution luma around the lock and the space above it (`BallImageCrop.plan`), shrunk by the app's
-///     integer block average (`FrameConversion.lumaCrop`), with the crop's intrinsics;
+///   - while the slab is locked and the ball finder is due (`SlabTracker.ballDue`), the ball finder's image is the
+///     app's crop around the lock and the space above it (`BallImageCrop.plan`), planned on the camera image the phone
+///     had (shot.json's camera format: the video's intrinsics scaled up to it), so it has the phone's rectangle, size and
+///     intrinsics; its pixels are area averages of the video over the same patches of the scene (when the video is the
+///     camera image's own size, the app's integer block average, `FrameConversion.lumaCrop`);
 ///   - while locked, LiDAR depth when the frame has it (BDP2 read as a `DepthMap`, metres) with the video intrinsics
 ///     scaled by depth width / video width;
 ///   - `trackingNormal` from the frame's ARKit tracking state ("normal").
@@ -24,8 +26,9 @@ import Foundation
 ///     by an integer box factor (3); from 1280x960 the factor is not an integer and the frame is resized by area
 ///     averaging (`Plane.resized`, closest to the app's box filter; a bilinear `Plane.resampled` would alias at a 2.67x
 ///     shrink), with the intrinsics scaled per axis. A video smaller than the app's processing frame is used at its own
-///     size. The ball finder's crop is cut from the video (a third or a quarter fewer pixels across the ball than the
-///     phone's 1920 px image), with the same `maxSide`, so its image can be smaller than the phone's.
+///     size. The ball finder's image has the phone's geometry (the same crop, size and intrinsics, so the ball is as
+///     many pixels across as on the phone and the finder's pixel thresholds mean the same), but less detail: it is
+///     resampled from the video, which has a quarter fewer pixels across than the phone's 1920 px image.
 ///   - **Frames.** Ordinary shots keep every other ARKit frame (30 fps), drops every frame (60 fps), while the app
 ///     processes every frame at 60 fps: the tracker's search, confirm and re-check moments fall on other frames.
 ///   - **Depth.** The kit keeps LiDAR depth on about one frame a second (millimetres), the app reads it on every locked
@@ -44,6 +47,9 @@ public struct KitFramePipeline {
     /// the integer box factor from the video to the processing frame, as the app shrinks its camera image; nil when the
     /// sizes do not allow one (then the frame is resized by area averaging)
     public let boxFactor: Int?
+    /// the camera image the app planned its ball crop on (shot.json's camera format; the video's size without one)
+    public let cameraWidth: Int
+    public let cameraHeight: Int
     /// the ball finder's crop: how far above the slab it reaches (m) and its largest side before shrinking (pixels), as
     /// in the app
     public var ballReach = 1.2
@@ -58,7 +64,9 @@ public struct KitFramePipeline {
         if let c = cameraFormat, c.width > 0, c.height > 0 {
             let k = max(1, c.width / 480)
             pw = c.width / k; ph = c.height / k
+            cameraWidth = max(c.width, videoWidth); cameraHeight = max(c.height, videoHeight)
         } else {
+            cameraWidth = videoWidth; cameraHeight = videoHeight
             pw = 480; ph = max(1, Int((480 * Double(videoHeight) / Double(videoWidth)).rounded()))
         }
         if pw > videoWidth || ph > videoHeight { pw = videoWidth; ph = videoHeight }
@@ -130,13 +138,82 @@ public struct KitFramePipeline {
         return Plane(width: ow, height: oh, data: d)
     }
 
-    /// The ball finder's image while the slab `slab` (world) is locked: the app's crop of the video frame's luma, its
-    /// intrinsics, and where it was cut from. nil when the slab does not project or the crop is too small.
+    /// The camera the app had for this frame: the video's, scaled up to the camera image (`cameraWidth` x
+    /// `cameraHeight`; the video's own when they are the same size).
+    public func cameraView(_ video: CameraView) -> CameraView {
+        guard cameraWidth != videoWidth || cameraHeight != videoHeight else { return video }
+        let s = Double(cameraWidth) / Double(videoWidth), K = video.intrinsics
+        return CameraView(worldFromCamera: video.worldFromCamera,
+                          intrinsics: CameraIntrinsics(fx: K.fx * s, fy: K.fy * s, cx: K.cx * s, cy: K.cy * s, width: cameraWidth, height: cameraHeight))
+    }
+
+    /// The ball finder's image while the slab `slab` (world) is locked: the app's crop as the phone made it, planned on
+    /// the camera image (`cameraView`), so its rectangle (`crop`, camera pixels), size and intrinsics are the phone's;
+    /// its pixels average the video over the same patches of the scene (`areaAverage`; with the video at the camera's
+    /// own size, exactly the app's block average). nil when the slab does not project or the crop is too small.
     public func ballImage(_ img: YCCImage, slab: SlabPose, video: CameraView) -> (image: Plane, intrinsics: CameraIntrinsics, crop: BallImageCrop)? {
-        guard let c = BallImageCrop.plan(slab: slab, full: video, reach: ballReach, maxSide: ballMaxSide),
-              let p = KitFramePipeline.lumaCrop(img, x0: c.x0, y0: c.y0, width: c.width, height: c.height, factor: c.factor) else { return nil }
-        let K = video.intrinsics.cropped(x0: Double(c.x0), y0: Double(c.y0), scale: 1 / Double(c.factor), width: p.width, height: p.height)
+        let cam = cameraView(video)
+        guard let c = BallImageCrop.plan(slab: slab, full: cam, reach: ballReach, maxSide: ballMaxSide) else { return nil }
+        let p: Plane
+        if cam.intrinsics.width == videoWidth && cam.intrinsics.height == videoHeight {
+            guard let q = KitFramePipeline.lumaCrop(img, x0: c.x0, y0: c.y0, width: c.width, height: c.height, factor: c.factor) else { return nil }
+            p = q
+        } else {
+            // camera pixel x is video pixel x / s: the crop's k x k camera-pixel blocks are (k / s)-pixel patches of the video
+            let s = Double(cameraWidth) / Double(videoWidth)
+            guard c.imageWidth > 8, c.imageHeight > 8,
+                  let q = KitFramePipeline.areaAverage(img, x0: Double(c.x0) / s, y0: Double(c.y0) / s, step: Double(c.factor) / s,
+                                                       width: c.imageWidth, height: c.imageHeight) else { return nil }
+            p = q
+        }
+        let K = cam.intrinsics.cropped(x0: Double(c.x0), y0: Double(c.y0), scale: 1 / Double(c.factor), width: p.width, height: p.height)
         return (p, K, c)
+    }
+
+    /// A `width` x `height` luma image whose pixel (i, j) is the mean of the video's luma over the square
+    /// [x0 + i step, x0 + (i + 1) step) x [y0 + j step, y0 + (j + 1) step) (video pixels, fractional; parts outside the
+    /// image are left out of the mean). nil if a pixel's square lies wholly outside the image.
+    public static func areaAverage(_ img: YCCImage, x0: Double, y0: Double, step: Double, width w: Int, height h: Int) -> Plane? {
+        guard step > 0, w > 0, h > 0 else { return nil }
+        // per output index: the first source pixel it overlaps and the overlaps' weights (summing to 1)
+        func weights(_ origin: Double, _ n: Int, _ size: Int) -> [(first: Int, w: [Float])]? {
+            var out: [(first: Int, w: [Float])] = []
+            out.reserveCapacity(n)
+            for i in 0..<n {
+                let a = origin + Double(i) * step, b = a + step
+                let lo = max(0, Int(floor(a))), hi = min(size, Int(ceil(b)))
+                guard hi > lo else { return nil }
+                var ws: [Double] = []
+                for q in lo..<hi { ws.append(max(0, min(b, Double(q + 1)) - max(a, Double(q)))) }
+                let total = ws.reduce(0, +)
+                guard total > 0 else { return nil }
+                out.append((lo, ws.map { Float($0 / total) }))
+            }
+            return out
+        }
+        guard let wx = weights(x0, w, img.width), let wy = weights(y0, h, img.height) else { return nil }
+        let xLo = wx.first!.first, xHi = wx.last!.first + wx.last!.w.count
+        let span = xHi - xLo, W = img.width
+        var row = [Float](repeating: 0, count: span)
+        var d = [Float](repeating: 0, count: w * h)
+        img.y.withUnsafeBufferPointer { src in
+            for j in 0..<h {
+                // the rows of this output row, weighted, over the columns needed
+                for x in 0..<span { row[x] = 0 }
+                let (fy, ky) = wy[j]
+                for (m, a) in ky.enumerated() {
+                    let base = (fy + m) * W + xLo
+                    for x in 0..<span { row[x] += a * Float(src[base + x]) }
+                }
+                for i in 0..<w {
+                    let (fx, kx) = wx[i]
+                    var v: Float = 0
+                    for (m, a) in kx.enumerated() { v += a * row[fx - xLo + m] }
+                    d[j * w + i] = v
+                }
+            }
+        }
+        return Plane(width: w, height: h, data: d)
     }
 
     /// LiDAR depth from a BDP2 file, with its intrinsics (the video frame's, scaled by depth width / video width).

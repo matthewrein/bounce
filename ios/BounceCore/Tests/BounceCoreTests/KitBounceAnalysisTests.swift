@@ -88,8 +88,17 @@ final class KitBounceAnalysisTests: XCTestCase {
         XCTAssertTrue(p.fromBall)
         XCTAssertLessThan(try XCTUnwrap(a.landingError), 0.006)
         XCTAssertLessThan(abs(try XCTUnwrap(a.apexError)), 0.004)
-        XCTAssertLessThan(try XCTUnwrap(a.impactPointError), 0.004)
+        XCTAssertLessThan(abs(try XCTUnwrap(a.impactHeightError)), 0.004)
         XCTAssertEqual(p.dropHeight, 0.3, accuracy: 0.003)
+
+        // a lock 10 mm too high shows in the launch height (its horizontal position, straight below the held ball, is
+        // the same whatever the lock)
+        var high = slab
+        high.center = high.center + Vec3(0, 0.01, 0)
+        let predictHigh: (Vec3) -> KitBouncePrediction? = { KitBouncePrediction.app(pose: high, settings: settings, held: $0) }
+        let h = try XCTUnwrap(KitBounceAnalysis.analyze(track: same.track, cue: same.cue, predict: predictHigh).analysis)
+        XCTAssertEqual(try XCTUnwrap(h.impactHeightError), 0.01, accuracy: 0.004)
+        XCTAssertLessThan(horizontal(try XCTUnwrap(h.prediction).start, h.impactPoint), 0.004)
 
         let weak = drop(rebound: 0.45, noise: 0.0005, slab: slab)
         let b = try XCTUnwrap(KitBounceAnalysis.analyze(track: weak.track, cue: weak.cue, predict: predict).analysis)
@@ -115,6 +124,42 @@ final class KitBounceAnalysisTests: XCTestCase {
         var bad = d.track
         bad[10].p = Vec3(.nan, 0, 0)
         XCTAssertNotNil(KitBounceAnalysis.analyze(track: bad, cue: d.cue).analysis)
+    }
+
+    /// A track that does not hold together as a drop gives no numbers: a fall too slow for its height, a bounce that
+    /// gains speed, a flight seen too briefly, and the stateful app locator's track (a missed ball held over for two
+    /// frames, positions smoothed by half) are all refused with the reason.
+    func testRefusesATrackThatIsNotADrop() throws {
+        let d = drop(noise: 0.0005)
+        // the fall slowed to 70% of its speed (positions of the fall at 0.7 of their time)
+        let slow = d.track.map { x -> KitBallSample in
+            guard x.t > d.release && x.t <= d.impactTime else { return x }
+            let u = (x.t - d.release) * 0.7
+            return KitBallSample(t: x.t, p: d.held + Vec3(0, -Units.gravity, 0) * (0.5 * u * u))
+        }
+        XCTAssertNil(KitBounceAnalysis.analyze(track: slow, cue: d.cue).analysis)
+        // a bounce that leaves faster than it came (a rebound of about 1.3)
+        let fast = d.track.map { x -> KitBallSample in
+            guard x.t > d.impactTime else { return x }
+            let u = x.t - d.impactTime
+            return KitBallSample(t: x.t, p: d.impact + d.vout * (1.4 * u) + Vec3(0, -Units.gravity, 0) * (0.5 * u * u))
+        }
+        let rf = KitBounceAnalysis.analyze(track: fast, cue: d.cue)
+        XCTAssertNil(rf.analysis, "rebound \(rf.analysis?.rebound ?? 0)")
+        XCTAssertTrue(rf.reason?.hasPrefix("the track does not hold together as a drop") ?? false, rf.reason ?? "")
+        // the bounce seen for its first 0.1 s only
+        let brief = d.track.filter { $0.t <= d.impactTime + 0.1 }
+        let rb = KitBounceAnalysis.analyze(track: brief, cue: d.cue)
+        XCTAssertTrue(rb.reason?.hasPrefix("the bounce was seen for too little of its flight") ?? false, rb.reason ?? "analysed")
+        // the app's locator: each find held over for two frames, positions smoothed by half
+        var held: [KitBallSample] = []
+        var last = d.track[0].p
+        for (i, x) in d.track.enumerated() {
+            if i % 3 == 0 { last = last + (x.p - last) * 0.5 }
+            held.append(KitBallSample(t: x.t, p: last))
+        }
+        let rh = KitBounceAnalysis.analyze(track: held, cue: d.cue)
+        XCTAssertNil(rh.analysis, "rebound \(rh.analysis?.rebound ?? 0), v_in \(rh.analysis?.velocityIn.length ?? 0)")
     }
 
     func testThePredictionsLandingIsAtItsStartHeight() {

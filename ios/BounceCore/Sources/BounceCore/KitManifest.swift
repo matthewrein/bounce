@@ -200,7 +200,8 @@ public struct KitShotRecord: Codable, Equatable {
     /// the slab position it belongs to
     public var positionId: String?
     public var verdict: KitVerdict?
-    /// the measured height of the ball's bottom above the slab (inches), if the owner entered one
+    /// the measured height of the ball's bottom above the slab right under it (inches; a ruler stood on the slab under the
+    /// ball, so in the dish: the app's drop height), if the owner entered one
     public var enteredHeightInches: Double?
     /// recording length (s)
     public var duration: Double?
@@ -314,7 +315,8 @@ public struct KitShotManifest: Codable, Equatable {
     public var hasDepth: Bool
     public var depthFrames: Int?
     public var motionSamples: Int?
-    /// the measured height of the ball's bottom above the slab (inches)
+    /// the measured height of the ball's bottom above the slab right under it (inches; a ruler stood on the slab under the
+    /// ball, so in the dish: the app's drop height)
     public var enteredHeightInches: Double?
     public var quality: KitQualityReport?
     /// drops: seconds after `startTime` when the plan has the app beep to let go (the plan's value)

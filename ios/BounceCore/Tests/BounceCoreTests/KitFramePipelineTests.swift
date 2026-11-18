@@ -97,14 +97,15 @@ final class KitFramePipelineTests: XCTestCase {
         func reset() {}
     }
 
-    /// A 1440x1080 video frame (the app's 1920x1440 camera image scaled down): the pipeline hands the tracker exactly what
-    /// the app's path would, frame after frame, through searching, confirming and locked (image conversion only when a
-    /// detection is due, the ball finder's crop while locked, depth while locked).
+    /// A 1440x1080 video frame taken as the camera image itself (no camera format): the pipeline hands the tracker
+    /// exactly what the app's path would, frame after frame, through searching, confirming and locked (image conversion
+    /// only when a detection is due, the ball finder's crop while locked, depth while locked).
     func testPipelineEqualsTheAppPathOnASyntheticFrame() throws {
         let W = 1440, H = 1080
         let videoK = CameraIntrinsics(fx: 1130.5, fy: 1130.5, cx: 721.25, cy: 539.5, width: W, height: H)
         let slab = SyntheticScene.slabPose(tilt: 8, heading: 30)
-        let pipeline = KitFramePipeline(videoWidth: W, videoHeight: H, cameraFormat: KitCameraFormat(width: 1920, height: 1440, fps: 60))
+        let pipeline = KitFramePipeline(videoWidth: W, videoHeight: H)
+        XCTAssertEqual(pipeline.cameraWidth, W)
         XCTAssertEqual(pipeline.boxFactor, 3)
         XCTAssertEqual(pipeline.processingWidth, 480); XCTAssertEqual(pipeline.processingHeight, 360)
         // a depth map stored as BDP2, as the kit keeps it
@@ -153,6 +154,56 @@ final class KitFramePipelineTests: XCTestCase {
         XCTAssertGreaterThan(crops, 2, "the ball finder's crops were made while locked")
         XCTAssertGreaterThan(depths, 2)
         XCTAssertEqual(Units.degrees(kit.slab!.tilt(down: ARKitConvention.worldDown)), 8, accuracy: 0.01)
+    }
+
+    /// A 1440x1080 video of the phone's 1920x1440 camera: the ball finder's image is the phone's own crop (planned on the
+    /// camera image: the same rectangle, size and intrinsics, so the ball is as many pixels across as on the phone), its
+    /// pixels the video's averages over the same patches of the scene.
+    func testTheBallCropHasThePhonesGeometry() throws {
+        let W = 1440, H = 1080, s = 1920.0 / 1440
+        let videoK = CameraIntrinsics(fx: 1130.5, fy: 1130.5, cx: 721.25, cy: 539.5, width: W, height: H)
+        let slab = SyntheticScene.slabPose(tilt: 8, heading: 30)
+        let pipeline = KitFramePipeline(videoWidth: W, videoHeight: H, cameraFormat: KitCameraFormat(width: 1920, height: 1440, fps: 60))
+        XCTAssertEqual(pipeline.cameraWidth, 1920); XCTAssertEqual(pipeline.cameraHeight, 1440)
+        // the phone's camera: the recorder scaled its intrinsics by 1440 / 1920 for the video
+        let phoneK = CameraIntrinsics(fx: videoK.fx * s, fy: videoK.fy * s, cx: videoK.cx * s, cy: videoK.cy * s, width: 1920, height: 1440)
+        for (i, d) in [0.9, 0.6, 0.45].enumerated() {
+            let video = SyntheticScene.camera(at: slab.center + Vec3(0.3, 0.65, 0.6) * d, lookingAt: slab.center, intrinsics: videoK)
+            let phone = CameraView(worldFromCamera: video.worldFromCamera, intrinsics: phoneK)
+            let expected = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: phone), "case \(i)")
+            // a smooth image: luma rises 0.1 per video pixel to the right and 0.05 down
+            var y = [UInt8](repeating: 0, count: W * H)
+            for j in 0..<H { for x in 0..<W { y[j * W + x] = UInt8(min(255, 20 + x / 10 + j / 20)) } }
+            let img = YCCImage(width: W, height: H, y: y, cb: [UInt8](repeating: 128, count: (W / 2) * (H / 2)),
+                               cr: [UInt8](repeating: 128, count: (W / 2) * (H / 2)))
+            let got = try XCTUnwrap(pipeline.ballImage(img, slab: slab, video: video))
+            XCTAssertEqual(got.crop, expected, "case \(i): the phone's rectangle and factor")
+            XCTAssertEqual(got.image.width, expected.imageWidth); XCTAssertEqual(got.image.height, expected.imageHeight)
+            XCTAssertEqual(got.intrinsics, expected.intrinsics(full: phoneK), "case \(i): the phone's crop intrinsics")
+            // each pixel is the video's mean over its patch (k / s video pixels square): integrate the image over the
+            // patch numerically
+            let k = Double(expected.factor) / s
+            for (px, py) in [(3, 4), (got.image.width / 2, got.image.height / 2), (got.image.width - 4, got.image.height - 5)] {
+                let ax = Double(expected.x0) / s + Double(px) * k, ay = Double(expected.y0) / s + Double(py) * k
+                var sum = 0.0
+                for a in 0..<40 { for b in 0..<40 {
+                    let x = Int(ax + (Double(a) + 0.5) * k / 40), yy = Int(ay + (Double(b) + 0.5) * k / 40)
+                    sum += Double(y[yy * W + x])
+                } }
+                XCTAssertEqual(Double(got.image[px, py]), sum / 1600, accuracy: 0.05, "case \(i) pixel (\(px), \(py))")
+            }
+            // a ball 30 cm over the slab is as large in the crop as on the phone
+            let ball = slab.center + Vec3(0, 0.3175, 0)
+            let rPhone = try XCTUnwrap(Bounce.imageRadius(ballCenter: phone.toCamera(ball), intrinsics: expected.intrinsics(full: phoneK), ball: BallSpec()))
+            let rKit = try XCTUnwrap(Bounce.imageRadius(ballCenter: video.toCamera(ball), intrinsics: got.intrinsics, ball: BallSpec()))
+            XCTAssertEqual(rKit, rPhone, accuracy: 1e-6)
+        }
+        // area averages: a flat image stays flat; the mean over a patch is kept
+        let flat = YCCImage(width: 64, height: 48, y: [UInt8](repeating: 90, count: 64 * 48), cb: [UInt8](repeating: 128, count: 32 * 24),
+                            cr: [UInt8](repeating: 128, count: 32 * 24))
+        let a = try XCTUnwrap(KitFramePipeline.areaAverage(flat, x0: 3.3, y0: 2.6, step: 0.75, width: 40, height: 30))
+        XCTAssertTrue(a.data.allSatisfy { abs($0 - 90) < 1e-4 })
+        XCTAssertNil(KitFramePipeline.areaAverage(flat, x0: 70, y0: 0, step: 1, width: 4, height: 4), "wholly outside")
     }
 
     /// A 1280x960 video is resized (area average) to 480x360, with the intrinsics scaled per axis.

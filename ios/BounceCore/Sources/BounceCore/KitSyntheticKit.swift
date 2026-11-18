@@ -18,8 +18,11 @@ import Foundation
 ///     CoreMotion-to-ARKit rotation (`KitMotionLink`), and all shots share one motion and one ARKit session.
 /// To stay fast, a shot has a few frames (`framesPerShot` at `fps`, 6 by default, so the tracker can lock within a
 /// second), and drops are recorded at 60 fps only from just before the release until the ball is on the floor. The
-/// frames are rendered when the scorer asks for them (`frames(_:)`), at the video size (480x360 by default: the app's
-/// processing frame, so nothing is scaled), or written as video.mp4 when `video` is set and ffmpeg is installed.
+/// frames are rendered when the scorer asks for them (`frames(_:)`), or written as video.mp4 when `video` is set and
+/// ffmpeg is installed. Slab-only shots are rendered at 480x360 by default (the app's processing frame, so nothing is
+/// scaled); the shots with the ball at 1440x1080 (`ballWidth` x `ballHeight`), a real kit's video size, so the app's
+/// ball finder gets as many pixels across the ball as it would from a real kit (at 480x360 it gets a third as many
+/// either way, and its scores would say little about a real kit).
 /// `truth` holds what really happened, shot by shot.
 public final class KitSyntheticKit {
     public struct Options {
@@ -31,6 +34,10 @@ public final class KitSyntheticKit {
         /// the video frames' size (rendered at this size)
         public var width = 480
         public var height = 360
+        /// the size of the shots with the ball in view (ball on the floor, on the slab, held, drops); nil: `width` x
+        /// `height`
+        public var ballWidth: Int? = 1440
+        public var ballHeight: Int? = 1080
         /// the camera's focal length over the image width (an iPhone's wide camera: about 0.78)
         public var focalShare = 0.78
         /// only these shots (nil: every shot of the plan); the others are skipped
@@ -70,7 +77,9 @@ public final class KitSyntheticKit {
         public var balls: [Vec3?] = []
         /// the picture's brightness (1 normal)
         public var brightness = 1.0
-        /// held shots: the ball's drop height as the app defines it (its bottom above the dish below it, m)
+        /// held shots: the height the owner enters, as the app asks for it: the ball's bottom above the slab's surface
+        /// straight below it, i.e. in the dish (a ruler stood on the slab under the ball; m). It is also the app's drop
+        /// height (`Bounce.drop`), so a perfect app scores 0.
         public var heldHeight: Double? = nil
         /// drops
         public var drop: DropTruth? = nil
@@ -99,14 +108,16 @@ public final class KitSyntheticKit {
     /// the CoreMotion-to-ARKit rotation the motion streams were made with
     public let link: KitMotionLink
 
-    let intrinsics: CameraIntrinsics
     var rng: KitSplitMix
+
+    /// The camera for frames of `width` x `height` (the same lens at any size).
+    func intrinsics(width: Int, height: Int) -> CameraIntrinsics {
+        let f = options.focalShare * Double(width)
+        return CameraIntrinsics(fx: f, fy: f, cx: Double(width) / 2, cy: Double(height) / 2, width: width, height: height)
+    }
 
     init(store: KitStore, options: Options) {
         self.store = store; self.options = options
-        let f = options.focalShare * Double(options.width)
-        intrinsics = CameraIntrinsics(fx: f, fy: f, cx: Double(options.width) / 2, cy: Double(options.height) / 2,
-                                      width: options.width, height: options.height)
         link = KitMotionLink(yawDegrees: options.motionYaw, samples: 0, yawSpreadDegrees: 0, gravityMismatchDegrees: 0,
                              attitudeConjugated: false, shotId: "synthetic")
         rng = KitSplitMix(seed: options.seed)
@@ -237,11 +248,12 @@ public final class KitSyntheticKit {
     // MARK: video shots
 
     /// A camera `distance` from `target` at an azimuth and elevation (degrees), with a small sway.
-    func orbit(_ target: Vec3, distance d: Double, azimuth az: Double, elevation el: Double, sway: Double = 0.002, t: Double = 0) -> CameraView {
+    func orbit(_ target: Vec3, distance d: Double, azimuth az: Double, elevation el: Double, sway: Double = 0.002, t: Double = 0,
+               K: CameraIntrinsics) -> CameraView {
         let a = Units.radians(az), e = Units.radians(el)
         let pos = target + Vec3(sin(a) * cos(e), sin(e), cos(a) * cos(e)) * d
             + Vec3(sin(t * 2.1), sin(t * 1.7 + 1), sin(t * 2.9 + 2)) * sway
-        return SyntheticScene.camera(at: pos, lookingAt: target, intrinsics: intrinsics, roll: 1.0 * sin(t * 0.9))
+        return SyntheticScene.camera(at: pos, lookingAt: target, intrinsics: K, roll: 1.0 * sin(t * 0.9))
     }
 
     func kind(_ s: KitShotSpec) -> ShotTruth.Kind {
@@ -267,19 +279,23 @@ public final class KitSyntheticKit {
         let R = BallSpec().radius, up = Vec3(0, 1, 0)
         let spec = SlabSpec.standard
         let az0 = 15 + Double((number * 37) % 40)
+        let ballKinds: [ShotTruth.Kind] = [.ballFloor, .ballOnSlab, .held, .drop]
+        let withBall = ballKinds.contains(k)
+        let K = withBall ? intrinsics(width: options.ballWidth ?? options.width, height: options.ballHeight ?? options.height)
+                         : intrinsics(width: options.width, height: options.height)
         let path: (Double) -> CameraView
         var ball: (Double) -> Vec3? = { _ in nil }
         switch k {
         case .still, .flat:
-            path = { t in self.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t) }
+            path = { t in self.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t, K: K) }
             if s.diagram == .dimLight { tr.brightness = options.dim }
             if s.diagram == .brightLight { tr.brightness = options.bright }
         case .arc, .noBall:
             let span = Double(n) / fps
-            path = { t in self.orbit(slab.center, distance: 1.05, azimuth: az0 - 50 + 110 * t / span, elevation: 38 + 4 * sin(t), t: t) }
+            path = { t in self.orbit(slab.center, distance: 1.05, azimuth: az0 - 50 + 110 * t / span, elevation: 38 + 4 * sin(t), t: t, K: K) }
         case .scan:
             let span = Double(n) / fps
-            path = { t in self.orbit(slab.center, distance: 1.2, azimuth: 160 * t / span, elevation: 35 + 8 * sin(t * 1.3), t: t) }
+            path = { t in self.orbit(slab.center, distance: 1.2, azimuth: 160 * t / span, elevation: 35 + 8 * sin(t * 1.3), t: t, K: K) }
         case .ballFloor:
             // the ball on the floor away from the slab; the camera between them, looking away from the slab
             let b = Vec3(-1.3, R, 0.9), away = Vec3(b.x, 0, b.z).normalized
@@ -287,19 +303,19 @@ public final class KitSyntheticKit {
             ball = { _ in b }
             path = { t in
                 let pos = b - away * (d * cos(e)) + up * (d * sin(e)) + Vec3(sin(t * 2.1), sin(t * 1.7), 0) * 0.002
-                return SyntheticScene.camera(at: pos, lookingAt: b, intrinsics: self.intrinsics)
+                return SyntheticScene.camera(at: pos, lookingAt: b, intrinsics: K)
             }
         case .ballOnSlab:
             let c = slab.center - slab.normal * spec.dishDepth + slab.normal * R
             ball = { _ in c }
-            path = { t in self.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t) }
+            path = { t in self.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t, K: K) }
         case .held:
             let h = Units.inches(s.nominalHeightInches ?? 12)
             let b = slab.center - slab.normal * spec.dishDepth + up * (R + h)
             tr.heldHeight = Bounce.drop(ballCenter: b, pose: slab, spec: spec, ball: BallSpec(), down: ARKitConvention.worldDown)?.dropHeight
             ball = { t in b + Vec3(sin(t * 3.1), sin(t * 2.3), sin(t * 2.7)) * 0.0015 }
             let aim = slab.center + up * (h * 0.4)
-            path = { t in self.orbit(aim, distance: 1.0 + h * 0.25, azimuth: az0, elevation: 40, t: t) }
+            path = { t in self.orbit(aim, distance: 1.0 + h * 0.25, azimuth: az0, elevation: 40, t: t, K: K) }
         case .drop:
             let edge = s.diagram == .dropEdge
             let d = try dropTruth(slab: slab, u: edge ? 0.6 * slab.halfU : 0, v: edge ? 0.3 * slab.halfV : 0,
@@ -307,14 +323,14 @@ public final class KitSyntheticKit {
             tr.drop = d.truth
             ball = { t in d.position(start + t) }
             let aim = slab.center + up * 0.12
-            path = { t in self.orbit(aim, distance: 1.15, azimuth: az0, elevation: 35, t: t) }
+            path = { t in self.orbit(aim, distance: 1.15, azimuth: az0, elevation: 35, t: t, K: K) }
             // a few frames to lock, then 60 fps from just before the release until the ball is on the floor
             let rel = d.truth.release - start, endT = d.end - start
             times = stride(from: 0.0, to: rel - 0.25, by: 1 / fps).map { $0 }
             let t1 = times.last.map { $0 + 1 / options.dropFps } ?? 0
             times += stride(from: max(t1, rel - 0.25), through: endT, by: 1 / options.dropFps).map { $0 }
         case .away:
-            path = { t in SyntheticScene.camera(at: Vec3(0.2 + 0.03 * t, 1.1, 1.6), lookingAt: Vec3(0.4 + 0.1 * t, 0, 3.4), intrinsics: self.intrinsics) }
+            path = { t in SyntheticScene.camera(at: Vec3(0.2 + 0.03 * t, 1.1, 1.6), lookingAt: Vec3(0.4 + 0.1 * t, 0, 3.4), intrinsics: K) }
         }
         tr.times = times.map { start + $0 }
         tr.views = times.map(path)
@@ -361,7 +377,7 @@ public final class KitSyntheticKit {
             codec = c
         }
         #endif
-        m.video = KitVideoInfo(codec: codec, width: options.width, height: options.height, fps: rate, bitrate: 0, frameCount: frames.count, fileBytes: bytes)
+        m.video = KitVideoInfo(codec: codec, width: K.width, height: K.height, fps: rate, bitrate: 0, frameCount: frames.count, fileBytes: bytes)
         m.cameraFormat = store.manifest.device.cameraFormat
         m.motionSamples = motion.count
         m.quality = KitQuality.evaluate(shot: s, stats: frames.map { KitFrameStat(frame: $0) }, expectedFrames: frames.count,
@@ -474,7 +490,8 @@ public final class KitSyntheticKit {
         #if os(macOS) || os(Linux)
         if options.video != nil { return try KitScorer.videoFrames(input) }
         #endif
-        return KitArrayFrameSource(width: options.width, height: options.height, frames: render(tr))
+        let K = tr.views.first?.intrinsics
+        return KitArrayFrameSource(width: K?.width ?? options.width, height: K?.height ?? options.height, frames: render(tr))
     }
 
     /// Scorer options for this kit: its frames, and (with `truthBall`) a ball finder that knows where the ball is.

@@ -11,8 +11,8 @@ import Foundation
 /// ARController hands it every camera (or demo) frame on its processing queue (`consume`). The camera picture is scaled
 /// there, synchronously, into a buffer from the recorder's own pool, so nothing refers to the ARFrame once that call
 /// returns; everything else (the encoder, the files) happens on the recorder's serial queue. A frame is appended only
-/// when the encoder is ready for it, and only appended frames get a line. Ordinary shots keep every other frame of
-/// ARKit's 60 fps, high-frame-rate shots (drops) every frame. The recording stops by itself after the shot's seconds of
+/// when the encoder is ready for it, and only appended frames get a line. Ordinary shots keep 30 of ARKit's 60 frames a
+/// second (the first frame of each 1/30 s slot of time), high-frame-rate shots (drops) every frame. The recording stops by itself after the shot's seconds of
 /// frame time; `finish` then completes the video asynchronously and reports a `Result` on the recorder's queue.
 final class KitRecorder {
     struct Result {
@@ -57,7 +57,9 @@ final class KitRecorder {
     private var ended = false
 
     // processing queue
-    private var counter = 0
+    /// ordinary shots keep the first frame of each 1 / keptFps slot of time, counted from the first frame offered
+    private var slotOrigin: Double? = nil
+    private var lastSlot = -1
     private var firstClock: Double? = nil
     private var lastDepthClock = -Double.infinity
     private var previous: (pose: RigidTransform, clock: Double)? = nil
@@ -110,8 +112,16 @@ final class KitRecorder {
             finish()
             return false
         }
-        counter += 1
-        guard (counter - 1) % keepEvery == 0 else { return true }
+        // Decimation by time, not by count: a frame lost before it got here (ARKit's queue fell behind, the phone
+        // throttled) then costs no kept frame, as long as another frame falls in the same slot. A quarter slot of
+        // slack keeps ARKit's timestamp jitter from moving a frame into the next slot.
+        var slot = 0
+        if keepEvery > 1 {
+            let origin = slotOrigin ?? f.clock
+            slotOrigin = origin
+            slot = Int(((f.clock - origin) * keptFps + 0.25).rounded(.down))
+            guard slot > lastSlot else { return true }
+        }
 
         // the video's size and the pool, from the first frame
         let full = f.fullView.intrinsics
@@ -127,6 +137,7 @@ final class KitRecorder {
         // no buffer (the encoder holds a dozen already): this frame is not recorded
         guard CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool, aux, &pbOut) == kCVReturnSuccess,
               let pb = pbOut, f.fillVideo(pb) else { return true }
+        if keepEvery > 1 { lastSlot = slot }
         if firstClock == nil { firstClock = f.clock }
 
         // the frame's numbers, in the video's pixels

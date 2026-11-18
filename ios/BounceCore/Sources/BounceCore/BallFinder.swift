@@ -1427,8 +1427,31 @@ public final class BallLocator {
         public var minSearchRadius: Double = 12
         /// a followed ball is looked for at radii within this factor of its last radius
         public var followRadiusFactor: Double = 1.4
+        /// how far around the slab a ball is looked for: over the slab's footprint scaled by this (1.05: within the 5%
+        /// that still counts as landing on it)
+        public var footprint: Double = 1.05
+        /// report only a ball whose straight drop lands on the slab (`DropPoint.onSlab`)
+        public var requireOnSlab = true
+        /// look for a followed ball only near where it was (false: search the whole window on every scan)
+        public var follows = true
         public var finder = BallFinder.Options()
         public init() {}
+
+        /// For following a ball through a drop, frame by frame (the capture kit's scorer), not for the app: every
+        /// scan stands on its own (no hold-over, no smoothing, no follow box), from just above the dish (a ball
+        /// touching it reads about 0) up to `maxHeight`, and anywhere within twice the slab's half-sides of its
+        /// centre, on the slab or not. A half outline still needs two scans in a row.
+        public static func tracking(_ base: Options = Options()) -> Options {
+            var o = base
+            o.minHeight = -0.02
+            o.maxMissedUpdates = 0
+            o.positionGain = 1
+            o.radiusGain = 1
+            o.footprint = 2.5
+            o.requireOnSlab = false
+            o.follows = false
+            return o
+        }
     }
 
     public var options: Options
@@ -1454,12 +1477,13 @@ public final class BallLocator {
     /// position and imageCircle radius for balls over the slab's footprint (within the 5% that still counts as landing
     /// on it) at heights spaced evenly in log height. Only those in view.
     static func searchSamples(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
-                              heights: ClosedRange<Double>) -> [(p: Vec2, r: Double)] {
+                              heights: ClosedRange<Double>, footprint: Double = 1.05) -> [(p: Vec2, r: Double)] {
         let up = -down.normalized
         guard up.isFinite, up.length > 0.5 else { return [] }
         let R = ball.radius
         var foot: [Vec3] = []
-        for su in [-1.05, 0, 1.05] { for sv in [-1.05, 0, 1.05] { foot.append(slab.point(u: su * slab.halfU, v: sv * slab.halfV)) } }
+        let f = max(0.05, footprint)
+        for su in [-f, 0, f] { for sv in [-f, 0, f] { foot.append(slab.point(u: su * slab.halfU, v: sv * slab.halfV)) } }
         let n = 40, h0 = max(0.005, heights.lowerBound), h1 = max(h0, heights.upperBound)
         let frame = ImageRect(width: K.width, height: K.height)
         var out: [(p: Vec2, r: Double)] = []
@@ -1501,8 +1525,8 @@ public final class BallLocator {
     /// about 12-36 px there (a remainder of less than a quarter of a band is added to the band below it), and only
     /// where its balls can be (padded by its largest radius). Neighbouring bands overlap by 10% in radius.
     public static func searchBands(intrinsics K: CameraIntrinsics, slab: SlabPose, ball: BallSpec, down: Vec3,
-                                   heights: ClosedRange<Double>, minSearchRadius m: Double = 12) -> [SearchBand] {
-        let samples = searchSamples(intrinsics: K, slab: slab, ball: ball, down: down, heights: heights)
+                                   heights: ClosedRange<Double>, minSearchRadius m: Double = 12, footprint: Double = 1.05) -> [SearchBand] {
+        let samples = searchSamples(intrinsics: K, slab: slab, ball: ball, down: down, heights: heights, footprint: footprint)
         guard let sLo = samples.map(\.r).min(), let sHi = samples.map(\.r).max() else { return [] }
         return bands(radii: (sLo * 0.85)...(sHi * 1.15), minSearchRadius: m, width: K.width, height: K.height) { lo, hi in
             // where a ball of radius within [lo, hi] can be (each sample with its 15% to spare)
@@ -1533,10 +1557,10 @@ public final class BallLocator {
     public func update(luma: Plane, intrinsics K: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> BallObservation? {
         let g = down.normalized
         // what earlier scans saw, carried into this frame by the slab (the phone may have moved)
-        let follow = followed.flatMap { circle(of: $0, in: slab, K: K, ball: ball) }
+        let follow = options.follows ? followed.flatMap { circle(of: $0, in: slab, K: K, ball: ball) } : nil
         let pending = pendingPartial.flatMap { circle(of: $0, in: slab, K: K, ball: ball) }
         var bands = Self.searchBands(intrinsics: K, slab: slab, ball: ball, down: g, heights: options.minHeight...options.maxHeight,
-                                     minSearchRadius: options.minSearchRadius)
+                                     minSearchRadius: options.minSearchRadius, footprint: options.footprint)
         guard let first = bands.first, let last = bands.last else {
             pendingPartial = nil
             return missedScan(K: K, slab: slab, spec: spec, ball: ball, down: g)
@@ -1565,7 +1589,7 @@ public final class BallLocator {
         var chosen: (BallCircle, Vec3, DropPoint)? = nil
         for c in circles {
             guard let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
-                  let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab,
+                  let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab || !options.requireOnSlab,
                   d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3 else { continue }
             if c.partial {
                 // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
@@ -1607,7 +1631,7 @@ public final class BallLocator {
         missed += 1
         guard missed <= options.maxMissedUpdates, let c = circle(of: f, in: slab, K: K, ball: ball),
               let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
-              let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab else {
+              let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab || !options.requireOnSlab else {
             followed = nil; current = nil; missed = 0
             return nil
         }
