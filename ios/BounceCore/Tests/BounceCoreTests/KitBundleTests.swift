@@ -399,6 +399,8 @@ final class KitBundleTests: XCTestCase {
                            return (try? w?.finish()) ?? 0
                        }())
         if let py = Self.python {
+            // The non-ASCII name is written as a Python escape: Foundation's Process on macOS passes arguments in
+            // decomposed form (é becomes e + U+0301), which would not match the composed name stored in the zip.
             let script = """
             import sys, zipfile
             z = zipfile.ZipFile(sys.argv[1])
@@ -406,7 +408,7 @@ final class KitBundleTests: XCTestCase {
             assert z.read("kit/big.bin") == open(sys.argv[2], "rb").read()
             assert z.read("kit/a.json") == b'{"a":1}\\n' * 100
             assert z.getinfo("kit/a.json").compress_type == 8
-            assert z.read("kit/é.txt") == b"utf-8 name"
+            assert z.read("kit/\\u00e9.txt") == b"utf-8 name"
             print("ok")
             """
             let r = try run(py, ["-I", "-c", script, zipURL.path, src.path])
