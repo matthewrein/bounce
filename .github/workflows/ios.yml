@@ -227,8 +227,9 @@ jobs:
       - name: End-to-end UI tests in the Simulator (demo scene)
         # Blocking: a failing end-to-end test fails the run. A test that fails is run once more (a slow shared
         # Simulator can miss a time limit); its first failure still shows in the log and the summary below.
+        # (about 22 minutes on a typical runner; a slow shared one has taken over 30, so the limit leaves room)
         if: matrix.xcode == 'default'
-        timeout-minutes: 30
+        timeout-minutes: 50
         run: |
           set +e
           xcrun simctl io "$SIM_UDID" recordVideo --codec=h264 --force e2e.mp4 &
