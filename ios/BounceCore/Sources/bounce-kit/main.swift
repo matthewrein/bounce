@@ -3,7 +3,7 @@
 //   bounce-kit write-synthetic <folder> [--codec hevc|h264] [--time-scale S] [--date YYYYMMDD-HHMMSS] [--no-lidar]
 //   bounce-kit bundle <kit folder> <outbox> [--limit BYTES] [--no-deflate]
 //   bounce-kit check <kit folder>
-//   bounce-kit expect <scores.json> --kit ID [--max-tilt-error DEG] [--min-lock-rate SHARE]
+//   bounce-kit expect <scores.json> --kit ID [--max-tilt-error DEG] [--min-lock-rate SHARE] [--min-scored N]
 //   bounce-kit budget
 //
 // Kits are private: it prints kit ids, shot ids, part names and numbers, never paths or anything from the pictures.
@@ -32,6 +32,9 @@ bundle options:
 expect options:
   --max-tilt-error DEG   fail if the kit's median tilt error is over DEG or missing
   --min-lock-rate SHARE  fail if its lock rate is under SHARE (0-1) or missing
+  --min-scored N         fail if fewer than N of its video shots could be scored (0 scored: ffmpeg could not decode them)
+
+check: exit status 0 complete, 4 something missing (listed), 1 no kit.json this checkout can read (why, on the second line)
 """
 
 func fail(_ s: String, _ code: Int32 = 1) -> Never {
@@ -147,13 +150,18 @@ case "bundle":
 
 case "check":
     let p = positional(1, "a kit folder")
-    guard let r = KitArrival.check(kitFolder: URL(fileURLWithPath: p[0])) else { fail("no readable kit.json in the folder given", 1) }
+    let folder = URL(fileURLWithPath: p[0])
+    guard let r = KitArrival.check(kitFolder: folder) else {
+        print("\(folder.lastPathComponent)")
+        print("  " + (KitArrival.readProblem(kitFolder: folder) ?? "kit.json does not read"))
+        exit(1)
+    }
     print("\(r.kitId) (\(r.planId))")
     for l in r.lines { print("  " + l) }
     exit(r.complete ? 0 : 4)
 
 case "expect":
-    var kit: String? = nil, maxTilt: Double? = nil, minLock: Double? = nil
+    var kit: String? = nil, maxTilt: Double? = nil, minLock: Double? = nil, minScored: Int? = nil
     var rest: [String] = []
     while !args.isEmpty {
         let a = args.removeFirst()
@@ -161,6 +169,7 @@ case "expect":
         case "--kit": kit = value(a)
         case "--max-tilt-error": guard let d = Double(value(a)), d > 0 else { fail("--max-tilt-error needs degrees") }; maxTilt = d
         case "--min-lock-rate": guard let d = Double(value(a)), d >= 0, d <= 1 else { fail("--min-lock-rate needs a share 0-1") }; minLock = d
+        case "--min-scored": guard let n = Int(value(a)), n >= 0 else { fail("--min-scored needs a number of shots") }; minScored = n
         default: if a.hasPrefix("-") { fail("unknown option \(a)\n\n" + usage) }; rest.append(a)
         }
     }
@@ -169,10 +178,15 @@ case "expect":
     guard let r = set.reports.first(where: { $0.kitId == id }) else { fail("\(id) was not scored", 5) }
     var bad: [String] = []
     let tilt = r.aggregate("tiltErrorMedian")?.value, lock = r.aggregate("lockRate")?.value
+    let scored = r.shots.filter { $0.error == nil }.count
     print("\(id): tilt error median \(tilt.map { String(format: "%.2f°", $0) } ?? "n/a"), lock rate \(lock.map { String(format: "%.0f%%", $0 * 100) } ?? "n/a"), "
-          + "\(r.shots.count) shots scored")
+          + "\(scored) of \(r.shots.count) video shots scored")
     if let m = maxTilt, (tilt ?? .infinity) > m { bad.append(String(format: "median tilt error over %.2f°", m)) }
     if let m = minLock, (lock ?? -1) < m { bad.append(String(format: "lock rate under %.0f%%", m * 100)) }
+    if let n = minScored, scored < n {
+        let why = Set(r.shots.compactMap { $0.error }).sorted().prefix(3).joined(separator: "; ")
+        bad.append("\(scored) of its \(r.shots.count) video shots could be scored" + (why.isEmpty ? "" : " (\(why))"))
+    }
     if !bad.isEmpty { fail("\(id): " + bad.joined(separator: ", "), 5) }
 
 case "budget":

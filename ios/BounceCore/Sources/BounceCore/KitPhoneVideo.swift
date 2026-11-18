@@ -1,8 +1,9 @@
 import Foundation
 
 /// The phone's video settings for a kit shot, as `KitRecorder` in the app sets them (CaptureKit.md, "Video"), so the
-/// synthetic kits and the bundle's size budget use the same numbers. `KitPhoneVideoTests` checks them against the app's
-/// source, so a change there shows up here.
+/// synthetic kits and the bundle's size budget use the same numbers. `KitHandoffTests.testPhoneVideoRuleIsTheApps` checks
+/// them against the app's source (KitRecorder, or the BounceCore type it takes the rule from), so a change there shows up
+/// here. Where BounceCore holds the same rule elsewhere (the pre-flight's storage estimate), these should call it.
 public enum KitPhoneVideo {
     /// the video is the camera picture scaled to at most this wide (`KitRecorder.maxVideoWidth`)
     public static let maxWidth = 1440

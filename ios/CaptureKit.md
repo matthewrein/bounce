@@ -308,25 +308,37 @@ When the owner says "kit uploaded":
    (it lets the session's git proxy fetch it; do not check it with curl or `gh` first, as a private repository answers
    404 to them). If that is refused, the owner has to create it or give Claude's GitHub app access to it
    (`ios/README.md`, "Sending it, privately"); say so and stop.
-2. Run the one command, from this repository (no arguments needed):
+2. Run the one command, from this repository (no arguments needed). A first run in a new session builds the checker
+   and the scorer (release) and can take about 10 minutes, so in a Claude session run it in the background (the Bash
+   tool's `run_in_background`) and read its output when it ends:
 
    ```
    ios/tools/kit-uploaded.sh
    ```
 
-It clones `https://github.com/matthewrein/bounce-captures` into `~/bounce-private/bounce-captures` (or
-`$BOUNCE_PRIVATE`; a folder inside this repository is refused), or updates that clone; finds every kit's parts in it,
-wherever they are and also when Safari or GitHub renamed them (`... (1).zip`), and checks each kit: all its parts there
-(by their `partNofM` names), every zip's CRCs (`unzip -t`), the same kit.json in every part, every part within
+It needs no setup beyond git, unzip and ffmpeg (with ffprobe), which Claude's sessions have: with no Swift on the PATH,
+under `/opt/swift-*` or in `~/.swift`, it installs Swift 6.1.2 itself (`ios/tools/install-swift.sh`: on Ubuntu 24.04,
+from download.swift.org, 878 MB, under a minute, checked against the SHA-256 pinned in the script, into `~/.swift`;
+elsewhere it says how to install Swift). It clones `https://github.com/matthewrein/bounce-captures` into
+`~/bounce-private/bounce-captures` (or `$BOUNCE_PRIVATE`; a folder inside this repository is refused), or updates that
+clone; if add_repo gives another clone URL, pass it as the only argument. It finds every kit's parts in it, wherever
+they are and also when Safari or GitHub renamed them (`... (1).zip`), on the default branch and on any other branch
+(the upload page's "Create a new branch for this commit and start a pull request" choice: those parts are used, and
+the report names the branch), and checks each kit: all its parts there (by their `partNofM` names), every zip's CRCs
+(`unzip -t`; a part cut short or empty counts as damaged), the same kit.json in every part, every part within
 24,000,000 bytes; a part uploaded twice is used once (the newest upload if the two differ). It then unzips each kit
-afresh into `~/bounce-private/kits/<kitId>` and checks the content against kit.json and each shot.json (`bounce-kit
-check`, `KitArrival`: every captured shot's files, the video's size, a frames.jsonl line per video frame, the depth files
-the lines name, the motion samples), so a part that went missing or a file cut short shows even when the names look
-right; an incomplete kit never replaces a complete copy unzipped earlier. Last it scores every kit there and the
-synthetic kit with `score-kits.sh` (scores saved in `~/bounce-private/scores`, compared with the previous run).
+afresh and checks the content against kit.json and each shot.json (`bounce-kit check`, `KitArrival`: every captured
+shot's files, the video's size, a frames.jsonl line per video frame, the depth files the lines name, the motion
+samples), so a part that went missing or a file cut short shows even when the names look right. kit.json is the
+authority: a shot it records that this checkout's plan does not know is checked from its shot.json, and a plan shot it
+has no record of is only noted (the phone runs another build), never reported as a missing upload; a kit.json this
+checkout cannot decode at all (a newer build's) is reported as "NOT verified" with where it stopped, and the fix is to
+update this checkout. A complete kit goes into `~/bounce-private/kits/<kitId>`; an incomplete one into
+`kits-incomplete/`, where it is not scored (so it never becomes the baseline the complete kit is compared with), and it
+never replaces a complete copy unzipped earlier.
 
-It prints, per kit: the parts (how many, verified, the largest), the shots captured and skipped (and held shots
-without a height), the files, the contents check, then the scores Markdown, and at the end one line per kit:
+It prints, per kit: the parts (how many, verified, the largest, any on another branch), the shots captured and skipped
+(and held shots without a height), the files, the contents check, then one line per kit:
 
 ```
 slab-kit-20261119-083000: all parts verified: the owner can delete this kit from the phone
@@ -334,11 +346,15 @@ slab-kit-20261119-083000: all parts verified: the owner can delete this kit from
 
 or `NOT complete`, with each missing or damaged part named (`part 2 of 3 is missing: ask the owner to upload
 slab-kit-...-part2of3.zip`): the owner keeps the kit on the phone and uploads that part the same way, and the command is
-run again. Running it again is always safe: it re-checks and re-scores every kit, a newly uploaded one included. Exit
-status 0 when every kit is complete and scored, 2 when a kit is incomplete or nothing was uploaded, 3 when scoring
-failed, 10 when the repository could not be fetched (with what to do). `--no-score` only checks; `--no-synthetic`
-leaves out the synthetic kit; `--measured` scores with the kit's measured slab and ball. It prints kit ids, part
-numbers, shot ids and numbers only.
+run again. Then it scores the complete kits with `score-kits.sh` (scores saved in `~/bounce-private/scores`, compared
+with the previous run; a couple of minutes a kit), prints the scores Markdown, and the verdict lines again. Running it
+again is always safe: it re-checks and re-scores every kit, a newly uploaded one included; a second run while one is
+going is refused (a lock in the private folder). Exit status 0 when every kit is complete and scored, 2 when a kit is
+incomplete, damaged or unreadable by this checkout, or nothing was uploaded, 3 when scoring failed (also when none of a
+kit's video shots could be scored, e.g. ffmpeg could not decode them), 10 when the repository could not be fetched
+(with what to do), 1 for setup problems (a missing tool, another run going). `--no-score` only checks; `--synthetic`
+also scores the synthetic kit (4-6 minutes more; it says nothing about the owner's kit); `--measured` scores with the
+kit's measured slab and ball. It prints kit ids, part numbers, branch names, shot ids and numbers only.
 
 **The dry run** (`ios/tools/handoff-dryrun.sh`, in a private folder outside the repository) rehearses all of it from
 nothing: a synthetic kit the size of a real one written as the phone writes it (`bounce-kit write-synthetic`,
@@ -349,17 +365,19 @@ frames.jsonl lines as `KitRecorder` writes them; the scene and truth of `KitSynt
 (`bounce-kit bundle`, DEFLATE from gzip; every part checked under 24,000,000 bytes and GitHub's 25 MiB, and unzipping
 them must rebuild the kit byte for byte), committed to a local bare repository standing in for bounce-captures as the
 web upload commits ("Add files via upload" at the root), then the one command after each upload: the first part only
-(incomplete, the missing parts named), the rest in a second commit (complete, scored: median tilt error at most 2°),
-a second kit (H.264, no LiDAR) later, the same parts again (renamed `(1)`, in a folder, re-committed), a damaged part
-(reported, the complete copy kept, then repaired) and a repository it cannot fetch (exit 10, what to do); and no
-private path in anything it prints. The full-length run took 32 minutes on 4 busy cores (the kit: 5,610 video frames,
-108 MB on the phone, 4 parts of 24.0, 24.0, 23.0 and 16.3 MB; writing it took 19 minutes, mostly rendering; scoring it
-about 2); CI runs it with the plan at a quarter of
-its timings and 10,000,000-byte parts, so that kit too comes in several (`--short`), and puts the bundle the real app
-made in the Simulator's end-to-end test (testCaptureKitFlow, the app's own `KitBundle` with Apple's DEFLATE) through
-the one command too (`--app-bundle`). What it cannot
-rehearse: GitHub itself (Safari's upload page, the private repository's access, the session's git proxy), real
-footage, the phone's own encoder and Apple's DEFLATE (the Simulator's bundle covers the last).
+(incomplete, the missing parts named, not scored), the rest in a second commit (complete, scored: median tilt error at
+most 2°; the verdict before the scores and after them), a second kit (H.264, no LiDAR) later, the same parts again
+(renamed `(1)`, in a folder, re-committed), a damaged part (reported, the complete copy kept, then repaired), a part
+whose kit.json is damaged, a part cut short and uploaded again as `(1)`, an empty part of a kit never uploaded (each
+reported, the other kits still verified), a repository it cannot fetch (exit 10, what to do), parts committed to
+another branch (used, the branch named), and a kit.json from a newer build (NOT verified); and no private path in
+anything it prints. The full-length run took 32 minutes on 4 busy cores (the kit: 5,610 video frames, 108 MB on the
+phone, 4 parts of 24.0, 24.0, 23.0 and 16.3 MB; writing it took 19 minutes, mostly rendering; scoring it about 2); CI
+runs it with the plan at a quarter of its timings and 10,000,000-byte parts, so that kit too comes in several
+(`--short`), and puts the bundle the real app made in the Simulator's end-to-end test (testCaptureKitFlow, the app's own
+`KitBundle` with Apple's DEFLATE) through the one command too (`--app-bundle`). What it cannot rehearse: GitHub itself
+(Safari's upload page, the private repository's access, the session's git proxy), real footage, the phone's own encoder
+and Apple's DEFLATE (the Simulator's bundle covers the last).
 
 ## Scoring (replay against ground truth)
 

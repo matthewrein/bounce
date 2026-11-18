@@ -190,7 +190,7 @@ For each kit:
 3. Tap **choose your files**, then **Choose Files** in the menu that opens, then **Browse**, then **On My iPhone >
    Slab Bounce > Kits**, and open the kit's folder. Tap **Select**, select every part, then tap **Open**. (If the page
    says the repository is empty, it has no README yet: add one on the repository's page first.)
-4. Wait until all the parts are listed, then tap **Commit changes**.
+4. Wait until all the parts are listed, then tap **Commit changes** (leave **Commit directly to the main branch** chosen).
 5. Tell Claude in the session: "kit uploaded". Claude checks every part and tells you either that you can delete the
    kit from the phone, or which part to upload again (the same way, just that file).
 

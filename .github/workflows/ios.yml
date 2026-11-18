@@ -84,18 +84,24 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null
       - uses: actions/checkout@v4
+      # A path relative to the workspace: in a container job `${{ runner.temp }}` is the host's path, not the
+      # container's ($RUNNER_TEMP), so the two must not be mixed. The parts match .gitignore's slab-kit-*.
       - uses: actions/download-artifact@v4
         with:
           name: demo-kit-bundle
-          path: ${{ runner.temp }}/demo-kit-bundle
+          path: demo-kit-bundle
       - name: The one command on the app's bundle
         timeout-minutes: 25
         shell: bash
         run: |
           set -o pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          ls -l "$RUNNER_TEMP/demo-kit-bundle"
-          ios/tools/handoff-dryrun.sh --app-bundle "$RUNNER_TEMP/demo-kit-bundle" --dir "$RUNNER_TEMP/handoff" | tee app-bundle.log
+          ls -l "$GITHUB_WORKSPACE/demo-kit-bundle"
+          if ! ls "$GITHUB_WORKSPACE"/demo-kit-bundle/*-part*of*.zip > /dev/null 2>&1; then
+            echo "::error::The app's end-to-end test left no capture kit bundle parts (testCaptureKitFlow, Documents/Kits in the Simulator)"
+            exit 1
+          fi
+          ios/tools/handoff-dryrun.sh --app-bundle "$GITHUB_WORKSPACE/demo-kit-bundle" --dir "$RUNNER_TEMP/handoff" | tee app-bundle.log
           { echo "### The app's bundle through the hand-off"; echo '```'; grep -E "^(===|  ok|  FAILED|dry run)" app-bundle.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   app-macos:
@@ -221,7 +227,8 @@ jobs:
         with:
           name: demo-kit-bundle
           path: demo-kit-bundle
-          if-no-files-found: error
+          # warn, not error: a missing bundle fails the app-bundle-linux job, not the app's build
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Keep the Simulator screenshot, the end-to-end video, log and results

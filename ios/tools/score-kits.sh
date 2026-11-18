@@ -94,7 +94,9 @@ else
 fi
 
 args=()
-if find "$kits" -mindepth 2 -maxdepth 2 -name kit.json | grep -q .; then args+=("$kits")
+have_kit=0
+for k in "$kits"/*/kit.json; do [ -f "$k" ] && { have_kit=1; break; }; done
+if [ "$have_kit" = 1 ]; then args+=("$kits")
 elif [ "$synthetic" = 1 ]; then echo "no kits in the kits folder: scoring the synthetic kit only" >&2
 else echo "no kits in the kits folder, and --no-synthetic: nothing to score" >&2; exit 1; fi
 if [ "$synthetic" = 1 ]; then args+=(--synthetic); fi

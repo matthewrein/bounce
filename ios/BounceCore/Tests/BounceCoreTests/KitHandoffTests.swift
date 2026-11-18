@@ -23,18 +23,38 @@ final class KitHandoffTests: XCTestCase {
 
     // MARK: the phone's video and the bundle's budget
 
+    /// The text of BounceCore's source files that declare `type` (KitPhoneVideo.swift left out), or nil if none does.
+    static func coreSource(declaring type: String) -> String? {
+        let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources").appendingPathComponent("BounceCore")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        let texts = files.filter { $0.hasSuffix(".swift") && $0 != "KitPhoneVideo.swift" }.sorted()
+            .compactMap { try? String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8) }
+            .filter { t in ["struct", "enum", "class", "extension"].contains { t.contains("\($0) \(type)") } }
+        return texts.isEmpty ? nil : texts.joined(separator: "\n")
+    }
+
     func testPhoneVideoRuleIsTheApps() throws {
         guard let src = KitHandoffTests.appSource("KitRecorder.swift") else { throw XCTSkip("the app's source is not next to the package") }
         for needle in ["static let maxVideoWidth = \(KitPhoneVideo.maxWidth)",
                        "static let depthInterval = \(KitPhoneVideo.depthInterval)",
                        "let w = min(KitRecorder.maxVideoWidth, full.width) / 2 * 2",
                        "let h = Int((Double(full.height) * Double(w) / Double(full.width)).rounded()) / 2 * 2",
-                       "let base = fps > 45 ? 6_000_000.0 : 3_500_000.0",
+                       "AVVideoMaxKeyFrameIntervalKey: max(1, Int(keptFps.rounded()))"] {
+            XCTAssertTrue(src.contains(needle), "KitRecorder.swift no longer says \"\(needle)\": make KitPhoneVideo match it")
+        }
+        // the bitrate and frame-keeping rules: in KitRecorder, or in the BounceCore type it calls for them (the
+        // pre-flight's storage estimate holds the same rule)
+        var rules = src
+        for type in ["PreflightStorageEstimate"] where src.contains(type + ".bitrate(") || src.contains(type + ".keepEvery(") {
+            let core = try XCTUnwrap(KitHandoffTests.coreSource(declaring: type), "KitRecorder calls \(type), which BounceCore does not declare")
+            rules += "\n" + core
+        }
+        for needle in ["let base = fps > 45 ? 6_000_000.0 : 3_500_000.0",
                        "let pixels = Double(width * height) / Double(1440 * 1080)",
                        "return Int(max(300_000, base * pixels * (hevc ? 1 : 1.5)))",
-                       "AVVideoMaxKeyFrameIntervalKey: max(1, Int(keptFps.rounded()))",
-                       "keepEvery = highFrameRate ? 1 : max(1, Int((sourceFps / 30).rounded()))"] {
-            XCTAssertTrue(src.contains(needle), "KitRecorder.swift no longer says \"\(needle)\": make KitPhoneVideo match it")
+                       "highFrameRate ? 1 : max(1, Int((sourceFps / 30).rounded()))"] {
+            XCTAssertTrue(rules.contains(needle), "KitRecorder.swift (or the rule it calls) no longer says \"\(needle)\": make KitPhoneVideo match it")
         }
         XCTAssertTrue(KitPhoneVideo.videoSize(cameraWidth: 1920, cameraHeight: 1440) == (1440, 1080))
         XCTAssertTrue(KitPhoneVideo.videoSize(cameraWidth: 1280, cameraHeight: 960) == (1280, 960))
@@ -136,6 +156,55 @@ final class KitHandoffTests: XCTestCase {
 
         // not a kit
         XCTAssertNil(KitArrival.check(kitFolder: root))
+        XCTAssertEqual(KitArrival.readProblem(kitFolder: root), "there is no kit.json")
+    }
+
+    /// kit.json is the authority, not this checkout's plan: a phone running another build (a shot added to the plan or
+    /// taken out) still checks out, with the differences noted; a kit.json this checkout cannot decode says where.
+    func testArrivalCheckFollowsKitJsonNotThisCheckoutsPlan() throws {
+        let kit = try tinyKit()
+        let manifestURL = kit.folder.appendingPathComponent(KitStore.manifestFile)
+        var m = try KitJSON.decode(KitManifest.self, from: Data(contentsOf: manifestURL))
+        // the phone's plan had no s05-tilt3-flat, and had a shot this checkout does not know (a copy of s04-level-still)
+        m.shots.removeAll { $0.id == "s05-tilt3-flat" }
+        var extra = try XCTUnwrap(m.record("s04-level-still"))
+        extra.id = "s99-new-shot"; extra.folder = KitStore.shotsFolder + "/s99-new-shot"
+        m.shots.append(extra)
+        try KitJSON.encode(m).write(to: manifestURL)
+        let shots = kit.folder.appendingPathComponent(KitStore.shotsFolder)
+        try fm.copyItem(at: shots.appendingPathComponent("s04-level-still"), to: shots.appendingPathComponent("s99-new-shot"))
+        let sj = shots.appendingPathComponent("s99-new-shot").appendingPathComponent(KitClipFiles.shotManifest)
+        var sm = try KitJSON.decode(KitShotManifest.self, from: Data(contentsOf: sj))
+        sm.shotId = "s99-new-shot"
+        try KitJSON.encode(sm).write(to: sj)
+
+        let r = try XCTUnwrap(KitArrival.check(kitFolder: kit.folder))
+        XCTAssertTrue(r.complete, "\(r.problems)")
+        XCTAssertTrue(r.captured.contains("s99-new-shot"))
+        XCTAssertFalse(r.skipped.contains("s05-tilt3-flat"))
+        XCTAssertEqual(r.captured.count + r.skipped.count, KitPlan.standard.shotCount)
+        XCTAssertTrue(r.notes.contains { $0.hasPrefix("in this checkout's plan but not in kit.json") && $0.contains("s05-tilt3-flat") }, "\(r.notes)")
+        XCTAssertTrue(r.notes.contains { $0.hasPrefix("in kit.json but not in this checkout's plan") && $0.contains("s99-new-shot") }, "\(r.notes)")
+        XCTAssertTrue(r.lines.contains { $0.hasPrefix("note: in kit.json but not") })
+        // the unknown shot is checked from its shot.json like any video shot
+        try fm.removeItem(at: shots.appendingPathComponent("s99-new-shot").appendingPathComponent(KitClipFiles.frames))
+        let r2 = try XCTUnwrap(KitArrival.check(kitFolder: kit.folder))
+        XCTAssertEqual(r2.problems, ["s99-new-shot: frames.jsonl is missing"])
+
+        // a kit.json from a newer build this checkout cannot decode: no report, and readProblem says where it stopped
+        XCTAssertNil(KitArrival.readProblem(kitFolder: kit.folder))
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        var records = try XCTUnwrap(json["shots"] as? [[String: Any]])
+        records[2]["status"] = "deferred"
+        json["shots"] = records
+        try JSONSerialization.data(withJSONObject: json).write(to: manifestURL)
+        XCTAssertNil(KitArrival.check(kitFolder: kit.folder))
+        let why = try XCTUnwrap(KitArrival.readProblem(kitFolder: kit.folder))
+        XCTAssertTrue(why.hasPrefix("this checkout cannot read kit.json at shots[2].status"), why)
+        XCTAssertFalse(why.contains(root.path), "no paths")
+        // not JSON at all
+        try Data("{".utf8).write(to: manifestURL)
+        XCTAssertTrue(KitArrival.readProblem(kitFolder: kit.folder)?.hasPrefix("this checkout cannot read kit.json") ?? false)
     }
 
     // MARK: the phone-sized synthetic kit (needs ffmpeg)
