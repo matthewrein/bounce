@@ -75,7 +75,13 @@ public enum KitScoreError: Error, Equatable, CustomStringConvertible {
 ///     `releaseTime` (else `startTime + releaseCue`), and the track is analysed as `KitBounceAnalysis` describes (a
 ///     track that does not hold together as a drop is n/a, with the reason): `landingError`, `landingDistanceError`, `apexError`,
 ///     `impactHeightError` against the app's prediction (`Bounce.compute` with the lock before the release and the held
-///     ball) and the `rebound` measured from the bounce.
+///     ball) and the `rebound` measured from the bounce. The same track is measured on the dish (`KitDropAnalysis`, with
+///     the lock before the cue and the dish's geometry, `KitDish`): `reboundMeasured` (e², e the restitution about the
+///     dish's local normal: the app's rebound setting), `landingErrorApp` and `landingErrorRebound` (the actual landing
+///     against the app's prediction for the same held ball with the app's rebound, and with the measured one, both
+///     carried down to the same level: 0.1 m below the impact, or where the ball came down next when it is seen lower),
+///     `launchDirectionError` (the app's launch direction against the measured one) and `impactClearance` (the gap
+///     between the ball and the dish where the fall's and the bounce's fits meet: the track against the lock).
 /// Aggregates: lockRate is the mean over slab shots, timeToLock the median over shots that locked, neverLocked a count;
 /// tilt and normal errors pool every frame; cornerRms, slabSizeError, landing, apex and impact height errors are medians
 /// over shots (signed errors as medians of their absolute values); the false-positive and detection rates pool frames.
@@ -371,7 +377,7 @@ final class KitScoreRun {
                 if let x = d.locate(image: b.image, intrinsics: b.intrinsics, slab: sc, spec: settings.spec, ball: settings.ball,
                                     down: pf.video.directionToCamera(down)), x.center.isFinite {
                     let w = pf.video.toWorld(x.center)
-                    if isDrop { run.track.append(KitBallSample(t: f.time, p: w)) }
+                    if isDrop { run.track.append(KitBallSample(t: f.time, p: w, c: pf.video.position)) }
                     if isBallOnSlab, out.state == .locked, let s = out.slab {
                         r.ballDistanceError = KitScoreRun.ballDistanceError(ballWorld: w, slab: s, view: pf.video, settings: settings)
                     }
@@ -562,6 +568,46 @@ final class KitScoreRun {
                 }
             }
             if let r = reason { for id in ids { metrics.append(.na(id, r)) } }
+
+            // the drop measured on the dish (`KitDropAnalysis`): the rebound as the app's setting means it, where the
+            // ball hit the dish, and the landing against the app's prediction with its rebound and with the measured one
+            let dropIds = ["reboundMeasured", "landingErrorApp", "landingErrorRebound", "launchDirectionError", "impactClearance"]
+            var dropReason: String? = nil
+            if !hasBallLocator { dropReason = "no ball finder in this build" }
+            else if c == nil { dropReason = "shot.json has neither releaseTime nor startTime and releaseCue" }
+            else if locked.isEmpty { dropReason = neverLocked }
+            if dropReason == nil, let cue = c {
+                let settings = self.settings
+                var ctx = KitDropAnalysis.Context(slab: run.lockBeforeCue, dish: KitDish(spec: settings.spec))
+                ctx.ballRadius = settings.ball.radius
+                ctx.appRebound = settings.ball.rebound
+                ctx.floorY = nil
+                if let lock = run.lockBeforeCue {
+                    ctx.predict = { held, rebound in
+                        var s = settings
+                        s.ball.rebound = rebound
+                        return KitBouncePrediction.app(pose: lock, settings: s, held: held)
+                    }
+                }
+                switch KitDropAnalysis.analyze(track: run.track, cue: cue, context: ctx) {
+                case let .analyzed(a):
+                    score.drop = a
+                    let noPred = "the slab was not locked before the release"
+                    let n = a.fallSamples + a.riseSamples
+                    metrics.append(a.rebound.map { KitMetric(id: "reboundMeasured", value: $0, count: n) }
+                                   ?? .na("reboundMeasured", "the ball did not bounce (it stayed on the slab)"))
+                    metrics.append(a.app.map { KitMetric(id: "landingErrorApp", value: $0.landingError * 1000, count: a.riseSamples) }
+                                   ?? .na("landingErrorApp", a.kind == .rolled ? "the ball did not bounce" : noPred))
+                    metrics.append(a.measuredRebound.map { KitMetric(id: "landingErrorRebound", value: $0.landingError * 1000, count: a.riseSamples) }
+                                   ?? .na("landingErrorRebound", a.kind == .rolled ? "the ball did not bounce" : noPred))
+                    metrics.append(a.app.map { KitMetric(id: "launchDirectionError", value: $0.directionError) }
+                                   ?? .na("launchDirectionError", a.kind == .rolled ? "the ball did not bounce" : noPred))
+                    metrics.append(a.impactClearance.map { KitMetric(id: "impactClearance", value: $0 * 1000) }
+                                   ?? .na("impactClearance", a.kind == .rolled ? "the ball did not bounce" : noPred))
+                case let .failed(why): dropReason = why
+                }
+            }
+            if let r = dropReason { for id in dropIds { metrics.append(.na(id, r)) } }
         }
 
         score.metrics = metrics
@@ -742,6 +788,17 @@ final class KitScoreRun {
         out.append(medianOf("apexError", abs: true, fallback: "no drop scored"))
         out.append(medianOf("impactHeightError", abs: true, fallback: "no drop scored"))
         out.append(medianOf("rebound", fallback: "no drop scored"))
+        // the rebound to bake into the app: the drops' measured rebounds averaged (`KitDropAnalysis.reboundToBake`)
+        let drops = ok.compactMap { $0.drop }
+        if let b = KitDropAnalysis.reboundToBake(drops) {
+            out.append(KitMetric(id: "reboundMeasured", value: b.rebound, note: String(format: "± %.1f points", b.sigma * 100), count: b.count))
+        } else {
+            out.append(.na("reboundMeasured", reason("reboundMeasured", "no drop scored")))
+        }
+        out.append(medianOf("landingErrorApp", fallback: "no drop scored"))
+        out.append(medianOf("landingErrorRebound", fallback: "no drop scored"))
+        out.append(medianOf("launchDirectionError", fallback: "no drop scored"))
+        out.append(medianOf("impactClearance", abs: true, fallback: "no drop scored"))
         return out
     }
 }

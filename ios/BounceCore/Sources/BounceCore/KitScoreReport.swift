@@ -78,6 +78,11 @@ public struct KitMetric: Codable, Equatable {
         "apexError": Kind(title: "Apex height error", unit: .millimetres, direction: .towardZero, tolerance: 5),
         "impactHeightError": Kind(title: "Launch height error (predicted minus measured impact)", unit: .millimetres, direction: .towardZero, tolerance: 3),
         "rebound": Kind(title: "Rebound measured", unit: .share, direction: .info, tolerance: 0.02),
+        "reboundMeasured": Kind(title: "Rebound on the dish (e², to bake into the app)", unit: .share, direction: .info, tolerance: 0.02),
+        "landingErrorApp": Kind(title: "Landing against the app (its rebound)", unit: .millimetres, direction: .lower, tolerance: 5),
+        "landingErrorRebound": Kind(title: "Landing against the app (measured rebound)", unit: .millimetres, direction: .lower, tolerance: 5),
+        "launchDirectionError": Kind(title: "Launch direction against the app's", unit: .degrees, direction: .lower, tolerance: 0.5),
+        "impactClearance": Kind(title: "Ball's gap from the dish at the impact", unit: .millimetres, direction: .towardZero, tolerance: 3),
     ]
 
     /// The catalogue's entry (an unknown id is an info metric without a unit).
@@ -118,11 +123,13 @@ public struct KitShotScore: Codable, Equatable {
     public var metrics: [KitMetric]
     /// drops: the bounce in detail
     public var bounce: KitBounceAnalysis?
+    /// drops: the bounce measured on the dish, against the app's prediction (`KitDropAnalysis`)
+    public var drop: KitDropAnalysis?
 
     public init(shotId: String, step: Int, positionId: String? = nil, trueTiltDegrees: Double? = nil, frames: Int = 0, seconds: Double = 0,
-                error: String? = nil, metrics: [KitMetric] = [], bounce: KitBounceAnalysis? = nil) {
+                error: String? = nil, metrics: [KitMetric] = [], bounce: KitBounceAnalysis? = nil, drop: KitDropAnalysis? = nil) {
         self.shotId = shotId; self.step = step; self.positionId = positionId; self.trueTiltDegrees = trueTiltDegrees; self.frames = frames
-        self.seconds = seconds; self.error = error; self.metrics = metrics; self.bounce = bounce
+        self.seconds = seconds; self.error = error; self.metrics = metrics; self.bounce = bounce; self.drop = drop
     }
 
     public func metric(_ id: String) -> KitMetric? { metrics.first { $0.id == id } }
@@ -185,6 +192,8 @@ public struct KitScoreReport: Codable, Equatable {
 
     public func aggregate(_ id: String) -> KitMetric? { aggregates.first { $0.id == id } }
     public func shot(_ id: String) -> KitShotScore? { shots.first { $0.shotId == id } }
+    /// "rebound to bake into the app: X% ± Y% (from N drops)", from the drops measured on the dish
+    public var reboundToBakeLine: String { KitDropAnalysis.bakeLine(shots.compactMap { $0.drop }) }
     public func position(_ id: String) -> KitPositionScore? { positions.first { $0.positionId == id } }
 
     /// Every metric with its key ("aggregate/<id>", "<shotId>/<id>", "position <posId>/<id>"), for comparisons.
@@ -395,6 +404,14 @@ extension KitScoreReport {
                 md.append("| \(s.shotId) | \(v("ballDetectionRate")) | \(v("ballFalsePositiveRate")) | \(v("ballDistanceError")) | "
                           + "\(v("dropHeightError")) | \(landing) | \(v("apexError")) | \(v("rebound")) |")
             }
+        }
+        // the drops measured on the dish, and the rebound to bake into the app
+        let drops = shots.compactMap { s in s.drop.map { (s.shotId, $0) } }
+        if !drops.isEmpty {
+            md.append("")
+            md.append("Drops, measured on the dish (`KitDropAnalysis`; ± is one standard error):")
+            md.append("")
+            md.append(KitDropAnalysis.markdownTable(drops))
         }
         // what could not be measured, grouped by reason
         var reasons: [String: [String]] = [:], order: [String] = []
