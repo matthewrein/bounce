@@ -25,6 +25,16 @@ jobs:
       - run: swift --version
       - name: swift test
         run: swift test --package-path ios/BounceCore
+      # The capture kit scorer on the synthetic kit (rendered here, known truth; no ffmpeg needed): its Markdown goes to
+      # the run's summary. Fails if the scorer crashes or the median tilt error is absurd (over 2 degrees).
+      - name: Capture kit scores (synthetic)
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -o pipefail
+          swift build -c release --package-path ios/BounceCore --product bounce-score
+          swift run -c release --skip-build --package-path ios/BounceCore bounce-score --synthetic --markdown --max-tilt-error 2 | tee synthetic-scores.md
+          cat synthetic-scores.md >> "$GITHUB_STEP_SUMMARY"
 
   app-macos:
     name: App (${{ matrix.xcode }} Xcode)
