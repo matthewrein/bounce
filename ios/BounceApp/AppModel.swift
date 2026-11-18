@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n9"
+let appBuild = "n10"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the rebound
 /// (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.

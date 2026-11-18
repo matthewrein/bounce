@@ -675,8 +675,8 @@ set: 12 drops at the centre and about 1, 2 and 3 in from it on several sides (th
 the middle of an edge a contact point stays more than the ball's radius inside it only within 2.8 in of the centre) and
 one 3.3 in out, 10 mm inside the downhill edge (measured, but left out of the rebound to bake), so the dish leans
 0.1-3.9° where they land; rebounds 0.5-0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45°, from behind
-and in front of the bounce, 0.94-1.06 m (3.1-3.5 ft) from the slab for the six drops of a foot or less, as the kit asks
-(3 to 4 ft), and 1.22-1.51 m for the higher ones and for d05, kept at 1.36 m so that one drop's ball crop is not shrunk
+and in front of the bounce, 0.94-1.06 m (3.1-3.5 ft) from the slab for the six drops of a foot or less (the distance the
+kit asks for when it films the slab, 3 to 4 ft; its drop steps name none), and 1.22-1.51 m for the higher ones and for d05, kept at 1.36 m so that one drop's ball crop is not shrunk
 (the tracker did not lock the 7 in slab from 1.7 m), a push at the release, frames the recorder dropped, the ball
 leaving the picture 0.73 s after the release, halfway through its bounce (d12); every frame's timestamp jittered by up
 to 0.4 ms. Each is a shot as a kit records it (6 fps to lock, the cue at 2 s, then 60 fps from 0.25 s before the release

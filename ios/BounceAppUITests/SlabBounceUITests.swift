@@ -395,11 +395,13 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(resume.waitForExistence(timeout: 15), "no Resume after quitting")
         let resumeText = resume.label
         screenshot(app, "kit resume")
-        // (the arc is only 5 s here: on a slow runner the tap can come after it was saved, and Resume then says 5 of 28.
-        // The Copy log test checks a mid-recording Quit at the real timings.)
-        XCTAssertTrue(resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28"),
-                      "Resume says \"\(resumeText)\" (want Step 4 of 12, 4 of 28 done; 5 of 28 means the slab arc, 5 s under -kitFast, "
-                      + "was saved before the Quit tap came)")
+        // The arc is only 5 s here: on a slow runner the Quit tap can come after the arc was saved. Resume then says
+        // Step 5 of 12, 5 of 28, and the rest of the flow is scored for that (one shot fewer to skip, 5 captured). The
+        // Copy log test checks a mid-recording Quit strictly, at the kit's real timings; the summary line says which.
+        let arcSaved = resumeText.contains("Step 5 of 12") && resumeText.contains("5 of 28")
+        XCTAssertTrue((resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28")) || arcSaved,
+                      "Resume says \"\(resumeText)\" (want Step 4 of 12, 4 of 28 done; or Step 5 of 12, 5 of 28 if the slab arc, "
+                      + "5 s under -kitFast, was saved before the Quit tap came)")
         resume.tap()
         // in the middle of a slab position the kit asks whether the slab moved: it did not
         var askedMoved = false
@@ -419,7 +421,7 @@ final class SlabBounceUITests: XCTestCase {
         let summaryLabel = summaryText.label
         screenshot(app, "kit summary")
         XCTAssertTrue(summaryLabel.contains("captured") && summaryLabel.contains("skipped"), "summary: \(summaryLabel)")
-        XCTAssertTrue(summaryLabel.contains("Captured 4 of 28"), "summary: \(summaryLabel)")
+        XCTAssertTrue(summaryLabel.contains(arcSaved ? "Captured 5 of 28" : "Captured 4 of 28"), "summary: \(summaryLabel) (arc saved before Quit: \(arcSaved))")
 
         // the bundle, and one tap to share it
         tap(app, "kitBundle")
@@ -430,12 +432,13 @@ final class SlabBounceUITests: XCTestCase {
         let shared = waitUntil(20) { app.otherElements["ActivityListView"].exists || app.navigationBars["UIActivityContentView"].exists || app.buttons["Close"].exists }
         screenshot(app, "kit share sheet")
         summary("kit: \(formProgress) form, scan (\(scanProgress), \"\(scanInstruction)\"): recording shown \(recordingSeen), check \"\(scanVerdict)\"; "
-                + "flat (\(flatProgress)); hold still: \"\(stillVerdict)\"; quit mid-recording \(quitMidShot); resume \"\(resumeText)\", slab-moved question \(askedMoved); "
+                + "flat (\(flatProgress)); hold still: \"\(stillVerdict)\"; quit mid-recording \(quitMidShot), arc saved before Quit \(arcSaved); resume \"\(resumeText)\", slab-moved question \(askedMoved); "
                 + "\(skips) skips (\(heightSkips) heights); summary \"\(summaryLabel.split(separator: "\n").first ?? "")\"; bundle: \(bundle); "
                 + String(format: "share sheet after %.1f s", shared ?? -1))
         XCTAssertTrue(recordingSeen, "no recording indicator during the scan")
         XCTAssertTrue(quitMidShot, "the fifth shot never showed its recording, so Quit was not tested mid-shot")
-        XCTAssertEqual(skips, 22, "skips: the 21 remaining required shots and the optional third tilt (one skip for its three shots)")
+        XCTAssertEqual(skips, arcSaved ? 21 : 22,
+                       "skips: the remaining required shots (21, or 20 if the arc was saved) and the optional third tilt (one skip for its three shots)")
         XCTAssertTrue(bundle.contains("part"), "bundle: \(bundle)")
         XCTAssertNotNil(shared, "no share sheet after Share kit")
     }

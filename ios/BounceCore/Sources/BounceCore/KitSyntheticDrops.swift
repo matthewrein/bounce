@@ -210,6 +210,7 @@ public final class KitSyntheticDrops {
         let cue = start + 2, release = cue + 0.15
         var params = KitDropPhysics.Params()
         params.ballRadius = R; params.rebound = shot.rebound; params.tangential = options.tangential
+        params.slabThickness = options.spec.thickness   // the cut faces and the base where the renderer draws them
         let phys = KitDropPhysics(slab: pose, dish: dish, held: held, release: release, releaseVelocity: shot.releaseVelocity,
                                   releaseSpin: shot.releaseSpin, params: params)
         let truth = KitSyntheticDrops.truth(phys, cue: cue, settings: settings)

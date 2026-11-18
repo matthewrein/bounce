@@ -2,10 +2,10 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
-## Morning brief: build n9 (18 November 2026)
+## Morning brief: build n10 (18 November 2026)
 
-Everything in n9 reached `native-ios` only after GitHub's checks passed on it. If the badge above is green, build n9 is
-ready for the phone. If it is red, don't pull yet.
+Everything in n10 reached `native-ios` only after GitHub's checks passed on it. If the badge above is green, build n10
+is ready for the phone. If it is red, don't pull yet.
 
 ### Update the phone
 
@@ -13,7 +13,7 @@ ready for the phone. If it is red, don't pull yet.
 2. `cd ios`, then `xcodegen generate`, then `open SlabBounce.xcodeproj`.
 3. Plug in the iPhone, pick it at the top of the Xcode window and press **Run**. If Xcode asks for a team, pick yours
    (step 5 of "First time" keeps it for next time).
-4. In the app, tap the gear, then **Developer**: Build should say **n9**.
+4. In the app, tap the gear, then **Developer**: Build should say **n10**.
 
 ### Try these three first
 
@@ -31,6 +31,10 @@ ready for the phone. If it is red, don't pull yet.
 
 ### What changed overnight
 
+- **New in n10 (since n9):** I redid the bounce analysis's test drops on your 7 in slab (below). The automatic test of
+  Copy log, which failed once on a slow GitHub Mac and passed when run again, now quits during the kit's real 20 s room
+  scan instead of a sped-up 5 s one. A recording thrown away just as its video was being saved (by Quit, for example)
+  no longer puts a false video error in the log. That and the build number are the only changes to the app itself.
 - **Ball height.** The held ball's size is read from its outline more carefully, so the drop height from the ball is
   about 3 mm off on the plain test renders, down from 15 mm (a render of a ball that mirrors the room still reads about
   1 cm low). A shiny ringed lid on the slab no longer takes the place of a held ball; a lid on its own is still taken
@@ -52,28 +56,31 @@ ready for the phone. If it is red, don't pull yet.
   real app makes in the Simulator through that command on every change.
 - **Bounce analysis.** From a recorded drop the scorer now measures the ball's real path, the impact point on the dish,
   the rebound and where the ball really lands, and compares that with the app's prediction. I redid its 12 test drops on
-  your 7 in slab (the first ones were on an 18 in slab by my mistake), half of them filmed from 3 to 3 1/2 ft, as the
-  kit asks, the rest from 4 to 5 ft. With a stand-in ball finder that knows where the ball is, all 12 are measured and
-  the rebound comes back within 0.1 point, so the analysis itself works. With the app's own ball finder only 4 of 12 are
-  measured, and they read the rebound 4 to 9 points high (76 ± 4% for a true 70%, 89 ± 6% for 85%). The rendered ball's
-  lower half is about the grey of the floor behind it, so the finder often sees only its bright top, takes the ball for
-  smaller and farther away than it is, and throws the reading out. Your real drops will show whether a real ball does
-  the same.
+  your 7 in slab (the first ones were on an 18 in slab by my mistake), half of them filmed from 3 to 3 1/2 ft away (the
+  distance the kit asks for when it films the slab; its drop steps do not name one), the rest from 4 to 5 ft. With a
+  stand-in ball finder that knows where the ball is, all 12 are measured and the rebound comes back within 0.1 point,
+  so the analysis itself works (only the error margins it states are too narrow, by a few millimetres). With the app's
+  own ball finder only 4 of 12 are measured, and they read the rebound 4 to 9 points high (the rebound to set in the
+  app comes out 76 ± 4% for a true 70%, from two drops, and 89 ± 6% for 85%, from one; the fourth is left out because
+  it read as a hit near the edge). The rendered ball's lower half is about the grey of the floor behind it. So the
+  finder often misses the ball, or sees only its bright top, takes the ball for smaller and farther away than it is,
+  and throws the reading out. Your real drops will show whether a real ball does the same.
 - **Device budget.** Each step of the per-frame work was timed and scaled to GitHub's Mac (an Apple M1); the Mac's own
-  timing of this code is in n9's checks. Once the slab is locked, the app uses about 5 to 30% of one core at 60 frames a
+  timing of this code is in every build's checks. Once the slab is locked, the app uses about 5 to 30% of one core at 60 frames a
   second, except close up over a speckled floor or with a hand over a corner of the slab, where it still drops some
   frames. While it is still searching close up (2 ft) on a cluttered floor, a search takes 130 to 230 ms, so the
   outline and path update only a few times a second until the slab locks (under a second). The camera picture itself
   stays smooth. Newer iPhones (13 Pro and later) should be about as fast as that Mac or faster; an iPhone 12 Pro about
   10% slower.
-- **Harsher test scenes** (on a separate test branch, not in n9): a mirror ball reflecting a cluttered room and the
+- **Harsher test scenes** (on a separate test branch, not in n10): a mirror ball reflecting a cluttered room and the
   person holding it, low light with sensor noise, motion blur, a slab side with almost no contrast, and mixed lighting.
   What they found is under "Open questions".
 
 ### Verified by tests, and only compiled
 
-- **Verified:** 430 tests of the slab, ball, bounce, tracking, recording, capture kit, hand-off and budget code on Linux,
-  and again optimised on a Mac; 9 end-to-end tests in the iPhone Simulator on the app's demo scene (lock and tilt,
+- **Verified:** 430 tests of the slab, ball, bounce, tracking, recording, capture kit, hand-off and budget code on Linux
+  (one of them, which replays a recording from the phone, waits for a real recording), and 431 optimised on a Mac (one
+  more test runs only there); 9 end-to-end tests in the iPhone Simulator on the app's demo scene (lock and tilt,
   sliding the slab, the rebound setting, the ball's drop height, a recording, diagnostics, the whole capture kit
   including quitting mid-recording and resuming, pre-flight, Copy log); the hand-off dry run; the app's own bundle
   through the one command.
@@ -97,8 +104,8 @@ ready for the phone. If it is red, don't pull yet.
 - **Hard cases from the harsh scenes:** a hand holding the ball (from above or from the side, the app missed it at 2 to
   4 ft), a fast falling ball's motion blur, a slab side that almost vanishes against a floor of the same shade, mixed
   lamp and window light, and a shaky hand or a dim room at 6 ft can still fail. Fixes go in only where independent
-  reviewers agree they are real weaknesses, not quirks of the renders; the hand and the mixed light are agreed and come
-  after n9.
+  reviewers agree they are real weaknesses, not quirks of the renders; the hand and the mixed light are agreed, and I
+  am working on their fixes for n11.
 - **A speckled floor** (terrazzo, granite, gravel) right behind the space over the slab can be taken for a ball.
 - **Privacy:** the three slab photos can still be reached on GitHub through an old commit, although no branch has them
   (I'll give you its id in our conversation, not here). Make the repository private, or ask GitHub Support to remove
