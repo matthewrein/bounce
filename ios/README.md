@@ -351,7 +351,8 @@ phone** on the app's last screen removes it and its parts.
 - The capture kit's screens are `KitSession.swift` (the flow, on BounceCore's `KitStore`, `KitFlatSession` and
   `KitQuality`), `KitViews.swift` (the screens and diagrams) and `KitRecorder.swift` (video, frames, motion and depth for
   one shot); ARController hands it each frame while a kit shot records. `CaptureKit.md` describes the kit's design and
-  formats. With `-demo YES -kitFast YES` the kit runs on the demo scene at a quarter of its timings (the UI tests).
+  formats. With `-demo YES -kitFast YES` the kit runs on the demo scene at a quarter of its timings (the whole-kit UI
+  test; the Copy log test keeps the real timings, so its Quit lands well inside the 20 s room scan).
 - The pre-flight is `PreflightRunner.swift` (it watches ARController through `setPreflight` and records its test clip
   with `KitRecorder`) and `PreflightView.swift`; BounceCore's `Preflight.swift` judges what it saw. The developer log is
   `AppLog.swift`, on BounceCore's `DevLog` (Application Support/Logs on the phone).

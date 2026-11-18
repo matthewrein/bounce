@@ -529,9 +529,11 @@ final class SlabBounceUITests: XCTestCase {
     /// Copy log (Settings > Developer): after Clear log, a short capture-kit run on the demo leaves its milestones in the
     /// log, with the recorder's summary line, and nothing in it is a file path. The run: a new kit, the measurements
     /// skipped, the room scan quit in the middle of its recording (Resume then offers the scan again, with the skipped
-    /// step kept), then the scan recorded and kept.
+    /// step kept), then the scan recorded and kept. The kit runs at its real timings (not -kitFast), so Quit has the
+    /// scan's 20 s to land in: a slow shared Simulator once took longer than -kitFast's 5 s to tap it, the scan was
+    /// committed first (a Quit after a shot is saved keeps it) and Resume moved on to step 3.
     func testCopyLogShowsKitMilestones() throws {
-        let app = launch(["kitFast": "YES"])
+        let app = launch(["kitFast": "NO"])
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
         openDeveloper(app)
         reveal(app, "clearLog")
@@ -547,7 +549,7 @@ final class SlabBounceUITests: XCTestCase {
         // step 1 skipped
         XCTAssertTrue(element(app, "kitStart").waitForExistence(timeout: 10), "no measurements form")
         tap(app, "shotSkip")
-        // step 2, the room scan (5 s here): Quit in the middle of its recording
+        // step 2, the room scan (20 s after a 3 s countdown): Quit in the middle of its recording
         XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10), "no shot screen after skipping the measurements")
         element(app, "shotStart").tap()
         let midShot = element(app, "kitRecording").waitForExistence(timeout: 15)
@@ -564,7 +566,7 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10), "no shot screen after Resume")
         let resumedAt = label(app, "kitProgress")
         element(app, "shotStart").tap()
-        XCTAssertTrue(app.staticTexts["qualityVerdict"].waitForExistence(timeout: 40), "no quality check after the scan: \(label(app, "kitError"))")
+        XCTAssertTrue(app.staticTexts["qualityVerdict"].waitForExistence(timeout: 90), "no quality check after the scan: \(label(app, "kitError"))")
         tap(app, "kitQuit")
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 10), "Quit did not close the kit")
 
@@ -581,11 +583,20 @@ final class SlabBounceUITests: XCTestCase {
         let paths = lines.filter { $0.contains("/var/") || $0.contains("/Users/") || $0.contains("file://") || $0.contains("/Library/") }
         let missingWords = missing.isEmpty ? "none" : missing.joined(separator: ", ")
         let errors = lines.filter { $0.contains(" ERROR ") }.count, warnings = lines.filter { $0.contains(" WARN ") }.count
-        summary("log: \(lines.count) lines after a short kit run (quit mid-recording \(midShot); then \"\(resumeText)\", resumed at \(resumedAt)); "
-                + "milestones missing: \(missingWords); lines with a path: \(paths.count); errors \(errors), warnings \(warnings)")
+        // the phase the first Quit landed in, from its line ("shot s02-scan cancelled during recording (Quit): ..."); none
+        // when the scan had already ended (saved, or failed) by the time the tap came
+        var quitPhase = "none"
+        if let line = lines.first(where: { $0.contains(" cancelled during ") }),
+           let after = line.components(separatedBy: " cancelled during ").last,
+           let word = after.split(separator: " ").first {
+            quitPhase = String(word)
+        }
+        summary("log: \(lines.count) lines after a short kit run (quit mid-recording \(midShot), landed during \(quitPhase); then \"\(resumeText)\", "
+                + "resumed at \(resumedAt)); milestones missing: \(missingWords); lines with a path: \(paths.count); errors \(errors), warnings \(warnings)")
         XCTAssertTrue(midShot, "the scan never showed its recording, so Quit was not tested mid-shot")
         XCTAssertTrue(resumeText.contains("Step 2 of 12") && resumeText.contains("1 of 28"),
-                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done)")
+                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done); Quit landed during \(quitPhase)"
+                      + (quitPhase == "none" ? " (no cancel line: the scan had ended before the tap came)" : ""))
         XCTAssertTrue(missing.isEmpty, "milestones missing from the log: \(missing); log:\n\(log.suffix(3000))")
         XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")
         closeSettings(app)
