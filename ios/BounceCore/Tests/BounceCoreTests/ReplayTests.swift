@@ -118,4 +118,48 @@ final class PipelineTests: XCTestCase {
         XCTAssertLessThan(tiltErrs.isEmpty ? 99 : tiltErrs[tiltErrs.count / 2], 1.0)
         XCTAssertLessThan(after.isEmpty ? 99 : after[after.count / 2], 1.0, "the slide to 3 deg shows")
     }
+
+    /// The demo with a ball held 0.30 m over the slab, through the app's detectors and its ball crop: the ball finder
+    /// finds it and the drop height comes from the ball (what the Simulator's testBallSetsTheDropHeight checks).
+    func testDemoBallThroughThePipeline() {
+        var d = DemoScript(); d.ballHeight = 0.30
+        var s = TrackerSettings(); s.searchInterval = 0.12
+        let tracker = SlabTracker(settings: s, detector: AppDetectors.slab(), ballLocator: AppDetectors.ball())
+        var firstBall: Double? = nil, errs: [Double] = [], frames = 0, withBall = 0, seq = ""
+        var t = 0.0
+        while t < 6 {
+            let view = d.view(at: t), scene = d.scene(at: t)
+            let img = SyntheticScene.ycc(rgb: scene.renderRGB(view: view), width: view.intrinsics.width, height: view.intrinsics.height)
+            // the app's ball crop (ARController): planned around the locked slab, cut from the full image
+            var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
+            if tracker.state == .locked, tracker.ballDue(at: t), let slab = tracker.slab, let c = BallImageCrop.plan(slab: slab, full: view) {
+                let p = img.luma.cropped(x0: c.x0, y0: c.y0, width: c.width, height: c.height)
+                ballImage = c.factor > 1 ? p.downscaled(by: c.factor) : p
+                ballK = c.intrinsics(full: view.intrinsics)
+            }
+            let out = tracker.process(TrackerFrame(timestamp: t, view: view, frame: img.colorFrame, ballImage: ballImage, ballIntrinsics: ballK, floorY: 0))
+            if out.ballSearched { seq += out.ball != nil ? "B" : "." }
+            if let r = out.readouts, out.state == .locked {
+                frames += 1
+                if r.dropFromBall {
+                    withBall += 1
+                    if firstBall == nil { firstBall = t }
+                    let truth = Bounce.compute(pose: scene.slab, spec: .standard, ball: BallSpec(), down: Vec3(0, -1, 0), ballCenter: scene.ball,
+                                               defaultDropHeight: 0.9144).drop?.dropHeight ?? .nan
+                    errs.append(abs(r.dropHeight - truth))
+                }
+            }
+            t += 0.08
+        }
+        errs.sort()
+        print("PIPELINE demo ball searches: " + seq)
+        print(String(format: "PIPELINE demo ball: first drop from the ball at %.2f s; %d of %d locked frames; drop error median %.1f mm worst %.1f mm",
+                     firstBall ?? -1, withBall, frames, errs.isEmpty ? -1 : errs[errs.count / 2] * 1000, (errs.last ?? -1) * 1000))
+        XCTAssertNotNil(firstBall, "the ball never set the drop height")
+        // Known gap (n6): the finder misses the ball for about 2.6 s while the demo camera drifts round (searches
+        // "BBBB................BBBBBBBBBBBBBBB"), so about half the locked frames use the ball. Guard that level until the
+        // gap is understood (on real captures first: they outrank renders).
+        XCTAssertGreaterThan(Double(withBall), 0.45 * Double(frames))
+        XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.02)
+    }
 }

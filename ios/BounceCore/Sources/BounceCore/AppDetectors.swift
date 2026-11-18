@@ -3,7 +3,7 @@ import Foundation
 /// The detectors the app and the replay tests use, in one place so a replay runs exactly what the phone ran.
 public enum AppDetectors {
     public static func slab() -> SlabDetecting { SlabFinderDetector() }
-    public static func ball() -> BallLocating? { nil }
+    public static func ball() -> BallLocating? { BallLocator() }
 }
 
 /// A detector that finds nothing (for tests).
@@ -29,5 +29,13 @@ public final class SlabFinderDetector: SlabDetecting {
         detail = nil
         if let c = cands.first { choice = c.choice } else if near == nil { choice = nil }
         return cands.map { DetectedOutline(quad: $0.quad, score: $0.score, sideModes: $0.sides.map { $0.mode.rawValue }) }
+    }
+}
+
+/// The ball finder behind the tracker's ball interface. A ball the last scan missed is held over for a couple of
+/// scans (carried along with the slab), so a frame where the ball blurs does not drop the drop height.
+extension BallLocator: BallLocating {
+    public func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
+        update(luma: image, intrinsics: intrinsics, slab: slab, spec: spec, ball: ball, down: down).map { ($0.center, $0.circle.center, $0.circle.radius) }
     }
 }
