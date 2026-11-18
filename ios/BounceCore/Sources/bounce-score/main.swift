@@ -3,6 +3,8 @@
 //   bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
 //                [--fail-on-regression] [--measured]
 //   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
+//   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--drops-floor] [--truth-ball]
+//                [--markdown]
 //
 // Kits are private: it prints kit ids, shot ids and numbers, never paths or anything from the pictures.
 import BounceCore
@@ -13,6 +15,7 @@ import Foundation
 let usage = """
 usage: bounce-score <kit folder or a folder of kits> ... [options]
        bounce-score --synthetic [--frames N] [options]
+       bounce-score --drops [options]
 
 Scores every video shot of each kit with the app's detectors and tracker against the kit's ground truth.
 
@@ -25,7 +28,14 @@ options:
   --synthetic            also score the synthetic kit (rendered here, known truth)
   --frames N             synthetic kit: frames per ordinary shot (default 12)
   --video h264|hevc      synthetic kit: encode its frames with ffmpeg and decode them as a kit's video
-  --truth-ball           synthetic kit: a ball finder that knows where the ball is (tests the ball metrics)
+  --truth-ball           synthetic kit and drops: a ball finder that knows where the ball is (tests the ball metrics)
+  --drops                score the rendered drops (KitSyntheticDrops: physical bounces off the dish, centre and
+                         off-centre, known truth) through the scorer's path and the drop analysis
+  --drops-only IDS       only these drops (comma-separated ids, or prefixes such as d01)
+  --drop-slab INCHES     the drops' slab side (default 18)
+  --drop-shrink N        render the drops at 1/N of 1440x1080 (default 1)
+  --drops-json FILE      write the drops' report as JSON
+  --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)
   --max-tilt-error DEG   exit with status 3 if the synthetic kit's median tilt error is above DEG, or missing
   --scorer LABEL         record who scored it (e.g. a git hash) in the JSON
   --quiet                no progress lines
@@ -41,6 +51,7 @@ func progress(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8
 var paths: [String] = []
 var jsonOut: String? = nil, compareWith: String? = nil, scorerLabel: String? = nil, videoCodec: String? = nil
 var markdown = false, failOnRegression = false, measured = false, synthetic = false, truthBall = false, quiet = false
+var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil, dropsFloor = false
 var frames = 12
 var maxTiltError: Double? = nil
 var args = Array(CommandLine.arguments.dropFirst())
@@ -60,6 +71,12 @@ while !args.isEmpty {
     case "--frames": guard let n = Int(value(a)), n >= 2 else { fail("--frames needs a number of at least 2") }; frames = n
     case "--video": let v = value(a); guard v == "h264" || v == "hevc" else { fail("--video is h264 or hevc") }; videoCodec = v
     case "--truth-ball": truthBall = true
+    case "--drops": drops = true
+    case "--drops-only": dropsOnly = value(a).split(separator: ",").map { String($0) }; drops = true
+    case "--drop-slab": guard let d = Double(value(a)), d > 4 else { fail("--drop-slab needs inches") }; dropSlab = d
+    case "--drop-shrink": guard let n = Int(value(a)), n >= 1 else { fail("--drop-shrink needs a whole number") }; dropShrink = n
+    case "--drops-json": dropsJson = value(a)
+    case "--drops-floor": dropsFloor = true; drops = true
     case "--max-tilt-error": guard let d = Double(value(a)), d > 0 else { fail("--max-tilt-error needs degrees") }; maxTiltError = d
     case "--scorer": scorerLabel = value(a)
     case "--quiet": quiet = true
@@ -69,7 +86,7 @@ while !args.isEmpty {
         paths.append(a)
     }
 }
-if paths.isEmpty && !synthetic { fail("give a kit folder, a folder of kits, or --synthetic\n\n" + usage) }
+if paths.isEmpty && !synthetic && !drops { fail("give a kit folder, a folder of kits, --synthetic or --drops\n\n" + usage) }
 if failOnRegression && compareWith == nil { fail("--fail-on-regression needs --compare") }
 
 let fm = FileManager.default
@@ -121,6 +138,25 @@ if synthetic {
     }
 }
 
+var dropReport: KitDropBenchReport? = nil
+if drops {
+    var o = KitDropBench.Options()
+    o.truthBall = truthBall
+    o.floorKnown = dropsFloor
+    o.log = log
+    if let s = dropSlab { o.drops.spec.sideU = Units.inches(s); o.drops.spec.sideV = Units.inches(s) }
+    o.drops.shrink = dropShrink
+    if let ids = dropsOnly {
+        o.drops.shots = o.drops.shots.filter { s in ids.contains { s.id == $0 || s.id.hasPrefix($0) } }
+        if o.drops.shots.isEmpty { fail("--drops-only matches no drop") }
+    }
+    if !quiet { progress("drops: rendering and scoring \(o.drops.shots.count) drops") }
+    do { dropReport = try KitDropBench.run(o) } catch { fail("the drops failed: \(KitScorer.describe(error))") }
+    if let j = dropsJson, let r = dropReport {
+        do { try r.json().write(to: URL(fileURLWithPath: j), options: .atomic) } catch { fail("could not write the --drops-json file") }
+    }
+}
+
 var set = KitScoreSet(reports: reports, scoredAt: KitTime.iso(Date()), scorer: scorerLabel)
 var comparison: KitScoreComparison? = nil
 if let c = compareWith {
@@ -134,14 +170,21 @@ if let j = jsonOut {
 }
 
 if markdown {
-    print(set.markdown(comparison: comparison))
+    if !reports.isEmpty { print(set.markdown(comparison: comparison)) }
+    if let d = dropReport { print(d.markdown()) }
 } else {
+    if let d = dropReport {
+        let sm = d.summary
+        func f(_ v: Double?, _ scale: Double, _ unit: String) -> String { v.map { String(format: "%.1f", $0 * scale) + unit } ?? "n/a" }
+        print("drops: \(sm.analysed)/\(sm.drops) analysed; rebound error \(f(sm.reboundError, 100, " points")) median "
+              + "(worst \(f(sm.reboundErrorMax, 100, " points"))), impact point \(f(sm.offsetError, 1000, " mm")), landing \(f(sm.landingError, 1000, " mm"))")
+    }
     for r in reports {
         func v(_ id: String) -> String { r.aggregate(id)?.formatted ?? "n/a" }
         print("\(r.kitId) (\(r.source)): lock rate \(v("lockRate")), first lock \(v("timeToLock")), "
               + "tilt error \(v("tiltErrorMedian")) median, \(v("tiltErrorP90")) p90 (bias \(v("tiltBias"))), "
               + "normal \(v("normalErrorMedian")), corners \(v("cornerRms")), false slab \(v("slabFoundRate")), "
-              + "ball \(v("ballDetectionRate")), landing \(v("landingError"))")
+              + "ball \(v("ballDetectionRate")), landing \(v("landingError")); \(r.reboundToBakeLine)")
     }
     if let c = comparison {
         print("compared: \(c.regressions.count) worse, \(c.improvements.count) better")

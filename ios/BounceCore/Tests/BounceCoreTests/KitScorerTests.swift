@@ -226,6 +226,19 @@ final class KitScorerTests: XCTestCase {
         XCTAssertLessThan(abs(try XCTUnwrap(d.metric("impactHeightError")?.value)), 3, "mm: the lock is good to a few mm")
         XCTAssertLessThan(try XCTUnwrap(d.metric("landingError")?.value), 15)
         XCTAssertNil(r.aggregate("impactPointError"), "the horizontal impact point (always about 0) is no longer scored")
+        // measured on the dish: this kit's drops follow the app's own model (out along the corner plane's normal at
+        // sqrt(0.7) of the speed in), whose restitution about the normal is sqrt(0.7) / cos(tilt): a rebound of
+        // 0.7 / cos²(tilt) as the app's setting means it; the app's prediction from a good lock lands where the ball does
+        let drop = try XCTUnwrap(d.drop, "\(d.metrics.compactMap { $0.note })")
+        let tilt = Units.radians(try XCTUnwrap(kit.truth["s10-drop1"]?.tiltDegrees))
+        XCTAssertEqual(try XCTUnwrap(drop.rebound), 0.7 / (cos(tilt) * cos(tilt)), accuracy: 0.03)
+        XCTAssertEqual(try XCTUnwrap(d.metric("reboundMeasured")?.value), try XCTUnwrap(drop.rebound), accuracy: 1e-12)
+        XCTAssertLessThan(try XCTUnwrap(d.metric("landingErrorApp")?.value), 15)
+        XCTAssertLessThan(try XCTUnwrap(d.metric("launchDirectionError")?.value), 1.5)
+        XCTAssertLessThan(abs(try XCTUnwrap(d.metric("impactClearance")?.value)), 4)
+        XCTAssertNotNil(r.aggregate("reboundMeasured")?.value)
+        XCTAssertTrue(r.reboundToBakeLine.hasPrefix("rebound to bake into the app: "), r.reboundToBakeLine)
+        XCTAssertTrue(r.markdown().contains("rebound to bake into the app:"))
     }
 
     /// The ball resting on the slab is expected where it was found, a radius above the dish along the dish's own normal

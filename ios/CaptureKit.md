@@ -393,6 +393,8 @@ bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown]
              [--fail-on-regression] [--measured]
 bounce-score --synthetic [--frames N] [--markdown] [--json out.json] [--video h264|hevc] [--truth-ball]
              [--max-tilt-error DEG]
+bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drop-shrink N] [--drops-json out.json]
+             [--truth-ball] [--markdown]
 ```
 
 It prints kit ids, shot ids and numbers, never paths. `--fail-on-regression` exits with status 2 when a metric got
@@ -419,7 +421,8 @@ code path. How it differs from the phone:
   frame at 60 fps, so searches and re-checks fall on other frames;
 - depth: about one frame a second in the kit, every locked frame on the phone;
 - floor: the kit has no ARKit plane anchors, so `floorY` is nil (the app's readouts then end the path at the slab's
-  lowest corner; this changes neither the slab nor the ball);
+  lowest corner; this changes neither the slab nor the ball; the drop analysis lands the bounce where the ball is seen
+  to come down next, or 0.1 m below the impact);
 - no taps, resets or settings changes; each shot starts a new tracker.
 
 **Decoding** (`KitVideoDecoder`, ffmpeg and ffprobe): frames are streamed one at a time (the video is never held whole)
@@ -452,6 +455,7 @@ entered, no height entered, no CoreMotion-to-ARKit link, ...).
 | `ballDistanceError` | ball resting on the slab (`s08`) | the tracking finder (below) on every locked frame: the ball's distance from the camera from its size minus the distance along the same ray to where its centre must be resting on the dish where it was found (a radius above the dish's surface along its own normal there, `Dish.at`; on a slab tilted 5-10° the ball cannot stay in the dish's middle, whose slope is at most 2°); frames with the ball not over the slab's top are left out; median (mm) |
 | `dropHeightError` | held ball with an entered height (`s09`) | the app's drop height while it comes from the ball (`Readouts.dropHeight`: the ball's bottom above the dish straight below it), median, minus the entered height (mm). The app asks for the same height: a ruler stood on the slab under the ball (in the dish, not on the corners' plane 1/8 in above it) |
 | `landingError`, `landingDistanceError`, `apexError`, `impactHeightError`, `rebound` | drops (`s10`, `s11`) | see below |
+| `reboundMeasured`, `landingErrorApp`, `landingErrorRebound`, `launchDirectionError`, `impactClearance` | drops (`s10`, `s11`) | the drop measured on the dish, below |
 
 The ball metrics are written against `BallLocating`: while `AppDetectors.ball()` is nil they are n/a ("no ball finder
 in this build"). `--truth-ball` gives the synthetic kit a finder that knows where the ball is
@@ -492,6 +496,101 @@ Both lie straight below the held ball, so their horizontal distance is about 0 w
 lock's plane and dish depth. (The app's model takes the ball's bottom to touch straight below its centre, about 0.3 mm
 off at 10°.)
 
+**Drops measured on the dish** (`KitDropAnalysis`, `KitDropFit`, `KitDish`). The same track, with each sample's
+camera position (`KitBallSample.c`), is measured again against the lock before the cue and the dish's geometry:
+
+- *Noise.* The finder takes the ball's distance from its size, far less precisely than its place in the picture, so its
+  error lies along the line of sight. Every free-fall fit (gravity known) is weighted least squares in which a sample's
+  error along its line of sight counts kappa² as much as across it; kappa is the fall's own split of its residuals
+  (re-estimated until it settles; the bounce's when that is lower), never more than the held ball's spread across over
+  along (a still, sharp ball promises more than a blurred falling one gives), 0.03-1. With gravity known in metres the
+  arc's curvature in the picture gives the distance, so a fall seen over a few frames is good to millimetres even when
+  every frame's distance is centimetres off. All distances below (gates, misfits) are weighted the same way.
+- *Segmenting* (release, fall, impact, as above) uses heights taken from the line of sight's elevation at the held
+  ball's horizontal distance from the camera, which the distance error does not move. The reference is the median
+  height over the hold; not seen held, the top of the first descent after the cue up to the first V (a fall of 3 cm and
+  a rise of 2 cm: the first bounce), never the highest point within a second (a lively ball's first bounce can rise
+  above the first frames seen of its fall). The fall starts where the ball leaves the hand's own level just before it
+  (3 mm below the median height 0.1-0.45 s before the fall is found), not a few millimetres below the whole hold's
+  median: a hand that sinks while it waits for the beep would otherwise turn its last held frames into a fall of their
+  own. A ball seen rising 3 cm or more before the fall found had an earlier bounce, missed with its fall: refused.
+- *The fall*: the arc most of its samples agree on (every trio of samples fitted, scored by the sum of min(d², (15 mm)²),
+  MSAC), refitted robustly to those within 15 mm, with a prior that the ball was let go, not thrown (horizontal velocity
+  0 ± 0.1 m/s); it must span 3 cm or 30% of the drop. *The rise*: the same consensus over the lowest sample and the next
+  eight, the trios also taken through the point where the fall meets the dish (so two wrong frames among a few cannot
+  outvote the rest), gate max(8 mm, 3 x the fall's misfit); then grown while each next sample is within max(15 mm, 5 x
+  the fall's misfit, 4 x its own) of the fit; one to three wrong frames are skipped when one of the next three (within
+  0.08 s) fits again; otherwise the flight ends there. It ended at a **next contact** only when the samples after it make
+  an arc of their own (4 or more agree) that the rise comes down onto with an upward kick of 0.2 m/s or more (on the slab
+  within 3 cm of the dish over the lock's outline, on the floor within 3 cm of ARKit's floor, else on something); a
+  stray detection or a few noisy frames are not one: the ball left the view or was lost. A ball that never rises 1 cm
+  but stays on the dish (within 2 cm, 3 or more samples) **rolled**: no rebound.
+- *The impact*: where the two fits' heights meet; the impact centre the mean of the fits there; the **contact point**
+  where the ball touches the dish when that centre is slid along its line of sight (the finder's error lies there; the
+  lock and the dish are good to millimetres; not when the sight runs within 10° of the slab's plane), and the **local
+  normal** the dish's normal there (`KitDish`: a spherical cap, 1/8
+  in deep at the centre, its rim the circle inscribed in the top, radius R = (a² + D²) / (2 D): 324 in for an 18 in top,
+  49 in for 7 in; flat outside the rim; the surface leans asin(r / R) toward the middle, 1.06° 6 in out on an 18 in
+  top). `impactClearance` is the gap between the ball at the impact centre and the dish (positive: the track turns
+  round above the dish; the finder reads the ball high or the lock sits low). The contact point is given along the
+  lock's axes (u, v: for a square slab, any of its edges) and down the slope and to its left looking downhill. The
+  impact must be on the top: a clearance over 8 cm (the ball missed the slab and bounced on its base or the floor, or
+  the fall is not the ball's) or a contact point more than a radius outside the lock's outline is refused, with the
+  reason; one within a radius of the edge (the bounce may be off the edge) or a clearance over 4 cm and 3 sigma is kept
+  but left out of the rebound to bake. (The heights' crossing is kept for the impact time: on the rendered drops it
+  lands a few ms early when the finder's distance is off through a whole arc, but crossings taken where the fits'
+  elevations meet as the camera sees them, which the distance error does not move, read the rebound 4-16 points low on
+  them, and worse on the synthetic tracks; the fits' mismatch below covers it instead.)
+- *The bounce*: **restitution** e = -(v_out . n) / (v_in . n) about the local normal n; **rebound** = e², exactly what
+  the app's rebound setting (`BallSpec.rebound`) means: the share of the drop height a straight-up bounce regains;
+  `speedRebound` = |v_out|² / |v_in|² (the older `rebound` metric); the tangential ratio (velocity along the surface
+  after over before) and how far the bounce leaves the plane of incidence (`sideways`: spin, or a wrong normal). A
+  rebound over 100% by more than 2 sigma is refused (more than the ball can regain), one over 100% within that, or a
+  fall moving sideways over 0.2 m/s (thrown, or a later bounce taken for the drop), is kept out of the bake.
+- *The release and the held point*: the release is the fall fit's vertex; the held point the median of the ball over
+  the 0.4 s before it (a hand that drifts is read where it let go), cross-checked against the fall fit's position then,
+  whose depth comes from gravity, not the ball's size: their disagreement (per axis) is part of the held point's
+  uncertainty, and a note over 1 cm. The drop height is the held point's height above the impact centre.
+- *The landing*: where the rise's arc comes down to the landing level (`landingLevelSource`): **"slab"** when the ball
+  came down on the slab again (the real landing; the app's arc is compared at that height, and `carriedOn` gives the
+  arc carried on through it to the app's own end level as well); else **"floor"**, ARKit's floor plus a radius when
+  known (`floorY`, the phone); else **"next bounce"**, the next contact when it is seen 3 cm or more below the impact
+  (the floor, seen; the next arc's fit met with the rise's); else **"lowest corner"**, the app's own end level without a
+  floor (`Bounce.compute`: the lock's lowest top corner, plus a radius), so the comparison is the error of the landing
+  marker the app draws; without a lock, 0.1 m below the impact centre ("fixed"). It is extrapolated past the last
+  sample when the ball left the view (said so, with the seconds).
+- *Against the app*: `app` is the app's bounce for the same held ball and the lock (`KitBouncePrediction.app`, so the
+  app's own drop height) with the app's rebound, `measuredRebound` the same with the rebound measured here, so what is
+  left is the model's error and the held reading's (both start from the held reading, as the app's prediction would),
+  not the rebound's; each is carried down to the same landing level: landing error (mm), range error (actual minus
+  predicted distance from the launch), direction error of the landing seen from above, and the launch directions'
+  angle.
+- *Uncertainties* (1 sigma): each fit's 6 x 6 parameter covariance (its sample times and lines of sight, the prior, and
+  a sample's noise across the line of sight: the larger of the two fits', at least 0.5 mm) carried through every number
+  by its numerical derivatives; then the fits' own check: they must meet at the impact, and their horizontal mismatch
+  there against its sigma (chi², 2 degrees of freedom) shows errors their residuals do not (a distance off by a few
+  centimetres through a whole arc, as the app's finder does on the rendered drops): the fits' part of every
+  uncertainty is scaled up by sqrt(chi² / 2) when that exceeds 1 (a note over 2). The held point's uncertainty goes
+  through the drop height and the predictions. On the scratch harness (12 drops x 10 seeds per scenario: misses,
+  wrong frames, 1.5-2 cm along the line of sight, motion blur, a sinking hand, a held ball not seen, the crop clipping
+  it, distance errors correlated frame to frame) the rebound is beyond 3 sigma on 0-5% of the drops (it was up to 34%),
+  and never more than 5 points and 3 sigma off in any but the harshest scenarios (one drop in 120). A rolling shutter
+  (8 ms readout, not modelled) still leaves the rebound 0.3 points off with a sigma smaller than that.
+- A track that does not hold together is refused with the reason (as above, but the speed in may be 30% off the fall's,
+  and 12% gives a note).
+
+`reboundMeasured` is e² per drop; `landingErrorApp` and `landingErrorRebound` the landing errors against the app's
+prediction with its rebound and with the measured one (mm); `launchDirectionError` the angle between the app's launch
+and the measured one; `impactClearance` (mm). The report has a table of the drops (drop height with the app's in
+brackets, contact point, local tilt, rebound ± sigma, launch angle, and the landing against the app both ways: mm ±
+sigma, range error, direction; the notes say when the ball landed on the slab again and what the arc carried on to the
+app's end level gives, and when a drop is left out of the bake) and the line **rebound to bake into the app: X% ± Y%
+(from N drops)**: the drops' rebounds, those marked to leave out (`bakeExcluded`) and those more than max(10 points,
+3 sigma) off their median left out, weighted by 1 / sigma²
+(`KitDropAnalysis.reboundToBake`; the aggregate `reboundMeasured`). Measured that way the app's own model (what this
+synthetic kit's drops do: out along the corner plane's normal at sqrt(rebound) of the speed in) has e = sqrt(rebound) /
+cos(tilt): a slab tilted 10° reads 72% for the app's 70%.
+
 **The true normal: the CoreMotion-to-ARKit link** (`KitMotionLink`). CoreMotion's reference frame (z up) and ARKit's
 world (y up) are both gravity-aligned: `world = Ry(yaw) · A0 · ref`, A0 taking ref x to world x, ref y to world -z and
 ref z to world y. At each video frame of a shot, the attitude (interpolated to the frame's time) and ARKit's camera pose
@@ -507,8 +606,9 @@ with the reason.
 **Aggregates**: `lockRate` is the mean over slab shots, `timeToLock` the median over the shots that locked,
 `neverLocked` a count; tilt and normal errors pool every locked frame of every shot with a true tilt; `cornerRms` is the
 median over shots; `slabSizeError`, `ballDistanceError`, `dropHeightError`, `landingDistanceError` and `apexError` are
-medians of the shots' absolute values, as is `impactHeightError`; `landingError` and `rebound` medians over drops; the slab
-and ball false-positive and detection rates pool their frames.
+medians of the shots' absolute values, as are `impactHeightError` and `impactClearance`; `landingError`, `rebound`,
+`landingErrorApp`, `landingErrorRebound` and `launchDirectionError` medians over drops; `reboundMeasured` the rebound to
+bake (above); the slab and ball false-positive and detection rates pool their frames.
 
 **Report.** JSON (`KitScoreSet`: one `KitScoreReport` per kit with the kit id ("synthetic" for the synthetic kit), plan,
 build, phone model, iOS version, LiDAR, which settings, the shots, positions and aggregates with every metric's value,
@@ -528,7 +628,8 @@ is a regression.
 | tiltErrorMedian, tiltBias | 0.05° | | landingError, landingDistanceError, apexError | 5 mm |
 | tiltErrorP90, normalErrorP90 | 0.1°, 0.2° | | impactHeightError | 3 mm |
 | normalErrorMedian | 0.1° | | rebound | 2 points |
-| cornerRms, slabSizeError | 0.5 mm, 1 mm | | | |
+| cornerRms, slabSizeError | 0.5 mm, 1 mm | | reboundMeasured | 2 points |
+| landingErrorApp, landingErrorRebound | 5 mm | | launchDirectionError, impactClearance | 0.5°, 3 mm |
 
 **The synthetic kit** (`KitSyntheticKit`): every shot of the plan made through `KitStore` as the app makes it, rendered
 by `SyntheticScene` with known truth. Measurements entered (7 x 7 x 1 in, 1/8 in dish, 35 mm ball); positions level, 5°
@@ -553,6 +654,45 @@ below it, by direction only, so its outline shows a dark band inside the top and
 reflects the slab, the floor and the room, and its edge brightens at a grazing angle. The ball finder's drop heights on
 the synthetic kit (`dropHeightError`) are that renderer's, not a measure of the app on real held shots: on a test ball
 that reflects the scene, with Fresnel, the held ball reads about 11 mm low in the same poses.
+
+**Rendered drops** (`KitSyntheticDrops`, `KitDropPhysics`, `KitDropBench`; `bounce-score --drops`): drops with known,
+physical truth, separate from the synthetic kit (whose drops keep the app's own model). The slab is the owner's as
+described: 18 in square (`--drop-slab` for another size; offsets are then scaled to its half-width), 1 in thick,
+dished 1/8 in (the spherical cap above), its top centre 4.5 in over the floor, sliding in its cradle as it tilts. The
+ball (35 mm) falls from rest (or with a push or spin when a drop says so) and meets the dish where its centre is the
+sphere's radius minus its own from the sphere's centre; the bounce reverses the velocity along the LOCAL normal at
+e = sqrt(rebound) and treats the velocity along the surface as a solid sphere with friction 0.4 does (it leaves
+rolling: 5/7 of it kept when it came in without spin, the spin taken up with it; it slides throughout only if friction
+cannot stop the slip within the impact); then free flight (no drag: under 0.2% of g) to the next contact, on the dish
+inside the slab's outline or on the floor (rebound 0.3), and so on. The standard set: 12 drops at 0, 2, 4 and 6.5 in from
+the centre on every side, rebounds 0.5-0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45°, from behind
+and in front of the bounce, a push at the release, frames the recorder dropped, the ball leaving the view; every frame's
+timestamp jittered by up to 0.4 ms. Each is a shot as a kit records it (6 fps to lock, the cue at 2 s, then 60 fps from
+0.25 s before the release until 0.25 s after the landing), 1440x1080, with exposure motion blur (1/120 s: the ball
+rendered at 7 instants over it and averaged); the renderer draws the top as the corner plane, so a ball sunk into the
+dish below it is drawn over it. `KitDropBench` runs each through the scorer's own per-frame path (`KitScoreRun.runShot`:
+the frame pipeline, a fresh tracker with the measured slab, the tracking finder on every frame), analyses the track with
+`KitDropAnalysis` as a kit's is (no floor; `--drops-floor` gives it ARKit's floor, y = 0, as on the phone) and also
+analyses a perfect track (the true centre on every frame, the true slab): the analysis's own error. The landing and the
+comparisons are scored against the truth at the analysis's own landing level (where the ball came down on the slab
+again, the floor seen, or the lowest top corner). The report (Markdown, JSON with every track) gives the measured minus
+the true numbers (rebound, contact point, local tilt, drop height, impact time, launch direction, landing, and the
+landing against the app both ways), how many drops are beyond 3 sigma (rebound, drop height, landing against the app),
+and the rebound to bake per true rebound. On the standard set with the app's finder 8 of 12 drops are measured (four
+are refused: the finder loses the ball after the bounce on drops from 18-36 in, the camera 1.4-1.9 m away, and on d05
+it sees only the last 14 mm of the fall); measured minus true, medians over the drops: rebound 2.8 points (worst 7.1),
+none of the 8 beyond 3 sigma (rebound, drop height or the landing against the app); the rebound to bake 70% ± 2% from
+the four 70% drops, 84% ± 4% from the two 85% drops and 67% ± 4% from the one 60% drop (d12, 70%, is left out: the
+finder's distances make its fall move sideways at 0.36 m/s); contact point on the dish 12 mm, its local tilt 0.05°,
+landing 23 mm, the landing against the app 21 mm (its rebound) and 18 mm (the measured one) from the truth's, while the
+finder's track itself is 1-8 cm off on a median frame of a drop, and its held reading 2-18 cm from where the fall fit
+starts (said in each drop's notes, and in its sigmas). The perfect tracks give the truth back (0.0 points, 0.0 mm), with
+the floor and without. What it shows about the app's model: the app launches along the corner plane's normal, but a
+ball dropped straight onto a surface tilted by t leaves at about t + atan(5/7 tan t / e) from vertical, nearly twice as
+far downhill, so even with the true rebound its landing is 1.5-27 cm short on the measured drops (most at 8-10° and
+from 2-2.5 ft); its paraboloid dish leans half as much as the spherical cap near the middle; and on an 18 in slab the app's ball
+crop is shrunk by 2, so the ball is about 10 px across and the finder's distances are 2-10 cm off on most drop frames
+(the weighted fits recover the rebound to a few points regardless, and say how far to trust it).
 
 **Locally** (`ios/tools/score-kits.sh [bundle parts or folders of them]`): unzips all of a kit's parts
 (`<kitId>-partNofM.zip`) into one folder outside the repository (default `~/bounce-private/kits`; a folder inside the

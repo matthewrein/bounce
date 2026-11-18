@@ -4,7 +4,10 @@ import Foundation
 public struct KitBallSample: Codable, Equatable {
     public var t: Double
     public var p: Vec3
-    public init(t: Double, p: Vec3) { self.t = t; self.p = p }
+    /// where the camera was (world), if known: the finder takes the ball's distance from its size, so its error lies
+    /// mostly along the line from the camera (`KitDropAnalysis` weighs it so)
+    public var c: Vec3?
+    public init(t: Double, p: Vec3, c: Vec3? = nil) { self.t = t; self.p = p; self.c = c }
 }
 
 /// What the app predicted for a drop: the bounce `Bounce.compute` works out from the tracker's lock and the held ball,
