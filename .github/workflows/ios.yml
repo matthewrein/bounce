@@ -42,6 +42,41 @@ jobs:
           { cat synthetic-scores.md; echo; echo "#### With the truth-based ball finder (--truth-ball): the scorer's own check"; echo
             cat synthetic-scores-truth-ball.md; } >> "$GITHUB_STEP_SUMMARY"
 
+  # The device budget (informational; never fails the run): each stage of the phone's per-frame processing timed on
+  # synthetic 1920x1440 camera frames (optimised, as the app is built), the 60 fps budget with the app's cadence and
+  # frame pacer, and an iPhone estimate from this Mac's times (bounce-bench). A package of its own (ios/BounceBench), so
+  # BounceCore's tests never build it, and a job of its own, in parallel with the app's: it adds no time to the app's
+  # legs and a failure here (continue-on-error) cannot fail the run. The Markdown goes to the run's summary and to the
+  # log between BENCH-BEGIN and BENCH-END; the report is kept as an artifact.
+  bench-macos:
+    name: Device budget bench (macOS, informational)
+    runs-on: macos-15
+    continue-on-error: true
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Device budget bench (bounce-bench)
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -o pipefail
+          sysctl -n machdep.cpu.brand_string hw.ncpu || true
+          swift build -c release --package-path ios/BounceBench
+          swift run -c release --skip-build --package-path ios/BounceBench bounce-bench --markdown bench.md --json bench.json
+          echo "BENCH-BEGIN"
+          cat bench.md
+          echo "BENCH-END"
+          cat bench.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the device budget report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-budget-bench
+          path: |
+            bench.md
+            bench.json
+          if-no-files-found: ignore
+
   app-macos:
     name: App (${{ matrix.xcode }} Xcode)
     runs-on: macos-15
@@ -90,34 +125,6 @@ jobs:
       - name: BounceCore tests (macOS, optimised; Linux runs them unoptimised)
         if: matrix.xcode == 'default'
         run: swift test -c release -Xswiftc -enable-testing --package-path ios/BounceCore
-
-      # The device budget: each stage of the phone's per-frame processing timed on synthetic 1920x1440 camera frames
-      # (optimised, as the app is built), the 60 fps budget with the app's cadence and frame pacer, and an iPhone
-      # estimate from this Mac's times (bounce-bench). The Markdown goes to the run's summary and to the log between
-      # BENCH-BEGIN and BENCH-END; the report is kept as an artifact. Informational: the numbers never fail the run.
-      - name: Device budget bench (bounce-bench)
-        if: matrix.xcode == 'default'
-        timeout-minutes: 10
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          swift build -c release --package-path ios/BounceCore --product bounce-bench
-          swift run -c release --skip-build --package-path ios/BounceCore bounce-bench --markdown bench.md --json bench.json
-          echo "BENCH-BEGIN"
-          cat bench.md
-          echo "BENCH-END"
-          cat bench.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Keep the device budget report
-        if: matrix.xcode == 'default' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: device-budget-bench
-          path: |
-            bench.md
-            bench.json
-          if-no-files-found: ignore
 
       - name: Build for the iOS Simulator
         run: >

@@ -23,8 +23,12 @@ struct BenchRandom {
 /// interleaved CbCr plane at half size), a LiDAR depth map (256x192), and the truth (the slab, the ball, the cameras).
 struct BenchScene {
     enum Kind: String, Codable { case slab, nothing }
+    /// what the bench painted into the render (ScenePaint): nothing, a hand over a corner of the slab, floor clutter, or a
+    /// floor of slab-sized tiles
+    enum Variant: String, Codable { case plain, hand, clutter, tiles }
     var name: String
     var kind: Kind
+    var variant: Variant
     var feet: Double?
     var ballHeight: Double?
     var scene: SyntheticScene
@@ -60,14 +64,33 @@ struct BenchScene {
         return CameraIntrinsics(fx: s.fx, fy: s.fy, cx: s.cx, cy: s.cy, width: K.width / factor, height: K.height / factor)
     }
 
+    /// The same frame in a buffer of its own (the same pixels at another address): the timings rotate among several, so
+    /// each run reads its camera buffer from memory, not from a cache the run before filled, as the phone's ISP-written
+    /// buffer arrives.
+    func copy() -> BenchScene {
+        var c = self
+        c.luma = luma.withUnsafeBufferPointer { Array($0) }
+        c.cbcr = cbcr.withUnsafeBufferPointer { Array($0) }
+        return c
+    }
+
+    /// `n` copies (at least 8 x 4 MB = 33 MB, more than an M1's or a phone's L2 and system cache).
+    func ring(_ n: Int = 8) -> [BenchScene] { (0..<max(1, n)).map { _ in copy() } }
+
     /// The slab (8 degrees tilt) seen from `feet` away along the line of sight, 50 degrees above level (a phone held
     /// to look down at it), a ball held `ballHeight` metres over its top (nil: none); `feet` nil: the floor alone, the
-    /// slab out of view. Rendered one sample a pixel (softened like a camera's optics) with sensor noise of 1.5 grey
-    /// levels.
-    static func make(feet: Double?, ballHeight: Double?, seed: UInt64) -> BenchScene {
-        var s = makeGeometry(feet: feet, ballHeight: ballHeight)
+    /// slab out of view. Rendered one sample a pixel (softened like a camera's optics), the variant painted in
+    /// (ScenePaint), then sensor noise of 1.5 grey levels.
+    static func make(feet: Double?, ballHeight: Double?, variant: Variant, seed: UInt64) -> BenchScene {
+        var s = makeGeometry(feet: feet, ballHeight: ballHeight, variant: variant)
         let K = s.full.intrinsics
         var rgb = s.scene.renderRGB(view: s.full)
+        switch variant {
+        case .plain: break
+        case .hand: ScenePaint.hand(&rgb, view: s.full, scene: s.scene)
+        case .clutter, .tiles:
+            ScenePaint.floor(&rgb, view: s.full, scene: s.scene, slabInView: s.kind == .slab, dense: variant == .tiles, seed: seed &+ 7)
+        }
         var rng = BenchRandom(seed)
         for i in 0..<(K.width * K.height) {
             let n = rng.gaussian() * 1.5
@@ -83,7 +106,6 @@ struct BenchScene {
         (s.depth, s.depthIntrinsics) = depthMap(scene: s.scene, view: s.full, seed: seed &+ 1)
         return s
     }
-
     /// LiDAR's view (256x192, ARKit's sceneDepth size): the slab's top plane over its footprint, the floor elsewhere,
     /// with 2 mm of noise, all at high confidence.
     static func depthMap(scene sc: SyntheticScene, view: CameraView, seed: UInt64) -> (DepthMap, CameraIntrinsics) {
@@ -109,60 +131,92 @@ struct BenchScene {
         return (DepthMap(width: W, height: H, depth: d, confidence: [UInt8](repeating: 2, count: W * H)), Kd)
     }
 
-    /// The scenes the bench runs on: the slab at 2, 4 and 6 ft with a ball held over it and without, and an empty view.
-    /// Rendered once (or read from `cache`, a folder for the rendered buffers; never committed).
-    static func all(quick: Bool, cache: URL?, log: (String) -> Void) -> [BenchScene] {
-        var specs: [(Double?, Double?)] = []
-        for f in [2.0, 4, 6] {
-            // a ball held over the slab, as high as still keeps it in the picture at this distance
-            let h = f == 2 ? 0.2 : f == 4 ? 0.3 : 0.45
-            specs.append((f, h))
-            specs.append((f, nil))
+    /// a ball held over the slab, as high as still keeps it in the picture at this distance
+    static func heldHeight(feet f: Double) -> Double { f == 2 ? 0.2 : f == 4 ? 0.3 : 0.45 }
+
+    /// The ball's height over the slab every 0.05 s of a drop from `h0` (the ball let go at rest), down to 1 cm.
+    static func dropHeights(from h0: Double) -> [Double] {
+        var hs: [Double] = [], t = 0.0
+        while true {
+            let h = h0 - 0.5 * 9.81 * t * t
+            if h <= 0.01 { hs.append(0.01); break }
+            hs.append(h)
+            t += 0.05
         }
-        specs.append((nil, nil))
-        var out: [BenchScene] = []
-        for (i, s) in specs.enumerated() {
+        return hs
+    }
+
+    /// The scenes the bench runs on. Plain: the slab at 2, 4 and 6 ft with a ball held over it and without, and an empty
+    /// view. Harder (`extras`): a hand over a corner (2 and 4 ft, ball held); floor clutter (2 and 4 ft without a ball,
+    /// and the empty view); a floor of slab-sized tiles (4 ft, and the empty view); and a drop (the ball at 0.05 s steps
+    /// from held to the slab, 2 and 4 ft). Rendered once (or read from `cache`, a folder for the rendered buffers; never
+    /// committed). `keep`: which to make (feet, or nil for the empty view).
+    static func all(quick: Bool, extras: Bool, keep: (Double?) -> Bool, cache: URL?, log: (String) -> Void) -> SceneSet {
+        var specs: [(Double?, Double?, Variant, UInt64)] = []
+        var i: UInt64 = 0
+        for f in [2.0, 4, 6] {
+            specs.append((f, heldHeight(feet: f), .plain, 1000 + i)); i += 1
+            specs.append((f, nil, .plain, 1000 + i)); i += 1
+        }
+        specs.append((nil, nil, .plain, 1000 + i))
+        if extras {
+            specs += [(2, heldHeight(feet: 2), .hand, 2000), (4, heldHeight(feet: 4), .hand, 2001),
+                      (2, nil, .clutter, 2002), (4, nil, .clutter, 2003), (nil, nil, .clutter, 2004),
+                      (4, nil, .tiles, 2005), (nil, nil, .tiles, 2006)]
+        }
+        var out = SceneSet()
+        func get(_ f: Double?, _ b: Double?, _ v: Variant, _ seed: UInt64) -> BenchScene {
             let t0 = nowNs()
-            let seed = UInt64(1000 + i)
-            if let c = cache, let sc = load(c, feet: s.0, ball: s.1, seed: seed) {
-                out.append(sc)
+            if let c = cache, let sc = load(c, feet: f, ball: b, variant: v, seed: seed) {
                 log("scene \(sc.name): read from the cache")
-                continue
+                return sc
             }
-            let sc = make(feet: s.0, ballHeight: s.1, seed: seed)
+            let sc = make(feet: f, ballHeight: b, variant: v, seed: seed)
             log(String(format: "scene %@: rendered in %.1f s", sc.name, msSince(t0) / 1000))
             if let c = cache { save(sc, c, seed: seed) }
-            out.append(sc)
+            return sc
+        }
+        for s in specs where keep(s.0) { out.scenes.append(get(s.0, s.1, s.2, s.3)) }
+        if extras {
+            for f in [2.0, 4] where keep(f) {
+                out.drops[f] = dropHeights(from: heldHeight(feet: f)).enumerated().map { j, h in get(f, h, .plain, 3000 + UInt64(f) * 100 + UInt64(j)) }
+            }
         }
         return out
     }
 
-    private static func key(feet: Double?, ball: Double?, seed: UInt64) -> String {
-        "scene-v1-\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.2f", $0) } ?? "none")-\(seed)"
+    private static func key(feet: Double?, ball: Double?, variant: Variant, seed: UInt64) -> String {
+        "scene-v1-" + (variant == .plain ? "" : variant.rawValue + "-")
+            + "\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.3f", $0) } ?? "none")-\(seed)"
     }
 
     /// The cache keeps only the pixels and the depth (the cameras and the scene are made again, cheaply).
     static func save(_ s: BenchScene, _ dir: URL, seed: UInt64) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let k = key(feet: s.feet, ball: s.ballHeight, seed: seed)
+        let k = key(feet: s.feet, ball: s.ballHeight, variant: s.variant, seed: seed)
         try? Data(s.luma).write(to: dir.appendingPathComponent(k + ".luma"))
         try? Data(s.cbcr).write(to: dir.appendingPathComponent(k + ".cbcr"))
         try? s.depth.data.write(to: dir.appendingPathComponent(k + ".bdp"))
     }
 
-    static func load(_ dir: URL, feet: Double?, ball: Double?, seed: UInt64) -> BenchScene? {
-        let k = key(feet: feet, ball: ball, seed: seed)
-        guard let l = try? Data(contentsOf: dir.appendingPathComponent(k + ".luma")),
-              let c = try? Data(contentsOf: dir.appendingPathComponent(k + ".cbcr")),
-              let d = try? Data(contentsOf: dir.appendingPathComponent(k + ".bdp")), let dm = DepthMap(data: d),
-              l.count == 1920 * 1440, c.count == 1920 * 720 else { return nil }
-        var s = makeGeometry(feet: feet, ballHeight: ball)
-        s.luma = [UInt8](l); s.cbcr = [UInt8](c); s.depth = dm
-        return s
+    static func load(_ dir: URL, feet: Double?, ball: Double?, variant: Variant, seed: UInt64) -> BenchScene? {
+        // (the plain scenes' first cache files named the ball's height to 2 decimals)
+        let keys = [key(feet: feet, ball: ball, variant: variant, seed: seed)]
+            + (variant == .plain ? ["scene-v1-\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.2f", $0) } ?? "none")-\(seed)"] : [])
+        for k in keys {
+            guard let l = try? Data(contentsOf: dir.appendingPathComponent(k + ".luma")),
+                  let c = try? Data(contentsOf: dir.appendingPathComponent(k + ".cbcr")),
+                  let d = try? Data(contentsOf: dir.appendingPathComponent(k + ".bdp")), let dm = DepthMap(data: d),
+                  l.count == 1920 * 1440, c.count == 1920 * 720 else { continue }
+            var s = makeGeometry(feet: feet, ballHeight: ball, variant: variant)
+            s.luma = [UInt8](l); s.cbcr = [UInt8](c); s.depth = dm
+            return s
+        }
+        return nil
     }
 
     /// The scene's cameras and truth with blank pixels (no rendering).
-    static func makeGeometry(feet: Double?, ballHeight: Double?) -> BenchScene {
+    static func makeGeometry(feet: Double?, ballHeight: Double?, variant: Variant = .plain) -> BenchScene {
         let K = fullIntrinsics
         let slab = SyntheticScene.slabPose(tilt: 8, heading: 35, yaw: 20)
         var sc = SyntheticScene(slab: slab)
@@ -177,12 +231,38 @@ struct BenchScene {
         } else {
             view = SyntheticScene.camera(at: Vec3(1.5, 0.9, 1.5), lookingAt: Vec3(2.0, 0, 2.3), intrinsics: K, roll: 3)
         }
-        let name: String
+        var name: String
         if let f = feet { name = String(format: "%.0f ft, ", f) + (ballHeight.map { String(format: "ball held %.2f m over", $0) } ?? "no ball") } else { name = "empty view" }
+        switch variant {
+        case .plain: break
+        case .hand: name += ", a hand over a corner"
+        case .clutter: name += ", cluttered floor"
+        case .tiles: name += ", slab-sized floor tiles"
+        }
         let dk = K.scaled(by: 256.0 / Double(K.width))
-        return BenchScene(name: name, kind: feet == nil ? .nothing : .slab, feet: feet, ballHeight: ballHeight, scene: sc, full: view,
+        return BenchScene(name: name, kind: feet == nil ? .nothing : .slab, variant: variant, feet: feet, ballHeight: ballHeight, scene: sc, full: view,
                           processing: CameraView(worldFromCamera: view.worldFromCamera, intrinsics: processingIntrinsics(K)),
                           luma: [], lumaStride: K.width, cbcr: [], cbcrStride: K.width,
                           depth: DepthMap(width: 1, height: 1, depth: [0], confidence: [0]), depthIntrinsics: dk)
+    }
+
+    /// The same frame as ARKit would report it after its world frame moved by `shift` under the lock (relocalisation):
+    /// the same pixels, the camera's reported pose moved by `shift` (world coordinates).
+    func worldShifted(_ shift: Vec3) -> BenchScene {
+        var c = self
+        let T = RigidTransform(rotation: .identity, translation: shift)
+        c.full = CameraView(worldFromCamera: T * full.worldFromCamera, intrinsics: full.intrinsics)
+        c.processing = CameraView(worldFromCamera: T * processing.worldFromCamera, intrinsics: processing.intrinsics)
+        return c
+    }
+}
+
+/// The rendered scenes: the still frames, and the drops (feet -> the frames of a drop, held first).
+struct SceneSet {
+    var scenes: [BenchScene] = []
+    var drops: [Double: [BenchScene]] = [:]
+
+    func scene(feet: Double?, ball: Bool, variant: BenchScene.Variant = .plain) -> BenchScene? {
+        scenes.first { $0.feet == feet && ($0.ballHeight != nil) == ball && $0.variant == variant }
     }
 }

@@ -205,3 +205,22 @@ struct HostInfo: Codable {
         #endif
     }
 }
+
+/// A short calibration probe between stage groups: the same kernel, 2M iterations, best of 3, scaled to the full
+/// calibration's 10M. Its drift over the run shows how much the machine's load changed while it ran (the stages between
+/// two probes are as much slower as the probes are).
+struct Probe: Codable {
+    var label: String
+    var ms: Double
+
+    static func take(_ label: String, quickRun: Bool = false) -> Probe {
+        let n = quickRun ? 200_000 : 2_000_000
+        var best = Double.infinity
+        for r in 0..<3 {
+            let t0 = nowNs()
+            blackHole(calibrationKernel(iterations: n, seed: 0x51ED27 &+ UInt64(r)))
+            best = min(best, msSince(t0))
+        }
+        return Probe(label: label, ms: best * 10_000_000 / Double(n))
+    }
+}

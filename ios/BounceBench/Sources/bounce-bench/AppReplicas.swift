@@ -138,16 +138,19 @@ enum AppReplicas {
     }
 
     /// `FrameConversion.scale` (the capture kit's recorder, per recorded frame): vImage's Lanczos scale of the camera
-    /// image's luma and interleaved chroma into the kit's video buffer (1440x1080 from 1920x1440).
-    static func kitVideoScale(luma: UnsafeMutableBufferPointer<UInt8>, cbcr: UnsafeMutableBufferPointer<UInt8>, width W: Int, height H: Int,
+    /// image's luma and interleaved chroma into the kit's video buffer (1440x1080 from 1920x1440). vImage splits the work
+    /// over the cores by default (the app's call); `oneCore` asks it not to (kvImageDoNotTile), for one core's time.
+    static func kitVideoScale(luma: UnsafeBufferPointer<UInt8>, cbcr: UnsafeBufferPointer<UInt8>, width W: Int, height H: Int,
                               lumaStride: Int, cbcrStride: Int, into dl: UnsafeMutableBufferPointer<UInt8>, _ dc: UnsafeMutableBufferPointer<UInt8>,
-                              dw: Int, dh: Int) -> Bool {
-        var sb = vImage_Buffer(data: UnsafeMutableRawPointer(luma.baseAddress), height: vImagePixelCount(H), width: vImagePixelCount(W), rowBytes: lumaStride)
+                              dw: Int, dh: Int, oneCore: Bool = false) -> Bool {
+        guard let lp = luma.baseAddress, let cp = cbcr.baseAddress else { return false }
+        let flags = vImage_Flags(oneCore ? kvImageDoNotTile : kvImageNoFlags)
+        var sb = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: lp), height: vImagePixelCount(H), width: vImagePixelCount(W), rowBytes: lumaStride)
         var db = vImage_Buffer(data: UnsafeMutableRawPointer(dl.baseAddress), height: vImagePixelCount(dh), width: vImagePixelCount(dw), rowBytes: dw)
-        guard vImageScale_Planar8(&sb, &db, nil, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return false }
-        var sc = vImage_Buffer(data: UnsafeMutableRawPointer(cbcr.baseAddress), height: vImagePixelCount(H / 2), width: vImagePixelCount(W / 2), rowBytes: cbcrStride)
+        guard vImageScale_Planar8(&sb, &db, nil, flags) == kvImageNoError else { return false }
+        var sc = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: cp), height: vImagePixelCount(H / 2), width: vImagePixelCount(W / 2), rowBytes: cbcrStride)
         var dcb = vImage_Buffer(data: UnsafeMutableRawPointer(dc.baseAddress), height: vImagePixelCount(dh / 2), width: vImagePixelCount(dw / 2), rowBytes: dw)
-        return vImageScale_CbCr8(&sc, &dcb, nil, vImage_Flags(kvImageNoFlags)) == kvImageNoError
+        return vImageScale_CbCr8(&sc, &dcb, nil, flags) == kvImageNoError
     }
     #endif
 
