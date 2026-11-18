@@ -1,6 +1,7 @@
 # Capture kit: design and formats
 
-The capture kit is a guided mode in the iOS app. The owner runs it once, for about 10 minutes, and hands back one bundle.
+The capture kit is a guided developer tool in the iOS app (Settings > Developer > Capture kit; it never opens by itself
+and the app never needs it). The owner runs it once, when asked, for about 10 minutes, and hands back one bundle.
 Every clip in it carries ground truth, so the detectors and BounceCore can be scored and improved against real footage
 without further help from the owner. Real captures outrank synthetic renders when the two disagree.
 
@@ -21,8 +22,8 @@ The kit is a sequence of **shots** grouped into 12 **steps**. Each shot screen s
 
 The owner can **Quit** at any point; progress is saved after every shot, and reopening the kit offers **Resume**. A shot
 interrupted half-way (the app going to the background, a phone call) is discarded and stays pending. If the kit resumes
-in the middle of a slab position (`KitStore.positionInProgress`), the app first asks "Has the slab moved since you set up
-<label>?"; on **Yes** it calls `restartPosition`, and the position starts again from its flat-phone shot (see "Slab
+in the middle of a slab position (`KitStore.positionInProgress`), the app first asks "Has the slab moved since you
+stopped?" (naming the position); on **Yes** it calls `restartPosition`, and the position starts again from its flat-phone shot (see "Slab
 positions"). At the end, the app lists what was captured and what was skipped, then builds the bundle and offers one
 **Share** button.
 
@@ -171,10 +172,12 @@ captured, or an entered height only shot.json has) holds the newer capture, and 
 reference are rebuilt from it (`KitStore.repairedOnLoad`); a skip that kit.json does not know of did not happen, and its
 files go back.
 
-**Video.** 1280x960 (4:3, the camera image scaled down; the full camera image is usually 1920x1440). For ARKit at 60 fps,
-ordinary shots keep every other frame (30 fps), and the high-frame-rate shots (drops) keep every frame. Target bitrate
-for HEVC: 3 Mbit/s at 30 fps and 5 Mbit/s at 60 fps; H.264 gets 1.5 times as much. Timestamps in the file are ARKit's
-frame timestamps minus the shot's start.
+**Video.** 1440x1080 (4:3, the camera image scaled down; the full camera image is usually 1920x1440). A box downscale by
+exactly 3 gives the app's 480x360 processing frame. For ARKit at 60 fps, ordinary shots keep every other frame (30 fps),
+and the high-frame-rate shots (drops) keep every frame. Target bitrate for HEVC: about 3.5 Mbit/s at 30 fps and 6 Mbit/s
+at 60 fps; H.264 (where HEVC is unavailable, and always in the Simulator) gets 1.5 times as much. Timestamps in the file
+are ARKit's frame timestamps minus the shot's start (`startTime`, the first recorded frame). The demo scene (Simulator,
+UI tests) records its own frames at their size (360x480) with H.264, and has no motion samples in its video shots.
 
 **KitFrame** (one JSON object per line; short keys keep the file small; optional values, and non-finite ones, are left
 out, inside `live` too; `pose` and `K` keep ARKit's own Float values):
@@ -211,8 +214,8 @@ width ÷ video width.
 **KitShotManifest** (`shot.json`, format `"bouncekit-shot"`, version 1): the kit and shot ids; the step; the attempt
 number; the start time (ISO, `startedAt`, for people) and duration; `startTime`, the start in seconds of system uptime
 (the clock of the frames' `t` and of the motion samples: the origin of the video's timestamps and of `releaseCue`); the
-build label; the device; the measurements, and `measurementsEntered` (false: they are the app's settings, step 1 was not
-done); the slab position id (with its generation) and the true tilt of that position (copied); `motionSessionId` and
+build label; the device; the measurements, and `measurementsEntered` (false: they are the app's built-in slab and ball,
+step 1 was not done); the slab position id (with its generation) and the true tilt of that position (copied); `motionSessionId` and
 `arSessionId` (see "The downhill direction and ARKit's world"); the video (codec, width, height, fps, bitrate, frame
 count, file size); the camera format (full width, height and fps); whether LiDAR depth is present, and how many depth
 frames; the motion sample count; the entered height (inches) if any; the quality report; for drops, the release cue (the
@@ -222,9 +225,9 @@ the result (`flat`); free notes. The app sets `startTime`, `releaseTime` and the
 **KitManifest** (`kit.json`): format `"bouncekit"`, version 1, kit id, plan id, the time scale when it is not 1, build
 label, created/updated/finished times; the device (model identifier like `iPhone16,1`, the iOS version, LiDAR, the chosen
 ARKit video formats for ordinary and high-frame-rate shots); the measurements (slab width, depth and thickness, dish depth
-or null, in inches; ball diameter in mm; validated against the Settings ranges: sides 3-20 in, thickness 0.2-4 in, dish
+or null, in inches; ball diameter in mm; validated against these ranges: sides 3-20 in, thickness 0.2-4 in, dish
 0-0.75 in, ball 5-120 mm) and `measurementsEnteredAt`, when the owner entered them (null until step 1 is done, and again
-if it is skipped: the measurements are then the app's settings, with no dish); the slab positions (and generations) with
+if it is skipped: the measurements are then the app's built-in slab and ball, with no dish); the slab positions (and generations) with
 their true tilts; the level hold-still shot's median luma and median light estimate (the light reference); one entry per
 shot in plan order: id, step, status (`pending` / `captured` / `skipped`), attempts, folder, position id (with
 generation), quality verdict, entered height, duration, frames, bytes, capture time, optional. Times are ISO-8601 in UTC.
@@ -286,7 +289,7 @@ finish screen also offers to delete the kit once it has been sent.
 
 Kits are private and the repository is public, so they travel through a **private GitHub repository**. It needs no Mac
 and no coding, only Safari on the iPhone: each part is at most 24,000,000 bytes, under GitHub's 25 MiB limit for a file
-uploaded on the web. The tap-by-tap steps for the owner are in `ios/README.md` ("Capture kit"). Once the owner says the
+uploaded on the web. The tap-by-tap steps for the owner are in `ios/README.md` ("Capture kit (developer tool)"). Once the owner says the
 kit is uploaded, the session attaches that repository and clones it outside this repository.
 
 ## Scoring (replay against ground truth)
@@ -299,7 +302,7 @@ detectors and `SlabTracker`. It decodes the video with `ffmpeg` and scores the r
   tilt of a shot is that of its record's position and generation (`manifest.position(forShot:)`). Only the size of the
   tilt can be scored until the CoreMotion-to-ARKit link (above) is in; then the downhill direction too.
 - **Corners**: corner stability, the RMS spread of the per-frame world corners (mm), and slab size against the measured size
-  (only when `measurementsEnteredAt` is set; otherwise the measurements are the app's settings).
+  (only when `measurementsEnteredAt` is set; otherwise the measurements are the app's built-in slab and ball).
 - **Ball**: detection rate (ball shots), false positives (slab-only and negative shots), and the size check (ball on the
   slab: distance from its size against its distance from the slab pose).
 - **Drop height**: the error against the entered heights. Drops are found after `releaseTime` (or `startTime + releaseCue`).
@@ -323,6 +326,7 @@ The kit's core is plain Swift in `BounceCore/Sources/BounceCore/Kit*.swift`, uni
 | `KitQuality.swift` | `KitQuality`, `KitQualityReport`, `KitQualityCheck`, `KitQualityReference`, `KitFrameStat`, `KitVerdict`, `KitSeverity`, `KitImageStats`, `KitMotionBlur` | the quality check after each shot, and the per-frame luma and blur |
 | `KitStore.swift` | `KitStore`, `KitProgress`, `KitListing`, `KitSummary`, `KitStepSummary`, `KitFiles` | the kit folder: create, list, resume, record, skip, positions (and restarting one), heights, finish, summary, crash repair |
 | `KitBundle.swift` | `KitBundle`, `KitZipWriter`, `KitBundleResult`, `KitBundlePart` | the zip parts the owner shares |
+| `KitDemoMotion.swift` | `KitDemoFlatPhone` | the demo's phone lying on the slab (CoreMotion-like samples from the exact model, with a fake camera bump), for the flat-phone shot in the Simulator and the UI tests |
 
 **The app**, in outline:
 
@@ -352,6 +356,16 @@ let parts = try KitBundle.build(kitFolder: store.folder, outbox: outbox,
 
 Per frame the app fills a `KitFrame` (luma from `KitImageStats.meanLuma(bytes:...)` on every frame, `live:
 KitLiveResult(state: KitLiveState(tracker.state), ...)`) and a `KitFrameStat(frame:)` for the quality check.
+
+**In the app** (`ios/BounceApp`): `KitSession.swift` runs the flow above; `KitViews.swift` draws the screens and the
+diagrams; `KitRecorder.swift` writes one shot (AVAssetWriter with its own pixel-buffer pool: each camera image is scaled
+with vImage while ARKit's delegate call runs, so no ARFrame is kept; a frame gets its frames.jsonl line only once the
+encoder took it). While the kit screen is open, `ARController` runs ARKit's 4:3 format (at most 1920 wide) with the
+highest frame rate, re-run without resetting tracking, and its one CMMotionManager at 100 Hz in `xArbitraryZVertical`
+with a handler that feeds motion.jsonl and `KitFlatSession`; both go back to the app's own when the kit closes, and their
+run ids (new UUIDs when the kit opens and whenever either restarts) go into every shot.json. The demo's flat-phone shot
+uses `KitDemoFlatPhone` (synthetic samples from the demo slab's tilt with a 1.5° camera bump, turned by itself about a
+second after the prompt).
 
 **The scorer** reads a received kit without changing it: `KitJSON.decode(KitManifest.self, ...)` for kit.json and
 `KitShotManifest` for each shot.json, `KitJSONL.read(KitFrame.self, from:)` and `KitJSONL.read(KitMotionSample.self, from:)`

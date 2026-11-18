@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Settings > Developer: tools for the people working on the app. The app never needs them and never opens them by
-/// itself: the capture kit (coming next), session recording, diagnostics, a tracking reset, the demo scene, the launch
-/// rule experiment, the build and a live line from the tracker (its hints are shown only here).
+/// itself: the capture kit, session recording, diagnostics, a tracking reset, the demo scene, the launch rule
+/// experiment, the build and a live line from the tracker (its hints are shown only here).
 struct DeveloperView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage(AppSettings.keys.demo) private var demo = false
@@ -13,14 +13,18 @@ struct DeveloperView: View {
     var body: some View {
         Form {
             Section(header: Text("Capture")) {
-                Button(action: {}) {
+                // the capture kit runs over the camera: Settings closes and the kit's screens take over the main screen
+                Button(action: {
+                    model.openKit()
+                    close()
+                }) {
                     HStack {
                         Text("Capture kit")
                         Spacer()
-                        Text("coming next").foregroundColor(.secondary)
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundColor(.secondary)
                     }
                 }
-                .disabled(true)
+                .disabled(model.isStopping)
                 .accessibilityIdentifier("captureKitRow")
                 Button(recordTitle) {
                     if model.isRecording {

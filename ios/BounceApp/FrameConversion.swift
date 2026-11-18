@@ -1,3 +1,4 @@
+import Accelerate
 import ARKit
 import BounceCore
 import CoreVideo
@@ -17,6 +18,77 @@ enum FrameConversion {
 
     static func columnMajor(_ m: simd_float4x4) -> [Double] {
         [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [Double($0.x), Double($0.y), Double($0.z), Double($0.w)] }
+    }
+
+    /// ARKit's own Float values, column-major (the capture kit's `KitFrame.pose`).
+    static func columnMajorFloats(_ m: simd_float4x4) -> [Float] {
+        [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
+    }
+
+    /// A BounceCore camera view (CV axes) as ARKit's world-from-camera transform, column-major (the demo's `KitFrame.pose`).
+    static func arkitPose(_ view: BounceCore.CameraView) -> [Float] {
+        let t = view.worldFromCamera
+        return RigidTransform(rotation: t.rotation * ARKitConvention.cvToARKitCamera, translation: t.translation).columnMajor4x4.map { Float($0) }
+    }
+
+    /// Mean luma (0-255) of a camera buffer's Y plane, every 8th pixel in x and y (the capture kit's per-frame light).
+    static func meanLuma(_ pb: CVPixelBuffer) -> Double? {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard CVPixelBufferGetPlaneCount(pb) >= 1, let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return nil }
+        let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), bpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        let bytes = UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self), count: bpr * h)
+        return KitImageStats.meanLuma(bytes: bytes, width: w, height: h, bytesPerRow: bpr, step: 8)
+    }
+
+    /// Scale a bi-planar 4:2:0 camera image into another bi-planar 4:2:0 buffer of any size (vImage, Lanczos; luma and
+    /// interleaved chroma each scaled on their own). Synchronous: when it returns, nothing refers to `src`.
+    static func scale(_ src: CVPixelBuffer, into dst: CVPixelBuffer) -> Bool {
+        guard CVPixelBufferGetPlaneCount(src) >= 2, CVPixelBufferGetPlaneCount(dst) >= 2 else { return false }
+        CVPixelBufferLockBaseAddress(src, .readOnly)
+        CVPixelBufferLockBaseAddress(dst, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(dst, [])
+            CVPixelBufferUnlockBaseAddress(src, .readOnly)
+        }
+        for plane in 0..<2 {
+            guard let s = CVPixelBufferGetBaseAddressOfPlane(src, plane), let d = CVPixelBufferGetBaseAddressOfPlane(dst, plane) else { return false }
+            var sb = vImage_Buffer(data: s, height: vImagePixelCount(CVPixelBufferGetHeightOfPlane(src, plane)),
+                                   width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(src, plane)),
+                                   rowBytes: CVPixelBufferGetBytesPerRowOfPlane(src, plane))
+            var db = vImage_Buffer(data: d, height: vImagePixelCount(CVPixelBufferGetHeightOfPlane(dst, plane)),
+                                   width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(dst, plane)),
+                                   rowBytes: CVPixelBufferGetBytesPerRowOfPlane(dst, plane))
+            let err = plane == 0 ? vImageScale_Planar8(&sb, &db, nil, vImage_Flags(kvImageNoFlags))
+                                 : vImageScale_CbCr8(&sb, &db, nil, vImage_Flags(kvImageNoFlags))
+            if err != kvImageNoError { return false }
+        }
+        return true
+    }
+
+    /// Copy a demo frame (YCCImage, planar) into a bi-planar 4:2:0 buffer of the same size.
+    static func fill(_ dst: CVPixelBuffer, from img: YCCImage) -> Bool {
+        guard CVPixelBufferGetPlaneCount(dst) >= 2, CVPixelBufferGetWidthOfPlane(dst, 0) == img.width,
+              CVPixelBufferGetHeightOfPlane(dst, 0) == img.height,
+              CVPixelBufferGetWidthOfPlane(dst, 1) == img.chromaWidth, CVPixelBufferGetHeightOfPlane(dst, 1) == img.chromaHeight else { return false }
+        CVPixelBufferLockBaseAddress(dst, [])
+        defer { CVPixelBufferUnlockBaseAddress(dst, []) }
+        guard let y0 = CVPixelBufferGetBaseAddressOfPlane(dst, 0), let c0 = CVPixelBufferGetBaseAddressOfPlane(dst, 1) else { return false }
+        let yb = CVPixelBufferGetBytesPerRowOfPlane(dst, 0), cb = CVPixelBufferGetBytesPerRowOfPlane(dst, 1)
+        let w = img.width, cw = img.chromaWidth
+        img.y.withUnsafeBufferPointer { src in
+            guard let s = src.baseAddress else { return }
+            for row in 0..<img.height { (y0 + row * yb).copyMemory(from: s + row * w, byteCount: w) }
+        }
+        let c = c0.assumingMemoryBound(to: UInt8.self)
+        for row in 0..<img.chromaHeight {
+            let d = c + row * cb
+            for x in 0..<cw {
+                d[2 * x] = img.cb[row * cw + x]
+                d[2 * x + 1] = img.cr[row * cw + x]
+            }
+        }
+        return true
     }
 
     /// The captured image's intrinsics (pixels of `camera.imageResolution`).

@@ -23,6 +23,22 @@ struct SourceFrame {
     let lumaCrop: (Int, Int, Int, Int, Int) -> Plane?
     let depth: () -> (DepthMap, CameraIntrinsics)?
     let exposureDuration: Double?
+
+    // for the capture kit's recorder (KitRecorder), read only while a kit shot records
+    /// the frame's time on the system's uptime clock, the clock of CoreMotion (ARKit: the frame's timestamp; demo: when
+    /// the frame was rendered)
+    let clock: Double
+    /// ARKit's world-from-camera transform as ARKit gives it (ARKit camera axes, column-major Floats)
+    let arkitPose: [Float]
+    let kitTracking: KitTracking
+    /// exposure offset (EV) and ARKit's light estimate (lumens, kelvin), if known
+    let exposureOffset: Double?
+    let ambientLumens: Double?
+    let colorTemperature: Double?
+    /// mean luma (0-255) of the full image, every 8th pixel, straight from the camera buffer's Y plane
+    let meanLuma: () -> Double?
+    /// scales the full image into a bi-planar 4:2:0 buffer of the video's size, synchronously; false if it cannot
+    let fillVideo: (CVPixelBuffer) -> Bool
 }
 
 /// Runs the AR session (or the demo) and feeds every frame through BounceCore's tracker on a background queue, then
@@ -37,7 +53,16 @@ final class ARController: NSObject, ARSessionDelegate {
     weak var model: AppModel?
 
     private let queue = DispatchQueue(label: "slabbounce.processing", qos: .userInteractive)
+    /// The app's one CMMotionManager (Apple recommends a single one per app): 60 Hz, read by session recordings; while
+    /// the capture kit is open, 100 Hz in the xArbitraryZVertical frame with a handler on `motionQueue`.
     private let motion = CMMotionManager()
+    private let motionQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.name = "slabbounce.motion"
+        q.maxConcurrentOperationCount = 1
+        q.qualityOfService = .userInitiated
+        return q
+    }()
     private let lock = NSLock()
 
     // shared with the main thread (guarded by `lock`)
@@ -45,6 +70,20 @@ final class ARController: NSObject, ARSessionDelegate {
     private var pendingTap: CGPoint? = nil
     private var pendingSettings: AppSettings? = nil
     private var resetRequested = false
+    /// the capture kit's motion handler (motion queue) and the latest 100 Hz sample, while the kit is open
+    private var kitMotionHandler: ((KitMotionSample) -> Void)? = nil
+    private var latestKitMotion: CMDeviceMotion? = nil
+    /// ids of the current ARKit run and CoreMotion run (new ones whenever either restarts), for the kit's shot.json
+    private var arRunId = UUID().uuidString
+    private var motionRunId = UUID().uuidString
+
+    // main thread
+    /// the capture kit is open: ARKit runs its 4:3 format with the highest frame rate, CoreMotion at 100 Hz
+    private var kitMode = false
+    /// the camera (not the demo) is running
+    private var cameraRunning = false
+    /// the format the capture kit chose (nil in the demo or before the camera ran in kit mode)
+    private(set) var kitCameraFormat: KitCameraFormat? = nil
 
     // processing-queue state
     private var tracker: SlabTracker
@@ -67,6 +106,8 @@ final class ARController: NSObject, ARSessionDelegate {
     private var recorder: SessionRecorder? = nil
     private var recordRequested = false
     private var cadence = RecordingCadence()
+    /// the capture kit's shot recorder, while a kit shot records (it says when it has enough frames)
+    private var kitRecorder: KitRecorder? = nil
 
     // the demo (no camera)
     private var demoTimer: DispatchSourceTimer? = nil
@@ -84,22 +125,7 @@ final class ARController: NSObject, ARSessionDelegate {
     // MARK: control (main thread)
 
     func start(settings s: AppSettings) {
-        let c = ARWorldTrackingConfiguration()
-        c.worldAlignment = .gravity
-        c.planeDetection = [.horizontal]
-        c.isAutoFocusEnabled = true
-        // LiDAR depth where the phone has it: the tracker reads the smoothed map, the raw one while that has none yet
-        if ARController.depthSupported { c.frameSemantics.insert(.sceneDepth) }
-        if ARController.smoothedDepthSupported { c.frameSemantics.insert(.smoothedSceneDepth) }
-        // the highest-resolution 4:3 format up to 1920 wide (usually 1920x1440); the detectors use a quarter of it
-        if let f = ARWorldTrackingConfiguration.supportedVideoFormats
-            .filter({ abs($0.imageResolution.width / $0.imageResolution.height - 4.0 / 3.0) < 0.01 && $0.imageResolution.width <= 1920 })
-            .max(by: { $0.imageResolution.width < $1.imageResolution.width }) {
-            c.videoFormat = f
-        }
-        let vf = c.videoFormat
-        let format = DiagnosticsReport.VideoFormat(width: Int(vf.imageResolution.width), height: Int(vf.imageResolution.height),
-                                                   framesPerSecond: vf.framesPerSecond)
+        let c = makeConfiguration()
         queue.async {
             self.unlockCapture()
             self.settings = s
@@ -107,25 +133,148 @@ final class ARController: NSObject, ARSessionDelegate {
             self.floorYs = [:]
             self.sawRelocalizing = false
             self.lastBallCrop = nil
-            self.videoFormat = format
         }
+        noteFormat(c.videoFormat)
         session.run(c, options: [.resetTracking, .removeExistingAnchors])
-        if motion.isDeviceMotionAvailable {
+        cameraRunning = true
+        newRunId(ar: true, motion: false)
+        startMotion()
+    }
+
+    /// The session's configuration: gravity-aligned world tracking, horizontal planes, LiDAR depth where the phone has
+    /// it, and the video format (the app's, or the capture kit's while the kit is open).
+    private func makeConfiguration() -> ARWorldTrackingConfiguration {
+        let c = ARWorldTrackingConfiguration()
+        c.worldAlignment = .gravity
+        c.planeDetection = [.horizontal]
+        c.isAutoFocusEnabled = true
+        // LiDAR depth where the phone has it: the tracker reads the smoothed map, the raw one while that has none yet
+        if ARController.depthSupported { c.frameSemantics.insert(.sceneDepth) }
+        if ARController.smoothedDepthSupported { c.frameSemantics.insert(.smoothedSceneDepth) }
+        if let f = kitMode ? ARController.kitVideoFormat() : ARController.appVideoFormat() { c.videoFormat = f }
+        if kitMode {
+            let vf = c.videoFormat
+            kitCameraFormat = KitCameraFormat(width: Int(vf.imageResolution.width), height: Int(vf.imageResolution.height),
+                                              fps: Double(vf.framesPerSecond))
+        }
+        return c
+    }
+
+    /// 4:3 formats up to 1920 wide
+    private static var fourByThreeFormats: [ARConfiguration.VideoFormat] {
+        ARWorldTrackingConfiguration.supportedVideoFormats
+            .filter { abs($0.imageResolution.width / $0.imageResolution.height - 4.0 / 3.0) < 0.01 && $0.imageResolution.width <= 1920 }
+    }
+
+    /// The app's format: the highest-resolution 4:3 format up to 1920 wide (usually 1920x1440); the detectors use a
+    /// quarter of it.
+    static func appVideoFormat() -> ARConfiguration.VideoFormat? {
+        fourByThreeFormats.max { $0.imageResolution.width < $1.imageResolution.width }
+    }
+
+    /// The capture kit's format: 4:3 up to 1920 wide with the highest frame rate (then the highest resolution).
+    static func kitVideoFormat() -> ARConfiguration.VideoFormat? {
+        fourByThreeFormats.max { a, b in
+            a.framesPerSecond != b.framesPerSecond ? a.framesPerSecond < b.framesPerSecond : a.imageResolution.width < b.imageResolution.width
+        }
+    }
+
+    private func noteFormat(_ vf: ARConfiguration.VideoFormat) {
+        let format = DiagnosticsReport.VideoFormat(width: Int(vf.imageResolution.width), height: Int(vf.imageResolution.height),
+                                                   framesPerSecond: vf.framesPerSecond)
+        queue.async { self.videoFormat = format }
+    }
+
+    func stop() {
+        session.pause()
+        cameraRunning = false
+        motion.stopDeviceMotionUpdates()
+        lock.lock(); latestKitMotion = nil; lock.unlock()
+        queue.async { self.unlockCapture(); self.kitRecorder = nil }
+        stopDemo()
+    }
+
+    // MARK: the capture kit (main thread; Settings > Developer > Capture kit)
+
+    /// The capture kit opened (or closed). Open: ARKit's 4:3 format with the highest frame rate, re-run WITHOUT
+    /// resetting tracking, and CoreMotion at 100 Hz in the xArbitraryZVertical frame, every sample handed to `handler`
+    /// (on the motion queue). Closed: the app's format and 60 Hz motion again. New run ids either way. In the demo only
+    /// the mode is noted (there is no camera or motion; `start` applies it when the camera runs).
+    func setKitMode(_ on: Bool, motion handler: ((KitMotionSample) -> Void)?) {
+        kitMode = on
+        if !on { kitCameraFormat = nil }
+        lock.lock(); kitMotionHandler = on ? handler : nil; lock.unlock()
+        newRunId(ar: true, motion: true)
+        guard cameraRunning else { return }
+        let c = makeConfiguration()
+        let current = session.configuration?.videoFormat
+        if current?.imageResolution != c.videoFormat.imageResolution || current?.framesPerSecond != c.videoFormat.framesPerSecond {
+            noteFormat(c.videoFormat)
+            session.run(c, options: [])   // no reset: the world, and the slab's lock, carry on
+        }
+        startMotion()
+    }
+
+    /// Ids of the current ARKit run and CoreMotion run: the kit writes them into every shot.json.
+    var runIds: (ar: String, motion: String) {
+        lock.lock(); defer { lock.unlock() }
+        return (arRunId, motionRunId)
+    }
+
+    private func newRunId(ar: Bool, motion m: Bool) {
+        lock.lock()
+        if ar { arRunId = UUID().uuidString }
+        if m { motionRunId = UUID().uuidString }
+        lock.unlock()
+    }
+
+    /// Device motion: 100 Hz with a handler while the kit is open, else 60 Hz read by the session recordings.
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable else { return }
+        motion.stopDeviceMotionUpdates()
+        lock.lock(); latestKitMotion = nil; lock.unlock()
+        newRunId(ar: false, motion: true)
+        if kitMode {
+            motion.deviceMotionUpdateInterval = 1.0 / 100
+            motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: motionQueue) { [weak self] m, _ in
+                guard let self = self, let m = m else { return }
+                self.kitMotion(m)
+            }
+        } else {
             motion.deviceMotionUpdateInterval = 1.0 / 60
             motion.startDeviceMotionUpdates()
         }
     }
 
-    func stop() {
-        session.pause()
-        motion.stopDeviceMotionUpdates()
-        queue.async { self.unlockCapture() }
-        stopDemo()
+    /// One 100 Hz sample (motion queue): kept for the session recording, handed to the kit.
+    private func kitMotion(_ m: CMDeviceMotion) {
+        let q = m.attitude.quaternion
+        let s = KitMotionSample(time: m.timestamp, gravity: Vec3(m.gravity.x, m.gravity.y, m.gravity.z),
+                                userAcceleration: Vec3(m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z),
+                                rotationRate: Vec3(m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
+                                attitude: KitQuaternion(x: q.x, y: q.y, z: q.z, w: q.w))
+        lock.lock(); latestKitMotion = m; let h = kitMotionHandler; lock.unlock()
+        h?(s)
     }
+
+    /// The latest device motion, whichever way it is running.
+    private func currentMotion() -> CMDeviceMotion? {
+        lock.lock(); let k = latestKitMotion; lock.unlock()
+        return k ?? motion.deviceMotion
+    }
+
+    /// The kit's shot recorder takes frames from the next one on, until it has enough (it detaches itself) or is detached.
+    func attachKitRecorder(_ r: KitRecorder) { queue.async { self.kitRecorder = r } }
+    func detachKitRecorder() { queue.async { self.kitRecorder = nil } }
+
+    /// the demo's frame interval (s)
+    static let demoFrameInterval = 0.08
 
     /// Run the synthetic demo scene instead of the camera (no ARKit needed: works in the Simulator).
     func startDemo(script: DemoScript, settings s: AppSettings) {
         session.pause()
+        cameraRunning = false
+        newRunId(ar: true, motion: false)
         queue.async {
             self.unlockCapture()
             self.settings = s
@@ -136,7 +285,7 @@ final class ARController: NSObject, ARSessionDelegate {
             self.demoStart = CACurrentMediaTime()
             self.isDemo = true
             let t = DispatchSource.makeTimerSource(queue: self.queue)
-            t.schedule(deadline: .now(), repeating: .milliseconds(80), leeway: .milliseconds(10))
+            t.schedule(deadline: .now(), repeating: .milliseconds(Int(ARController.demoFrameInterval * 1000)), leeway: .milliseconds(10))
             t.setEventHandler { [weak self] in self?.demoTick() }
             self.demoTimer?.cancel()
             self.demoTimer = t
@@ -173,16 +322,17 @@ final class ARController: NSObject, ARSessionDelegate {
         guard !isDemo else { return }
         let camera = frame.camera
         var text = "normal", normal = false, relocalizing = false
+        var kt = KitTracking.normal
         switch camera.trackingState {
         case .normal: normal = true
-        case .notAvailable: text = "not available"
+        case .notAvailable: text = "not available"; kt = .notAvailable
         case .limited(let r):
             switch r {
-            case .initializing: text = "limited: initializing"
-            case .excessiveMotion: text = "limited: moving too fast"
-            case .insufficientFeatures: text = "limited: too few features"
-            case .relocalizing: text = "limited: relocalizing"; relocalizing = true
-            @unknown default: text = "limited"
+            case .initializing: text = "limited: initializing"; kt = .limitedInitializing
+            case .excessiveMotion: text = "limited: moving too fast"; kt = .limitedExcessiveMotion
+            case .insufficientFeatures: text = "limited: too few features"; kt = .limitedInsufficientFeatures
+            case .relocalizing: text = "limited: relocalizing"; relocalizing = true; kt = .limitedRelocalizing
+            @unknown default: text = "limited"; kt = .limitedOther
             }
         }
         // ARKit relocalised: its world frame may have moved under the lock
@@ -205,7 +355,13 @@ final class ARController: NSObject, ARSessionDelegate {
                 guard let sd = frame.smoothedSceneDepth ?? frame.sceneDepth, let d = FrameConversion.depth(sd) else { return nil }
                 return (d, full.intrinsics.scaled(by: Double(d.width) / Double(full.intrinsics.width)))
             },
-            exposureDuration: camera.exposureDuration)
+            exposureDuration: camera.exposureDuration,
+            clock: frame.timestamp, arkitPose: FrameConversion.columnMajorFloats(camera.transform), kitTracking: kt,
+            exposureOffset: Double(camera.exposureOffset),
+            ambientLumens: frame.lightEstimate.map { Double($0.ambientIntensity) },
+            colorTemperature: frame.lightEstimate.map { Double($0.ambientColorTemperature) },
+            meanLuma: { FrameConversion.meanLuma(pb) },
+            fillVideo: { dst in FrameConversion.scale(pb, into: dst) })
         handle(sf, viewport: vp)
     }
 
@@ -229,7 +385,11 @@ final class ARController: NSObject, ARSessionDelegate {
                 let p = img.luma.cropped(x0: x0, y0: y0, width: w, height: h)
                 return k > 1 ? p.downscaled(by: k) : p
             },
-            depth: { nil }, exposureDuration: nil)
+            depth: { nil }, exposureDuration: nil,
+            clock: demoStart + t, arkitPose: FrameConversion.arkitPose(view), kitTracking: .normal,
+            exposureOffset: nil, ambientLumens: nil, colorTemperature: nil,
+            meanLuma: { img.y.withUnsafeBufferPointer { KitImageStats.meanLuma(bytes: $0, width: img.width, height: img.height, bytesPerRow: img.width, step: 8) } },
+            fillVideo: { dst in FrameConversion.fill(dst, from: img) })
         let cg = DemoImage.cgImage(rgb: rgb, width: K.width, height: K.height)
         handle(sf, viewport: vp, background: cg)
     }
@@ -311,7 +471,7 @@ final class ARController: NSObject, ARSessionDelegate {
         // recording: a line for every frame, with the pixels a replay needs (the cadence decides which)
         if let rec = recorder {
             var r = cadence.record(tf, output: out, tracker: tracker, image: ycc, ballCrop: crop)
-            if let m = motion.deviceMotion, !isDemo {
+            if let m = currentMotion(), !isDemo {
                 r.frame.userAcceleration = [m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z]
                 r.frame.rotationRate = [m.rotationRate.x, m.rotationRate.y, m.rotationRate.z]
                 let q = m.attitude.quaternion
@@ -320,6 +480,12 @@ final class ARController: NSObject, ARSessionDelegate {
             r.frame.exposureDuration = f.exposureDuration
             r.frame.locked = captureLocked
             rec.append(r.frame, image: r.image, depth: r.depth, ball: r.ball)
+        }
+
+        // the capture kit's shot recorder (the frame's video picture, its numbers and the live result)
+        if let kit = kitRecorder,
+           !kit.consume(f, output: out, processingWidth: pview.intrinsics.width, ballRadius: tracker.settings.ball.radius) {
+            kitRecorder = nil
         }
 
         // overlay, projected for the view, the readouts and the developer line
@@ -350,11 +516,14 @@ final class ARController: NSObject, ARSessionDelegate {
 
     func sessionWasInterrupted(_ session: ARSession) {
         queue.async { self.note("interrupted") }
+        // a kit shot being recorded is thrown away (it stays pending)
+        Task { @MainActor [weak model] in model?.cameraInterrupted() }
     }
 
     /// After an interruption ARKit's world frame may have moved under the lock: the tracker keeps it, unconfirmed, until
     /// it sees the slab where it should be.
     func sessionInterruptionEnded(_ session: ARSession) {
+        newRunId(ar: true, motion: false)   // ARKit's world may have moved: shots after this are another run
         queue.async {
             guard !self.isDemo else { return }
             self.tracker.noteWorldDiscontinuity("interruption")

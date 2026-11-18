@@ -7,8 +7,8 @@ import XCTest
 /// shows against it. Each test prints an "E2E-SUMMARY" line that CI copies into its summary.
 ///
 /// The main screen is point and go: the status chip, the readouts and a gear ("settings"). Settings holds the drop
-/// height and the rebound; the developer tools (diagnostics, recording, reset, demo, build) are under Settings >
-/// Developer ("developerRow").
+/// height and the rebound; the developer tools (capture kit, diagnostics, recording, reset, demo, build) are under
+/// Settings > Developer ("developerRow").
 final class SlabBounceUITests: XCTestCase {
     /// an app whose stored settings a test changed: tearDown puts them back (even after a failure)
     private var appToRestore: XCUIApplication? = nil
@@ -247,6 +247,118 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertEqual(ratio, rebound / 70, accuracy: 0.06, "apex \(before ?? -1) -> \(after ?? -1) in at rebound \(rebound)%")
         XCTAssertEqual(after ?? -99, tr.apexInches, accuracy: max(1.5, tr.apexInches * 0.06), "apex readout \(label(app, "apex"))")
         XCTAssertEqual(restored ?? -1, 70, accuracy: 0.5, "Restore defaults did not put the rebound back to 70%")
+    }
+
+    /// The capture kit (Settings > Developer > Capture kit), at a quarter of its real timings (-kitFast YES) on the demo:
+    /// a new kit, the measurements, the room scan and its check, the flat-phone true tilt (the demo's synthetic motion,
+    /// with a 1.5° camera bump, must give the demo slab's tilt within 0.3°), one more video shot; Quit, then Resume from
+    /// Settings > Developer with the progress shown; Skip through the rest; the summary; the bundle; the share sheet.
+    func testCaptureKitFlow() throws {
+        let d = DemoScript()
+        let app = launch(["demoTilt": "\(d.tilt)", "kitFast": "YES"])
+        XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
+        // never on the main screen by itself
+        XCTAssertFalse(element(app, "kitNew").exists || element(app, "kitResume").exists, "the kit opened by itself")
+        openDeveloper(app)
+        tap(app, "captureKitRow")
+        XCTAssertTrue(element(app, "kitNew").waitForExistence(timeout: 15), "the kit did not open")
+        screenshot(app, "kit start")
+        element(app, "kitNew").tap()
+        // an unfinished kit left by an earlier run is replaced (after confirming)
+        if element(app, "kitNewConfirm").waitForExistence(timeout: 2) { element(app, "kitNewConfirm").tap() }
+
+        // step 1: the measurements, prefilled
+        XCTAssertTrue(element(app, "kitStart").waitForExistence(timeout: 10), "no measurements form")
+        let formProgress = label(app, "kitProgress")
+        screenshot(app, "kit measurements")
+        element(app, "kitStart").tap()
+
+        // step 2: the room scan, a video shot
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10), "no shot screen after the measurements")
+        let scanProgress = label(app, "kitProgress")
+        let scanInstruction = label(app, "kitInstruction")
+        element(app, "shotStart").tap()
+        let recordingSeen = element(app, "kitRecording").waitForExistence(timeout: 15)
+        screenshot(app, "kit recording")
+        let verdict = app.staticTexts["qualityVerdict"]
+        XCTAssertTrue(verdict.waitForExistence(timeout: 40), "no quality check after the scan: \(label(app, "kitError"))")
+        let scanVerdict = verdict.label
+        screenshot(app, "kit scan checked")
+        tap(app, "shotNext")
+
+        // step 3: the flat phone (true tilt), with the demo's synthetic motion
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10))
+        let flatProgress = label(app, "kitProgress")
+        element(app, "shotStart").tap()
+        XCTAssertTrue(app.staticTexts["flatPrompt"].waitForExistence(timeout: 15), "no flat-phone prompt")
+        let firstPrompt = label(app, "flatPrompt")
+        screenshot(app, "kit flat prompt")
+        let tiltText = app.staticTexts["trueTilt"]
+        XCTAssertTrue(tiltText.waitForExistence(timeout: 40), "no true tilt: \(label(app, "flatPrompt")) \(label(app, "kitError"))")
+        let trueTiltLabel = tiltText.label
+        let trueTilt = number(trueTiltLabel)
+        let flatVerdict = label(app, "qualityVerdict")
+        screenshot(app, "kit true tilt")
+        summary(String(format: "kit flat: %@ (demo slab %.2f°, error %@), check \"%@\", first prompt \"%@\"",
+                       trueTiltLabel, d.tilt, trueTilt.map { String(format: "%.3f°", abs($0 - d.tilt)) } ?? "-", flatVerdict, firstPrompt))
+        XCTAssertEqual(trueTilt ?? -99, d.tilt, accuracy: 0.3, "true tilt \(trueTiltLabel) against the demo's \(d.tilt)°")
+        tap(app, "shotNext")
+
+        // step 4: one more video shot (hold still)
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10))
+        element(app, "shotStart").tap()
+        XCTAssertTrue(app.staticTexts["qualityVerdict"].waitForExistence(timeout: 40), "no quality check after the hold-still shot")
+        let stillVerdict = label(app, "qualityVerdict")
+        tap(app, "shotNext")
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10))
+
+        // Quit, and back through Settings > Developer > Capture kit: Resume shows the progress
+        tap(app, "kitQuit")
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 10), "Quit did not close the kit")
+        openDeveloper(app)
+        tap(app, "captureKitRow")
+        let resume = element(app, "kitResume")
+        XCTAssertTrue(resume.waitForExistence(timeout: 15), "no Resume after quitting")
+        let resumeText = resume.label
+        screenshot(app, "kit resume")
+        XCTAssertTrue(resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28"), "Resume says \"\(resumeText)\"")
+        resume.tap()
+        // in the middle of a slab position the kit asks whether the slab moved: it did not
+        var askedMoved = false
+        if element(app, "slabMovedNo").waitForExistence(timeout: 5) { askedMoved = true; element(app, "slabMovedNo").tap() }
+
+        // Skip through the rest (Skip height where asked)
+        var skips = 0, heightSkips = 0
+        while !app.staticTexts["kitSummary"].exists && skips < 40 {
+            if element(app, "heightSkip").exists { element(app, "heightSkip").tap(); heightSkips += 1; continue }
+            let skip = element(app, "shotSkip")
+            guard skip.waitForExistence(timeout: 10) else { break }
+            skip.tap()
+            skips += 1
+        }
+        let summaryText = app.staticTexts["kitSummary"]
+        XCTAssertTrue(summaryText.waitForExistence(timeout: 10), "no summary after skipping \(skips) shots")
+        let summaryLabel = summaryText.label
+        screenshot(app, "kit summary")
+        XCTAssertTrue(summaryLabel.contains("captured") && summaryLabel.contains("skipped"), "summary: \(summaryLabel)")
+        XCTAssertTrue(summaryLabel.contains("Captured 4 of 28"), "summary: \(summaryLabel)")
+
+        // the bundle, and one tap to share it
+        tap(app, "kitBundle")
+        let share = element(app, "kitShare")
+        XCTAssertTrue(share.waitForExistence(timeout: 60), "no Share kit after Make bundle: \(label(app, "kitError"))")
+        let bundle = label(app, "kitBundleResult")
+        share.tap()
+        let shared = waitUntil(20) { app.otherElements["ActivityListView"].exists || app.navigationBars["UIActivityContentView"].exists || app.buttons["Close"].exists }
+        screenshot(app, "kit share sheet")
+        summary("kit: \(formProgress) form, scan (\(scanProgress), \"\(scanInstruction)\"): recording shown \(recordingSeen), check \"\(scanVerdict)\"; "
+                + "flat (\(flatProgress)); hold still: \"\(stillVerdict)\"; resume \"\(resumeText)\", slab-moved question \(askedMoved); "
+                + "\(skips) skips (\(heightSkips) heights); summary \"\(summaryLabel.split(separator: "\n").first ?? "")\"; bundle: \(bundle); "
+                + String(format: "share sheet after %.1f s", shared ?? -1))
+        XCTAssertTrue(recordingSeen, "no recording indicator during the scan")
+        XCTAssertEqual(skips, 22, "skips: the 21 remaining required shots and the optional third tilt (one skip for its three shots)")
+        XCTAssertTrue(bundle.contains("part"), "bundle: \(bundle)")
+        XCTAssertNotNil(shared, "no share sheet after Share kit")
     }
 
     /// Recording (Settings > Developer > Record session): Settings closes, the main screen shows the recording pill,

@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The main screen: point and go. The camera feed with the overlay, the readouts, a passive status chip and a small
-/// gear for Settings. Nothing to set up and nothing to read: the developer tools live in Settings > Developer.
+/// gear for Settings. Nothing to set up and nothing to read: the developer tools live in Settings > Developer. While a
+/// developer has the capture kit open (Settings > Developer > Capture kit), its screens replace the normal controls.
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -35,21 +36,11 @@ struct ContentView: View {
                     .onChange(of: geo.size) { s in model.setViewport(s) }
                 }
                 .ignoresSafeArea()
-                // the controls stay inside the safe area
-                VStack(spacing: 8) {
-                    HStack(alignment: .top, spacing: 8) {
-                        statusChip
-                        Spacer(minLength: 0)
-                        settingsButton
-                    }
-                    if model.isRecording || model.recordingError != nil {
-                        HStack { recordingPill; Spacer(minLength: 0) }
-                    }
-                    Spacer()
-                    readouts
+                if model.kitOpen {
+                    KitScreen(kit: model.kit)
+                } else {
+                    controls
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
             }
         }
         .onAppear { model.start() }
@@ -63,6 +54,24 @@ struct ContentView: View {
         .sheet(item: Binding(get: { showSettings ? nil : model.shareURL.map(ShareItem.init) }, set: { model.shareURL = $0?.url })) { item in
             ShareSheet(url: item.url)
         }
+    }
+
+    /// The status chip, the gear, the recording pill and the readouts (inside the safe area).
+    private var controls: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                statusChip
+                Spacer(minLength: 0)
+                settingsButton
+            }
+            if model.isRecording || model.recordingError != nil {
+                HStack { recordingPill; Spacer(minLength: 0) }
+            }
+            Spacer()
+            readouts
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     /// On a device without ARKit: a plain message (the demo is a developer tool, in Settings > Developer).

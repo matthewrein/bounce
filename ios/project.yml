@@ -31,7 +31,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: Slab Bounce uses the camera to find the slab and the ball and to work out the bounce.
-        NSMotionUsageDescription: Slab Bounce saves the phone's motion with a session recording.
+        NSMotionUsageDescription: Slab Bounce saves the phone's motion with a session recording, and reads the slab's tilt with the phone lying on it in the capture kit.
         UIRequiredDeviceCapabilities: [arkit]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UILaunchScreen: {}

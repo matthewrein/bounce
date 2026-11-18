@@ -128,8 +128,11 @@ final class AppModel: ObservableObject {
     @Published var diagnosticsText: String? = nil
     /// why the last recording could not start or be saved (shown in Settings > Developer and on the recording pill)
     @Published var recordingError: String? = nil
+    /// the capture kit (a developer tool, Settings > Developer > Capture kit) is open over the camera
+    @Published var kitOpen = false
 
     let controller = ARController()
+    private(set) lazy var kit = KitSession(model: self, controller: controller)
 
     init() {
         controller.model = self
@@ -137,6 +140,9 @@ final class AppModel: ObservableObject {
 
     private var running = false
     private var runningDemo = false
+
+    /// the demo scene runs instead of the camera
+    var demoRunning: Bool { runningDemo }
 
     /// The demo scene runs instead of the camera when turned on in Settings > Developer, or by launch arguments (UI tests):
     /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3] [-demoSlideTo 3 -demoSlideAt 8]
@@ -185,6 +191,7 @@ final class AppModel: ObservableObject {
     func stop() {
         guard running else { return }
         running = false
+        if kitOpen { kit.appBackgrounded() }
         if isRecording { stopRecording() }
         UIApplication.shared.isIdleTimerDisabled = false
         controller.stop()
@@ -231,6 +238,27 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: the capture kit (Settings > Developer > Capture kit)
+
+    /// Open the capture kit. Only the Developer screen calls this: the kit never opens by itself.
+    func openKit() {
+        guard !kitOpen else { return }
+        if isRecording { stopRecording() }
+        kitOpen = true
+        kit.open()
+    }
+
+    /// The kit closed itself (Quit, or its kit was deleted).
+    func kitClosed() {
+        kitOpen = false
+        UIApplication.shared.isIdleTimerDisabled = running
+    }
+
+    /// ARKit's session was interrupted (a phone call, another app took the camera).
+    func cameraInterrupted() {
+        if kitOpen { kit.cameraInterrupted() }
     }
 
     /// Called by the controller when a recording could not start.

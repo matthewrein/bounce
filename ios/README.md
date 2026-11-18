@@ -113,8 +113,8 @@ bounce would regain; 70%). **Restore defaults** puts both back.
 At the bottom of Settings, **Developer** opens the tools for working on the app. The app never needs them and never
 opens them by itself.
 
-- **Capture kit**: records the slab, the ball and a few bounces with the truth about them (see below). Coming next: until
-  a build has its screens, the row says "coming next".
+- **Capture kit**: records the slab, the ball and a few bounces with the truth about them, once, when asked (see
+  "Capture kit (developer tool)" below).
 - **Record session**: records what the app sees and does, so the session can be replayed on a computer (see below).
 - **Copy diagnostics**: copies a block of text (JSON) to the clipboard and shows it. Paste it into your message. It shows
   the build, the lens, what the app found, and its counters: numbers and settings, no pictures.
@@ -145,43 +145,52 @@ the zip is not compressed. So use **AirDrop**, **Save to Files** or iCloud Drive
 20 MB. Once the zip is made, the app deletes the unzipped copy. A recording stops by itself at 1.5 GB (a few minutes),
 or if the phone runs out of space, and the pill (and Settings > Developer) says why.
 
-### Capture kit (coming next)
+## Capture kit (developer tool)
 
-The capture kit records the slab, the ball and a few bounces together with the truth about them: your measurements, and
-the slab's exact tilt, read by laying the phone flat on it. With it, the app can be tested and improved against your own
-room without more help from you. You do it once, and it takes about 10 minutes. (The app's capture kit screens are still
-being built. Until a build has them, the row says "coming next" and this section describes what is coming.)
+**What it is.** A guided recording of the slab, the ball and a few bounces, together with the truth about them: your
+measurements, and the slab's exact tilt, read by laying the phone flat on it. With it, the app can be tested and
+improved against your own room without more help from you. You do it **once, when asked**, and it takes about
+**10 minutes**. The app never needs it and never starts it by itself.
 
-**Taking it.** Have a ruler and the ball at hand. Open **Settings > Developer > Capture kit** and follow the screens.
-Each one says what to do ("Step 4 of 12"), counts down, records by itself and then checks the result. Tap **Next** to go
-on, **Retry** to take a shot again, or **Skip**. You can quit at any time, and the app offers **Resume** later. If it
-asks whether the slab has moved since you last set it up, answer honestly; the app then retakes the slab's tilt first.
-At the end it lists what was captured and what was skipped, and saves the kit as one or more zip files named like
-`slab-kit-20261117-153000-part1of3.zip`. You can see them in the **Files** app under **On My iPhone > Slab Bounce > Kits**.
+**Where it is.** **Settings** (the gear) **> Developer > Capture kit**. Have a ruler and the ball at hand.
 
-**Sending it back.** The kit shows your room, so it goes into a **private** GitHub repository. Never put it in this
-public repository, an issue or a comment. You need only Safari on the iPhone.
+**Taking it.** Tap **New kit** (or **Resume** if you started one before). Each screen says which step you are on ("Step 4
+of 12") and what to do, with a small picture. Tap **Start**: it counts down, records by itself and checks the result
+(Good, Fair or Poor, with the reason). Then tap **Next**, **Retry** to take it again, or **Skip**. **Every step can be
+skipped.** For the drops, let go of the ball when it beeps. For the slab's tilt, the phone lies flat on the slab and the
+screen tells you, in big letters, when to turn it around. You can tap **Quit** at any time: everything done so far is
+kept, and **Resume** carries on where you stopped. If it asks whether the slab has moved since you stopped, answer
+honestly; it then reads the slab's tilt again first. If the phone rings or you leave the app in the middle of a shot,
+that shot is not kept: tap **Start** to take it again.
 
-Once, to make the private repository:
+**Sending it, privately.** The kit shows your room, so it goes into a **private** GitHub repository, never this public
+one. You need only Safari on the iPhone.
 
-1. In Safari, open **github.com/new** and sign in if asked.
-2. Under **Repository name**, type `slab-kits`. Choose **Private**. Turn on **Add a README file**. Tap **Create
+Once, to make the private repository (in Safari on the iPhone):
+
+1. Open **github.com/new** and sign in if asked.
+2. Under **Repository name**, type `bounce-captures`. Choose **Private**. Tick **Add a README file**. Tap **Create
    repository**.
+3. Open **github.com/settings/installations**, tap **Claude**, then **Configure**. Under **Repository access**, if it says
+   **Only select repositories**, add `bounce-captures` and tap **Save**. (If it says **All repositories**, there is
+   nothing to do.)
 
 For each kit:
 
-3. In Safari, open your `slab-kits` repository (github.com/*your-name*/slab-kits).
-4. Tap the **aA** button at the left of the address bar, then **Request Desktop Website**. The phone version of the page
-   has no upload button.
-5. Tap **Add file**, then **Upload files**, then **choose your files**. In the menu that opens, tap **Choose File**. Go to
-   **On My iPhone > Slab Bounce > Kits** and open the kit's folder. Tap **Select**, tap every part, then tap **Open**.
-6. Wait until every part has finished uploading. Each part is at most 24 MB, under GitHub's 25 MB limit for uploads.
-   Then tap **Commit changes**.
-7. Tell Claude "the kit is in *your-name*/slab-kits". If Claude can reach only some of your repositories, add this one
-   first: on github.com, open **Settings > Applications > Installed GitHub Apps**, tap **Configure** next to Claude, and
-   add `slab-kits` under **Repository access**.
+1. In the app, at the end of the kit, tap **Make bundle**. It saves the kit as one or more zip files named like
+   `slab-kit-20261117-153000-part1of3.zip`, each at most 24 MB (under GitHub's 25 MB limit for uploads).
+2. In Safari, open **github.com/matthewrein/bounce-captures/upload/main**. If the page shows no upload area, tap **aA**
+   in the address bar, then **Request Desktop Website**.
+3. Tap **choose your files**, then **Browse**, then **On My iPhone > Slab Bounce > Kits**, and open the kit's folder. Tap
+   **Select**, select every part, then tap **Open**.
+4. Wait until all the parts are listed, then tap **Commit changes**.
+5. Tell Claude in the session: "kit uploaded".
 
-Once Claude confirms it has the kit, the app's finish screen can delete it from the phone.
+If the upload does not work from the phone: tap **Share kit** in the app, AirDrop the parts to your Mac, and drag them
+onto the same page (github.com/matthewrein/bounce-captures/upload/main) in a browser there.
+
+**Never attach a kit to an issue, a comment or anything public.** Once Claude confirms it has the kit, **Delete kit from
+phone** on the app's last screen removes it and its parts.
 
 ## For developers
 
@@ -192,6 +201,10 @@ Once Claude confirms it has the kit, the app's finish screen can delete it from 
   same code the replay tests run. The slab and ball the app uses are baked in at one place, `AppSettings` in
   `AppModel.swift` (BounceCore's `SlabSpec.standard` and `BallSpec()`); the user can only change the drop height and the
   rebound. The developer tools are in `DeveloperView.swift` (Settings > Developer).
+- The capture kit's screens are `KitSession.swift` (the flow, on BounceCore's `KitStore`, `KitFlatSession` and
+  `KitQuality`), `KitViews.swift` (the screens and diagrams) and `KitRecorder.swift` (video, frames, motion and depth for
+  one shot); ARController hands it each frame while a kit shot records. `CaptureKit.md` describes the kit's design and
+  formats. With `-demo YES -kitFast YES` the kit runs on the demo scene at a quarter of its timings (the UI tests).
 - Recordings are version 2 of the format in `BounceCore/Sources/BounceCore/Recording.swift`: a line for every frame the
   tracker processed, with what was done to the tracker and its result on the phone, so a replay can compare frame by
   frame.
