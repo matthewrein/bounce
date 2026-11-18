@@ -27,28 +27,42 @@ public struct BallImageCrop: Codable, Equatable {
     /// A point in the ball finder's image -> the full camera image (pixels; continuous coordinates).
     public func toFull(_ p: Vec2) -> Vec2 { Vec2(Double(x0) + p.x * Double(factor), Double(y0) + p.y * Double(factor)) }
 
-    /// The crop the app gives the ball finder: the slab's top corners and the points `reach` metres straight above them
-    /// (world up, so it works in any orientation of the phone), grown by the slab's mean side in the image on every
-    /// side, clamped to the image, and shrunk so its longer side is at most `maxSide` pixels. nil if the slab does not
-    /// project or the crop would be under 33 pixels either way.
-    /// A camera held lower than `reach` over the slab (or near it) has some of the points above the corners behind it:
-    /// each vertical line from a corner up is then cut where it comes within `near` metres of the camera's plane, and
-    /// that end is taken instead; it projects far out toward where the world's up points in the image, so the crop runs
-    /// to the image's edge that way and takes in all of the space above the slab that is in view. (Dropping those
-    /// points shrank the crop to the slab and cut off a ball held over it, whenever all four were behind the camera.)
+    /// The crop the app gives the ball finder: the slab's top corners and the part of each vertical line from a corner
+    /// `reach` metres up (world up, so it works in any orientation of the phone) that is in view, grown by the slab's
+    /// mean side in the image on every side, clamped to the image, and shrunk by the least whole factor that leaves it
+    /// no more pixels than a square `maxSide` pixels a side (the finder's work goes with the pixels it searches; a bound
+    /// on the longer side alone shrank a full-width 1920 x 1440 crop by 3 where 2 keeps fewer pixels than a 900 x 900
+    /// crop, and the ball a third smaller). nil if the slab does not project or the crop would be under 33 pixels
+    /// either way.
+    /// In view: in front of the camera by at least `near` metres and inside the picture. `near` is the nearest a ball
+    /// held over the slab comes to the phone (the phone in one hand, the ball in the other: 0.3 m). With the camera less
+    /// than `reach` over the slab, the top of each line is behind the camera or out of the picture: the line is then
+    /// taken up to where it leaves the picture. (Dropping the points behind the camera shrank the crop to the slab, and
+    /// cut off a ball held over it, whenever all four were behind it; cutting each line only where it came within 2 cm
+    /// of the camera's plane took ends far out of the picture to the side, and ran the crop to the image's full width
+    /// without taking in any more of the space a held ball can be seen in.)
     /// - Parameters: slab: the lock (world); full: the camera for the full camera image (world-from-camera, CV axes).
-    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900, near: Double = 0.02) -> BallImageCrop? {
+    public static func plan(slab: SlabPose, full: CameraView, reach: Double = 1.2, maxSide: Int = 900, near: Double = 0.3) -> BallImageCrop? {
         let q = slab.topCorners.compactMap { full.project(world: $0) }
         guard q.count == 4 else { return nil }
+        let K = full.intrinsics
+        // the view as half-spaces n . P + c >= 0 in the camera's axes: in front of `near`, and inside the picture's
+        // four edges
+        let W = Double(K.width), H = Double(K.height)
+        let planes: [(Vec3, Double)] = [(Vec3(0, 0, 1), -near), (Vec3(K.fx, 0, K.cx), 0), (Vec3(-K.fx, 0, W - K.cx), 0),
+                                         (Vec3(0, K.fy, K.cy), 0), (Vec3(0, -K.fy, H - K.cy), 0)]
         var up: [Vec2] = []
         for P in slab.topCorners {
-            let a = full.toCamera(P), b = full.toCamera(P + Vec3(0, reach, 0))
-            var e = b
-            if b.z < near {
-                guard a.z > near else { continue }
-                e = a + (b - a) * ((a.z - near) / (a.z - b.z))
+            let a = full.toCamera(P), d = full.toCamera(P + Vec3(0, reach, 0)) - a
+            var t0 = 0.0, t1 = 1.0
+            for (n, c) in planes {
+                let fa = n.dot(a) + c, fd = n.dot(d)
+                if abs(fd) < 1e-12 { if fa < 0 { t1 = -1 }; continue }
+                let t = -fa / fd
+                if fd > 0 { t0 = max(t0, t) } else { t1 = min(t1, t) }
             }
-            if let p = full.intrinsics.project(e) { up.append(p) }
+            guard t0 <= t1 else { continue }
+            for t in [t0, t1] { if let p = K.project(a + d * t) { up.append(p) } }
         }
         let pts = q + up, side = ShapeCheck.meanSide(q)
         // (bounded before the conversion: a point just in front of the camera's plane projects arbitrarily far out)
@@ -58,7 +72,9 @@ public struct BallImageCrop: Codable, Equatable {
         let cx0 = max(0, x0), cy0 = max(0, y0)
         let cw = min(full.intrinsics.width, x1) - cx0, ch = min(full.intrinsics.height, y1) - cy0
         guard cw > 32, ch > 32 else { return nil }
-        let k = max(1, Int(ceil(Double(max(cw, ch)) / Double(max(1, maxSide)))))
+        let m = Double(max(1, maxSide))
+        var k = max(1, Int(ceil((Double(cw) * Double(ch)).squareRoot() / m)))
+        while (cw / k) * (ch / k) > Int(m * m) { k += 1 }
         return BallImageCrop(x0: cx0, y0: cy0, width: cw, height: ch, factor: k)
     }
 }

@@ -46,14 +46,16 @@ public struct BallCircle: Equatable, CustomStringConvertible {
     /// How many of the 48 rim spokes found the outline where the circle runs. For a partial find these are counted on
     /// its half of the rim (at most about 24, with a few beyond it), so a partial and a whole find's support are not on
     /// one scale (`BallLocator` tries finds in order of support). A find that is not partial but whose size comes from
-    /// its lower half counts the whole outline's reading's spokes, or both halves' (`BallFinder.outermost`).
+    /// its lower half counts the whole outline's reading's spokes (`BallFinder.outermost`).
     public var support: Int
     /// Only part of the outline was seen: its upper half (a polished ball held above the floor and seen from above can
     /// reflect the same floor that lies behind its lower half, so the outline there is all but invisible) or its lower
     /// half (the top can blend into the floor it reflects at a grazing angle, and the fingers cover it), with no
-    /// reading of the whole outline and no reading of the other half that closes it (`BallFinder.outermost`). Where
-    /// the whole outline was read but its size comes from the lower half's reading (its upper points lie inside the
+    /// reading of the whole outline (`BallFinder.outermost`); a reading of the other half that closes it over the top
+    /// does not make it whole (a lid with pressed rings lying on the slab gives two such halves). Where the whole
+    /// outline was read as one circle but its size comes from the lower half's reading (its top lies a step inside the
     /// circle the lower half makes), the find is not partial: the evidence that it is a ball is the whole outline's.
+    /// A lower half's reading that replaced a whole reading that is not one circle (a level disc's ellipse is not) is.
     /// `BallLocator` holds a partial find to stricter rules (two scans in a row, a least height).
     public var partial: Bool
 
@@ -96,8 +98,11 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 /// - Every start is read three ways (the whole outline, its lower half, its upper half), and the readings of one ball
 ///   (from several starts and peaks) are settled by `outermost`: the whole outline's reading stands unless its points
 ///   are not those of one circle and one half of them lies inside the circle a half reading makes of the other half,
-///   by more than the fits' uncertainty; then that half reading gives the outline (and the find is partial if it is
-///   the upper half's). A lower half's reading that an upper outline's reading closes is a whole outline too.
+///   by more than the fits' uncertainty, or its top lies a step inside the circle its lower points make; then that
+///   half reading gives the outline. The find is partial unless the whole reading was one circle and only its top lay
+///   inside: a half reading that replaced a whole reading that is not one circle stays partial (a level disc's ellipse
+///   seen at a slant is not one), and so does a lower half's reading with no reading of the whole outline, even where
+///   an upper outline's reading closes it over the top (concentric rings give two such halves too).
 /// - The partial readings count a rim crossing only where the edge runs across the spoke (`Options.maxEdgeAngle`):
 ///   resting on fewer spokes, they could otherwise be made up from texture and noise (a printed circle on the floor
 ///   mat was reported this way in a noisy picture). The upper outline's final fit drops points inside the circle more
@@ -362,8 +367,10 @@ public enum BallFinder {
     /// 3. Where there is no reading of the whole outline, a lower half's reading that encloses the chosen one (by more
     ///    than the fits' scatter) and finds the outline on its half's spokes about as often replaces it; then the same
     ///    for the upper outline's, unless a lower half's reading is the same circle.
-    /// The result is `partial` unless the whole outline was read (by its own reading, or by one that the lower half's
-    /// reading replaced in step 2) or it is a lower half's reading that an upper outline's reading closes (`closing`).
+    /// The result is `partial` unless the whole outline was read: by its own reading, or by one that the lower half's
+    /// reading replaced in step 2 where the whole reading is one circle by the omnibus test (so it was the directed test
+    /// that found its top a step inside). A lower half's reading that an upper outline's reading closes stays partial:
+    /// two halves read apart are no evidence of one outline (concentric rings give them too).
     static func outermost(_ finds: [Reading], intrinsics K: CameraIntrinsics? = nil, up: Vec2 = Vec2(0, -1)) -> Reading? {
         func largestWellSupported(_ fs: [Reading]) -> Reading? {
             guard let top = fs.map(\.circle.support).max() else { return nil }
@@ -373,8 +380,9 @@ public enum BallFinder {
         }
         let fulls = finds.filter { $0.mode == .full }, lowers = finds.filter { $0.mode == .lower }, uppers = finds.filter { $0.mode == .upper }
         guard var best = largestWellSupported(fulls) ?? largestWellSupported(lowers) ?? largestWellSupported(uppers) else { return nil }
-        // a reading of the whole outline passed: the ball was seen all round, whichever reading gives its size
-        var whole: Reading? = best.mode == .full ? best : nil
+        // the reading of the whole outline, where the lower half's reading replaces it only for its size: the whole
+        // outline was read, as one circle whose top lies a step inside (see below)
+        var wholeRead: Reading? = nil
         if best.mode == .full {
             // the half readings that enclose the whole one with direct evidence that the other half lies inside them,
             // where the whole outline is not one circle
@@ -397,18 +405,25 @@ public enum BallFinder {
                 + (stepsIn ? lowers.filter { contains($0, w) && readsSameLowerEdge(w, $0, intrinsics: K, up: up) } : [])
             if let h = lowerClaims.filter({ accountsForItsHalf($0, as: w) }).max(by: { $0.circle.radius < $1.circle.radius }) {
                 best = h
+                // Where the whole reading's points are one circle by the omnibus test, it was the directed test that let
+                // the lower half's reading replace it: the whole outline was read, as a circle (a sphere's outline is
+                // one), and only its top lies a step inside. A whole reading that is not one circle can be a level
+                // disc's ellipse seen at a slant (a lid lying on the slab): its top lies well inside the circle its lower
+                // half makes, as a ball's top does when it blends in, and the half reading that replaces it stays partial.
+                if !omnibus { wholeRead = w }
             } else if omnibus, let h = claims(uppers).filter({ accountsForItsHalf($0, as: w) }).max(by: { $0.circle.radius < $1.circle.radius }) {
                 best = h
             } else if let l = lowers.filter({ l in encloses(l, w) && accountsForItsHalf(l, as: w) && !readsSameLowerEdge(w, l, intrinsics: K, up: up)
+                                              && ringRidesHigh(w, l, intrinsics: K, up: up)
                                               && uppers.contains { closing($0, l, intrinsics: K, up: up) != nil } })
                         .max(by: { $0.circle.radius < $1.circle.radius }) {
-                // An inner ring: the horizon a mirror ball reflects lies just inside its outline all round, and its edge
-                // can make a whole circle well inside the outline that more spokes cross than the outline itself. Where
-                // a lower half's reading encloses the whole one and reads another, outer edge on the lower spokes, and
-                // an upper outline's reading closes it over the top, the two halves give the outline (and the ball's
-                // outline was not read whole).
+                // An inner ring: the horizon a mirror ball reflects lies inside its outline all round, and its edge can
+                // make a whole circle well inside the outline that more spokes cross than the outline itself. Where a
+                // lower half's reading encloses the whole one and reads another, outer edge on the lower spokes, the ring
+                // rides high in it as a reflected horizon does (`ringRidesHigh`; a lid's pressed rings are concentric
+                // with its rim), and an upper outline's reading closes it over the top, the two halves give the outline
+                // (and the ball's outline was not read whole: the find is partial).
                 best = l
-                whole = nil
             }
         } else {
             func replace(from fs: [Reading]) {
@@ -417,20 +432,18 @@ public enum BallFinder {
             replace(from: lowers)
             if best.mode != .lower && !lowers.contains(where: { agrees($0, best) }) { replace(from: uppers) }
         }
-        // Partial: only part of the outline was seen. A lower half's reading that replaced a whole one is not (the whole
-        // outline was read; only the size comes from the half), nor one whose circle, continued over the top, an upper
-        // outline's reading closes (`closing`). An upper outline's reading stays partial either way: it has replaced a
-        // whole reading that was a circle inscribed in the outline. A find that is not partial counts its support on
-        // the whole rim: the whole reading's, or the two halves' together.
+        // Partial: only part of the outline was seen, or gives the size on the weaker evidence of half an outline. A lower
+        // half's reading that replaced a whole reading which is one circle with its top a step inside is not (the whole
+        // outline was read; only the size comes from the half), and counts its support on the whole rim: the whole
+        // reading's. Every other half reading stays partial, with its own half's support: one that replaced a whole
+        // reading that is not one circle (a level disc's ellipse is not), an inner ring's replacement, and one that an
+        // upper outline's reading closes over the top (`closing`; concentric rings, a pressed lid's or a coaster's,
+        // give two such halves too). So such a find is held to the locator's rules for half an outline (a least height,
+        // two scans in a row), and ranks below a find whose outline was read whole.
         best.circle.partial = best.mode != .full
-        if best.mode == .lower {
-            if let w = whole {
-                best.circle.partial = false
-                best.circle.support = max(best.circle.support, w.circle.support)
-            } else if let n = uppers.compactMap({ closing($0, best, intrinsics: K, up: up) }).max() {
-                best.circle.partial = false
-                best.circle.support = min(spokeCount, best.circle.support + n)
-            }
+        if best.mode == .lower, let w = wholeRead {
+            best.circle.partial = false
+            best.circle.support = max(best.circle.support, w.circle.support)
         }
         return best
     }
@@ -457,10 +470,23 @@ public enum BallFinder {
         return n >= 6 && 2 * on >= n
     }
 
+    /// Whether the whole reading `w`, an inner ring, rides high in the outline the lower half's reading `l` gives: its
+    /// centre above `l`'s along up by more than the outline's tolerance (6% of the radius, at least a pixel). The horizon
+    /// a mirror ball reflects, seen along a line of sight e below level, runs cos(e/2) of the radius above the ball's
+    /// centre and sin(e/2) of it below, so the circle it makes is centred (cos(e/2) - sin(e/2)) / 2 of the radius higher:
+    /// 0.30 at 40 degrees, 0.18 at 60, 0.09 at 75. A lid's pressed rings, or a coaster's, are concentric with its rim.
+    static func ringRidesHigh(_ w: Reading, _ l: Reading, intrinsics K: CameraIntrinsics?, up: Vec2) -> Bool {
+        let F = LocalFrame(at: l.circle.center, intrinsics: K, up: up)
+        let s = l.circle.radius / F.stretch, c = F.local(w.circle.center)
+        return c.x * F.up.x + c.y * F.up.y > max(1, 0.06 * s)
+    }
+
     /// Whether the upper outline's reading `u` closes the lower half's reading `l`: its points on the upper spokes lie on
     /// `l`'s circle continued over the top, or inside it by up to a quarter of the radius, at least 80% of them (and at
     /// least 8). Then the two halves, each found on its own (the lower half on 80% of its spokes, the upper on 14 of
-    /// its 24, each on a tight circle that looks like a mirror inside), make one whole outline. A mirror ball's upper
+    /// its 24, each on a tight circle that looks like a mirror inside), can be one outline; but concentric rings (a lid
+    /// with pressed rings lying on the slab) give two such halves too, so a find from them stays partial (`outermost`
+    /// uses this only to let a lower half's reading replace an inner ring read whole). A mirror ball's upper
     /// edge is found a little inside its outline (see `upperStepsIn`): by 10-20% of the radius on the renders, where the
     /// reflected horizon lies just inside the limb; a quarter of the radius is the rim measurement's own window around a
     /// circle (0.75-1.25 times its radius). Outside it, the outline's tolerance: 6% of the radius, at least a pixel.
@@ -1588,6 +1614,12 @@ public final class BallLocator {
         /// a ball found from half its outline is reported only once it shows up on two scans in a row (or where the
         /// followed ball is): the same place relative to the slab, which holds for a ball held still
         public var partialNeedsTwoScans = true
+        /// Where half an outline is taken on a single scan (`partialNeedsTwoScans` off): one found lower than this over
+        /// the slab (metres) is taken only where none was found at the same place, relative to the slab, on the scan
+        /// before. A falling or bouncing ball does not stay in one place from one frame to the next (it moves half a
+        /// radius or more), while a round thing lying on the slab (a lid, a coin, a ring of reflected light) stays put,
+        /// and half an outline is all a pressed lid needs to give. nil: no such rule.
+        public var stillPartialCeiling: Double? = nil
         public var finder = BallFinder.Options()
         public init() {}
 
@@ -1596,10 +1628,13 @@ public final class BallLocator {
         /// touching it reads about 0) up to `maxHeight`, and anywhere within twice the slab's half-sides of its
         /// centre, on the slab or not. A half outline is taken at any of those heights and on a single scan: a falling
         /// ball moves half a radius or more from one frame to the next, so it never shows up twice in one place, and
-        /// at the end of a fall and in the bounce it is under the height the app asks of a half outline. (The drop's
-        /// analysis fits the track robustly, so a stray half outline does not bend it.)
+        /// at the end of a fall and in the bounce it is under the height the app asks of a half outline. Under that
+        /// height a half outline is taken only where none was on the frame before (`stillPartialCeiling`): something
+        /// lying on the slab stays put, the ball in a drop does not. (The drop's analysis fits the track robustly, so a
+        /// stray half outline does not bend it.)
         public static func tracking(_ base: Options = Options()) -> Options {
             var o = base
+            o.stillPartialCeiling = base.minPartialHeight
             o.minHeight = -0.02
             o.minPartialHeight = o.minHeight
             o.partialNeedsTwoScans = false
@@ -1624,12 +1659,14 @@ public final class BallLocator {
     }
     private var followed: Anchored?
     private var pendingPartial: Anchored?
+    /// every half outline the last scan found (for `Options.stillPartialCeiling`)
+    private var lastPartials: [Anchored] = []
     private var missed = 0
 
     public init(options: Options = Options()) { self.options = options }
 
     public func reset() {
-        current = nil; followed = nil; pendingPartial = nil; missed = 0
+        current = nil; followed = nil; pendingPartial = nil; lastPartials = []; missed = 0
     }
 
     /// Where a ball held between `heights` over the slab (camera axes) would be seen, and how large: its centre's image
@@ -1720,8 +1757,9 @@ public final class BallLocator {
         let pending = pendingPartial.flatMap { circle(of: $0, in: slab, K: K, ball: ball) }
         let bands = Self.searchBands(intrinsics: K, slab: slab, ball: ball, down: g, heights: options.minHeight...options.maxHeight,
                                      minSearchRadius: options.minSearchRadius, footprint: options.footprint)
+        let stillAt = options.stillPartialCeiling == nil ? [] : lastPartials.compactMap { circle(of: $0, in: slab, K: K, ball: ball) }
         guard let first = bands.first, let last = bands.last else {
-            pendingPartial = nil
+            pendingPartial = nil; lastPartials = []
             return missedScan(K: K, slab: slab, spec: spec, ball: ball, down: g)
         }
         // A followed ball is looked for in a box around it first; where nothing there will do, in the whole window on
@@ -1739,8 +1777,10 @@ public final class BallLocator {
                 : []
         }
         var part: Anchored? = nil
+        var partials: [Anchored] = []
         var chosen: (BallCircle, Vec3, DropPoint)? = nil
-        for bands in [boxBands, whole].compactMap({ $0 }) where chosen == nil {
+        let passes: [(bands: [SearchBand], box: Bool)] = (boxBands.map { [($0, true)] } ?? []) + [(whole, false)]
+        for (bands, inBox) in passes where chosen == nil {
             var circles: [BallCircle] = []
             for band in bands {
                 let up = Self.imageUp(at: band.region.center, depth: slab.center.length, intrinsics: K, down: g)
@@ -1749,12 +1789,21 @@ public final class BallLocator {
                     if !circles.contains(where: { $0.center.distance(to: c.center) < 0.5 * max($0.radius, c.radius) }) { circles.append(c) }
                 }
             }
-            circles.sort { $0.support > $1.support }
-
-            for c in circles {
+            // In order of support; in the box around a followed ball, a find where that ball is comes first (the box is
+            // there to find it again: a round thing beside it that is found as well, as well supported, is not taken for
+            // it)
+            let at = inBox ? follow : nil
+            func isAt(_ c: BallCircle) -> Bool { at.map { c.center.distance(to: $0.center) < $0.radius } ?? false }
+            circles.sort { isAt($0) != isAt($1) ? isAt($0) : $0.support > $1.support }
+            let placed: [(BallCircle, Vec3, DropPoint)] = circles.compactMap { c in
                 guard let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
-                      let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g), d.onSlab || !options.requireOnSlab,
-                      d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3 else { continue }
+                      let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g) else { return nil }
+                return (c, B, d)
+            }
+            if options.stillPartialCeiling != nil { partials += placed.filter { $0.0.partial }.map { anchor($0.1, slab) } }
+
+            for (c, B, d) in placed {
+                guard d.onSlab || !options.requireOnSlab, d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3 else { continue }
                 if c.partial {
                     // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
                     // (radius at least 0.9x that of a ball at the slab's depth), here as a distance; and a size that puts it
@@ -1765,12 +1814,16 @@ public final class BallLocator {
                     let again = pending.map { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 } ?? false
                     let known = follow.map { c.center.distance(to: $0.center) < $0.radius } ?? false
                     if !again && !known && options.partialNeedsTwoScans { continue }
+                    // a half outline low over the slab that was there on the scan before as well: lying on it
+                    if let ceiling = options.stillPartialCeiling, d.dropHeight < ceiling,
+                       stillAt.contains(where: { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 }) { continue }
                 }
                 chosen = (c, B, d)
                 break
             }
         }
         pendingPartial = part
+        lastPartials = partials
         guard var (c, B, d) = chosen else {
             return missedScan(K: K, slab: slab, spec: spec, ball: ball, down: g)
         }

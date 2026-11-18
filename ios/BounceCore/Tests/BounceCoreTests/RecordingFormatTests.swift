@@ -226,8 +226,9 @@ final class RecordingFormatTests: XCTestCase {
         let slab = World.slabAt(Vec3(0, 0.066, -1.2), tilt: 6, heading: 30)
         var w = World(slab: slab); w.intrinsics = full
         let v = w.view(from: Vec3(0, 0.95, 0), at: slab.center)
-        let c = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: v))
-        XCTAssertLessThanOrEqual(max(c.width, c.height) / c.factor, 900)
+        // (a smaller bound than the app's, so that the crop is shrunk)
+        let c = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: v, maxSide: 500))
+        XCTAssertLessThanOrEqual((c.width / c.factor) * (c.height / c.factor), 500 * 500)
         XCTAssertGreaterThan(c.factor, 1)
         XCTAssertGreaterThanOrEqual(c.x0, 0); XCTAssertLessThanOrEqual(c.x0 + c.width, full.width)
         let K = c.intrinsics(full: full)
@@ -295,6 +296,75 @@ final class RecordingFormatTests: XCTestCase {
         }
         XCTAssertGreaterThan(closeOnes, 5)
         print("ball crop from close: \(behind) of 75 demo frames and \(closeOnes) of \(poses) poses with every point above the corners behind the camera")
+    }
+
+    /// The crop keeps the ball large from close as well: for the phone's 1920 x 1440 camera, 0.45-1.2 m from a point over
+    /// a slab tilted 10 degrees, 35-75 degrees up, with a ball 5-90 cm over the slab in the picture, the ball's whole
+    /// outline is in the crop, the crop is shrunk by 1 or 2 (never 3: its pixels are bounded, not its longer side), and
+    /// by no more than the crop each earlier plan made where that held the ball, except where the earlier one stopped at
+    /// the slab because the points above its corners were behind the camera (4766aba: dropped; then the crop took in
+    /// only the slab and a ball held low over it, and cut off one held higher). (e74b53e cut those lines 2 cm from the
+    /// camera's plane, which ran the crop to the full width and shrank it by 3 in most of these poses: a ball 4 in up,
+    /// 1 m away at 65 degrees, was 9 px across where 4766aba's crop had it at 28 and read 2.5 cm high.)
+    func testBallCropKeepsTheBallLargeFromClose() throws {
+        let f = 0.78 * 1920, full = CameraIntrinsics(fx: f, fy: f, cx: 960, cy: 720, width: 1920, height: 1440)
+        let slab = SyntheticScene.slabPose(tilt: 10, heading: 35), up = Vec3(0, 1, 0), R = BallSpec().radius
+        // the earlier plans: the points above the corners behind the camera dropped (`near` nil), or each line cut 2 cm
+        // from the camera's plane; both shrunk by their longer side's 900 px
+        func earlier(_ v: CameraView, near: Double?) -> BallImageCrop? {
+            let q = slab.topCorners.compactMap { v.project(world: $0) }
+            var pts = q
+            for P in slab.topCorners {
+                let a = v.toCamera(P), b = v.toCamera(P + up * 1.2)
+                guard let n = near else { if let p = full.project(b) { pts.append(p) }; continue }
+                guard a.z > n else { continue }
+                if let p = full.project(b.z < n ? a + (b - a) * ((a.z - n) / (a.z - b.z)) : b) { pts.append(p) }
+            }
+            let side = ShapeCheck.meanSide(q)
+            func px(_ x: Double) -> Int { Int(min(1e7, max(-1e7, x))) }
+            let x0 = max(0, px(pts.map(\.x).min()! - side)), x1 = min(1920, px(pts.map(\.x).max()! + side))
+            let y0 = max(0, px(pts.map(\.y).min()! - side)), y1 = min(1440, px(pts.map(\.y).max()! + side))
+            return BallImageCrop(x0: x0, y0: y0, width: x1 - x0, height: y1 - y0, factor: max(1, Int(ceil(Double(max(x1 - x0, y1 - y0)) / 900))))
+        }
+        func holds(_ c: BallImageCrop, _ B: Vec3, _ rf: Double) -> Bool {
+            let K = c.intrinsics(full: full)
+            return K.project(B).map { K.contains($0, margin: rf / Double(c.factor)) } ?? false
+        }
+        var poses = 0, factors = [0, 0, 0, 0], larger = 0, slabOnly = 0, radii: [Double] = [], radiiN8: [Double] = []
+        for dist in [0.45, 0.6, 0.8, 1.0, 1.2] {
+            for el in [35.0, 45, 55, 65, 75] {
+                for az in [0.0, 50, 110, 200] {
+                    for h in [0.05, 0.1, 0.2, 0.3, 0.45, 0.6, 0.9] {
+                        let a = Units.radians(az), e = Units.radians(el), aim = slab.center + up * (0.4 * h)
+                        let v = SyntheticScene.camera(at: aim + Vec3(sin(a) * cos(e), sin(e), cos(a) * cos(e)) * dist, lookingAt: aim, intrinsics: full)
+                        let B = v.toCamera(slab.center + up * (h + R))
+                        guard slab.topCorners.allSatisfy({ v.project(world: $0).map { full.contains($0) } ?? false }),
+                              let pf = full.project(B), let rf = Bounce.imageRadius(ballCenter: B, intrinsics: full, ball: BallSpec()),
+                              full.contains(pf, margin: rf) else { continue }
+                        poses += 1
+                        let label = String(format: "%.2f m at %.0f deg, azimuth %.0f, ball %.2f m up", dist, el, az, h)
+                        let c = try XCTUnwrap(BallImageCrop.plan(slab: slab, full: v))
+                        XCTAssertTrue(holds(c, B, rf), label)
+                        XCTAssertLessThanOrEqual(c.factor, 2, label)
+                        factors[min(3, c.factor)] += 1
+                        radii.append(rf / Double(c.factor))
+                        let n8 = try XCTUnwrap(earlier(v, near: 0.02)), n7 = try XCTUnwrap(earlier(v, near: nil))
+                        radiiN8.append(rf / Double(n8.factor))
+                        XCTAssertLessThanOrEqual(c.factor, n8.factor, label)
+                        let stopped = slab.topCorners.contains { v.toCamera($0 + up * 1.2).z <= 0 }
+                        if holds(n7, B, rf) && c.factor > n7.factor {
+                            larger += 1
+                            if stopped { slabOnly += 1 } else { XCTFail("\(label): shrunk by \(c.factor), 4766aba's crop by \(n7.factor)") }
+                        }
+                    }
+                }
+            }
+        }
+        radii.sort(); radiiN8.sort()
+        print(String(format: "ball crop from close: %d poses, shrunk by 1 in %d and by 2 in %d; ball radius median %.1f px (e74b53e's crop %.1f), tenth percentile %.1f px (%.1f); shrunk more than 4766aba's crop that held the ball in %d, all where that one stopped at the slab",
+                     poses, factors[1], factors[2], radii[radii.count / 2], radiiN8[radiiN8.count / 2], radii[radii.count / 10], radiiN8[radiiN8.count / 10], larger))
+        XCTAssertEqual(larger, slabOnly)
+        XCTAssertGreaterThan(poses, 300)
     }
 
     // MARK: depth
