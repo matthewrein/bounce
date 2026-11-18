@@ -142,11 +142,11 @@ enum AppReplicas {
     static func kitVideoScale(luma: UnsafeMutableBufferPointer<UInt8>, cbcr: UnsafeMutableBufferPointer<UInt8>, width W: Int, height H: Int,
                               lumaStride: Int, cbcrStride: Int, into dl: UnsafeMutableBufferPointer<UInt8>, _ dc: UnsafeMutableBufferPointer<UInt8>,
                               dw: Int, dh: Int) -> Bool {
-        var sb = vImage_Buffer(data: luma.baseAddress, height: vImagePixelCount(H), width: vImagePixelCount(W), rowBytes: lumaStride)
-        var db = vImage_Buffer(data: dl.baseAddress, height: vImagePixelCount(dh), width: vImagePixelCount(dw), rowBytes: dw)
+        var sb = vImage_Buffer(data: UnsafeMutableRawPointer(luma.baseAddress), height: vImagePixelCount(H), width: vImagePixelCount(W), rowBytes: lumaStride)
+        var db = vImage_Buffer(data: UnsafeMutableRawPointer(dl.baseAddress), height: vImagePixelCount(dh), width: vImagePixelCount(dw), rowBytes: dw)
         guard vImageScale_Planar8(&sb, &db, nil, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return false }
-        var sc = vImage_Buffer(data: cbcr.baseAddress, height: vImagePixelCount(H / 2), width: vImagePixelCount(W / 2), rowBytes: cbcrStride)
-        var dcb = vImage_Buffer(data: dc.baseAddress, height: vImagePixelCount(dh / 2), width: vImagePixelCount(dw / 2), rowBytes: dw)
+        var sc = vImage_Buffer(data: UnsafeMutableRawPointer(cbcr.baseAddress), height: vImagePixelCount(H / 2), width: vImagePixelCount(W / 2), rowBytes: cbcrStride)
+        var dcb = vImage_Buffer(data: UnsafeMutableRawPointer(dc.baseAddress), height: vImagePixelCount(dh / 2), width: vImagePixelCount(dw / 2), rowBytes: dw)
         return vImageScale_CbCr8(&sc, &dcb, nil, vImage_Flags(kvImageNoFlags)) == kvImageNoError
     }
     #endif

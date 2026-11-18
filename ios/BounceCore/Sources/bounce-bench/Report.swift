@@ -89,7 +89,10 @@ struct BenchReport: Codable {
             m.append("Each state run for 30 s of camera time through the app's cadence (search every 0.12 s while searching; re-check every 0.3 s and "
                      + "ball scan every 0.1 s while locked; at least 0.05 s between detector runs) and BounceCore's FramePacer (frames reach the serial "
                      + "queue 30 ms after capture; a frame that waited behind slower work and is over a frame late is skipped), each frame costing its "
-                     + "kind's whole-frame time measured above. Load = processing time per second of camera time (% of one core).")
+                     + "kind's whole-frame time measured above. Load = processing time per second of camera time (% of one core); a load near "
+                     + "100% with a mean queue wait in the hundreds of ms means processing is slower than the camera and the backlog grows (on the "
+                     + "phone ARKit would run out of frame buffers and stall). Searching/confirming with the slab in view lasts only until the "
+                     + "lock (a fraction of a second to 2 s here), unless the slab never locks.")
             m.append("")
             func table(_ rs: [CadenceResult], _ title: String) {
                 m.append(title)

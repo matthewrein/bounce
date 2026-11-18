@@ -175,7 +175,7 @@ struct HostInfo: Codable {
         var size = 0
         if sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 0 {
             var b = [CChar](repeating: 0, count: size)
-            if sysctlbyname("machdep.cpu.brand_string", &b, &size, nil, 0) == 0 { cpu = String(cString: b) }
+            if sysctlbyname("machdep.cpu.brand_string", &b, &size, nil, 0) == 0 { cpu = b.withUnsafeBufferPointer { String(cString: $0.baseAddress!) } }
         }
         #else
         if let s = try? String(contentsOfFile: "/proc/cpuinfo", encoding: .utf8),
