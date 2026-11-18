@@ -152,7 +152,7 @@ final class KitSession: ObservableObject {
         }
     }
 
-    /// The plan: the standard one, or at a quarter of its timings for the UI tests (launch argument -kitFast YES).
+    /// The plan: the standard one, or at a quarter of its timings for the whole-kit UI test (launch argument -kitFast YES).
     static var plan: KitPlan {
         UserDefaults.standard.bool(forKey: "kitFast") ? KitPlan.standard.scaled(by: 0.25) : KitPlan.standard
     }

@@ -395,7 +395,11 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(resume.waitForExistence(timeout: 15), "no Resume after quitting")
         let resumeText = resume.label
         screenshot(app, "kit resume")
-        XCTAssertTrue(resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28"), "Resume says \"\(resumeText)\"")
+        // (the arc is only 5 s here: on a slow runner the tap can come after it was saved, and Resume then says 5 of 28.
+        // The Copy log test checks a mid-recording Quit at the real timings.)
+        XCTAssertTrue(resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28"),
+                      "Resume says \"\(resumeText)\" (want Step 4 of 12, 4 of 28 done; 5 of 28 means the slab arc, 5 s under -kitFast, "
+                      + "was saved before the Quit tap came)")
         resume.tap()
         // in the middle of a slab position the kit asks whether the slab moved: it did not
         var askedMoved = false
@@ -531,7 +535,8 @@ final class SlabBounceUITests: XCTestCase {
     /// skipped, the room scan quit in the middle of its recording (Resume then offers the scan again, with the skipped
     /// step kept), then the scan recorded and kept. The kit runs at its real timings (not -kitFast), so Quit has the
     /// scan's 20 s to land in: a slow shared Simulator once took longer than -kitFast's 5 s to tap it, the scan was
-    /// committed first (a Quit after a shot is saved keeps it) and Resume moved on to step 3.
+    /// committed first (a Quit after a shot is saved keeps it) and Resume moved on to step 3. The summary line says which
+    /// phase Quit landed in and how far into the scan it came (from the log's own times), so the margin shows in CI.
     func testCopyLogShowsKitMilestones() throws {
         let app = launch(["kitFast": "NO"])
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
@@ -591,12 +596,28 @@ final class SlabBounceUITests: XCTestCase {
            let word = after.split(separator: " ").first {
             quitPhase = String(word)
         }
-        summary("log: \(lines.count) lines after a short kit run (quit mid-recording \(midShot), landed during \(quitPhase); then \"\(resumeText)\", "
-                + "resumed at \(resumedAt)); milestones missing: \(missingWords); lines with a path: \(paths.count); errors \(errors), warnings \(warnings)")
+        // how far into the scan the first Quit came (the margin this test has), from the times its lines start with
+        // ("2026-11-18T07:15:02.123Z INFO kit ..."): the scan's first "started" line to the first "kit quit" line (written
+        // whether or not a shot was cancelled), less the countdown. More than the scan's length: the tap came too late.
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func loggedAt(_ needle: String) -> Date? {
+            guard let line = lines.first(where: { $0.contains(needle) }), let stamp = line.split(separator: " ").first else { return nil }
+            return iso.date(from: String(stamp))
+        }
+        let scanSpec = KitPlan.standard.shot("s02-scan")
+        let countdown = scanSpec?.countdown ?? 3, scanSeconds = scanSpec?.kind.videoSeconds ?? 20
+        var quitInto = "at an unknown time"
+        if let started = loggedAt(" started (Step 2 of 12"), let quitAt = loggedAt("INFO kit quit") {
+            quitInto = String(format: "about %.1f s into the %.0f s scan", quitAt.timeIntervalSince(started) - countdown, scanSeconds)
+        }
+        summary("log: \(lines.count) lines after a short kit run (quit mid-recording \(midShot), landed during \(quitPhase), \(quitInto); "
+                + "then \"\(resumeText)\", resumed at \(resumedAt)); milestones missing: \(missingWords); lines with a path: \(paths.count); "
+                + "errors \(errors), warnings \(warnings)")
         XCTAssertTrue(midShot, "the scan never showed its recording, so Quit was not tested mid-shot")
         XCTAssertTrue(resumeText.contains("Step 2 of 12") && resumeText.contains("1 of 28"),
-                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done); Quit landed during \(quitPhase)"
-                      + (quitPhase == "none" ? " (no cancel line: the scan had ended before the tap came)" : ""))
+                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done); Quit landed during \(quitPhase), "
+                      + quitInto + (quitPhase == "none" ? " (no cancel line: the scan had ended before the tap came)" : ""))
         XCTAssertTrue(missing.isEmpty, "milestones missing from the log: \(missing); log:\n\(log.suffix(3000))")
         XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")
         closeSettings(app)

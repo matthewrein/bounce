@@ -267,7 +267,9 @@ final class KitRecorder {
         if let w = writer, let input = input, w.status == .writing {
             input.markAsFinished()
             w.finishWriting {
-                if w.status != .completed {
+                // a recording cancelled while its video was being finished reports nothing (`cancel`): its attempt
+                // folder may already be gone, and an error line would be about a take the owner threw away
+                if w.status != .completed && !self.isCancelled {
                     AppLog.error("recorder", "\(self.label): the video could not be finished (writer status \(w.status.rawValue))"
                                  + (w.error.map { ": " + DevLog.describe($0) } ?? ""))
                 }
