@@ -281,6 +281,19 @@ phone** on the app's last screen removes it and its parts.
   the new rate, or a second after the ask if they never are (noted "by time").
   `FrameConversion.lumaCrop` cuts the ball's and the slab's crops with vDSP, to the same values as summing pixel by
   pixel (the scorer's `KitFramePipeline.lumaCrop` mirrors it).
+- The tracker's work is bounded where it buys nothing (`TrackerSettings` fields whose defaults are the old behaviour,
+  so older recordings replay as the phone ran them; the app's values are in `RecordingSettings.trackerSettings`):
+  searches from a still camera that have found nothing for a second run every 0.36 s instead of every 0.12 s, until
+  the camera turns or moves, a search finds a candidate, a tap, a reset or a world-frame discontinuity
+  (`idleSearchAfter`); with no ball shown and none waiting for its second scan, the ball finder slows from every
+  0.1 s to every 0.3 s after half a second of finding none, and is back at 0.1 s as soon as it finds one or the lock
+  changes (`idleBallAfter`); the slab sweep grows at most 32 regions a search (`maxSweepRegions`; the finder's own cap
+  is 48), never grows a starting point inside an outline it has already found (`sweepSkipsFinds`), and refines a
+  start's outline once rather than once per colour tolerance when they are the same (`sweepSameOutlinePixels`). The
+  colour frame is converted only when the slab detector will run (`SlabTracker.detectorWillRun`), and the per-frame
+  conversions (`YCCImage.fromBiplanar`, `colorFrame`) and the recorder's encoders are written for speed with the very
+  same output (`SpeedupIdentityTests`). `ios/BounceBench` (bounce-bench) times each stage and models the 60 fps
+  budget through the app's hand-off.
 - To replay one of your recordings: unzip it and run
   `BOUNCE_RECORDING=/path/to/slab-....bouncerec swift test --filter ReplayTests` in `ios/BounceCore`.
 - CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It then repeats the owner's steps on a

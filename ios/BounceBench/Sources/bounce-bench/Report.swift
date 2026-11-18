@@ -150,8 +150,9 @@ struct BenchReport: Codable {
         if let b = budget {
             m.append("#### Budget at 60 fps (16.7 ms a frame)\(onMac ? " on this Mac" : " (this host's times x \(f(b.hostToMac, 3)))")")
             m.append("")
-            m.append("Each state run for 30 s of camera time through the app's cadence (search every 0.12 s while searching; re-check every 0.3 s and "
-                     + "ball scan every 0.1 s while locked; at least 0.05 s between detector runs) and the app's pipeline (frames reach ARKit's "
+            m.append("Each state run for 30 s of camera time through the app's cadence (search every 0.12 s while searching, every 0.36 s after a "
+                     + "second of finding nothing from a still camera: the empty views; re-check every 0.3 s and ball scan every 0.1 s while locked, "
+                     + "every 0.3 s after half a second of finding no ball where none is shown; at least 0.05 s between detector runs) and the app's pipeline (frames reach ARKit's "
                      + "delegate queue 30 ms after capture, which hands each to the processing queue through BounceCore's FrameHandoff: taken at once "
                      + "when processing is idle, else it waits, the latest replacing and dropping any frame already waiting), each frame costing its "
                      + "kind's whole-frame time measured above (n per kind: the frames behind each cost), the detector runs' kinds taken in the order "

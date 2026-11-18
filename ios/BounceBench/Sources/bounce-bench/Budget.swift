@@ -54,6 +54,11 @@ struct Scenario: Codable {
     var skipCost: Double = 0.02
     /// the ball finder runs while locked (not when the lock is out of view: no ball crop)
     var ballScans: Bool = true
+    /// Nothing to find, so the tracker's idle rates apply (the app's `idleSearchAfter` / `idleBallAfter`, from a still
+    /// camera as the bench's): searches that never found a candidate (searching, nothing in view), and ball scans that
+    /// never found a ball. Optional for reports from before them.
+    var idleSearches: Bool? = nil
+    var idleBall: Bool? = nil
 
     func cost(_ k: FrameKind) -> Double {
         if let c = costs[k] { return c }
@@ -116,7 +121,9 @@ struct CadenceResult: Codable {
 
 enum CadenceSim {
     /// Runs `seconds` of camera time at 60 fps through the app's tracker cadence (searchInterval 0.12 s while searching,
-    /// recheckInterval 0.3 s and ballInterval 0.1 s while locked, minDetectionGap 0.05 s) and the app's pipeline: frame i
+    /// recheckInterval 0.3 s and ballInterval 0.1 s while locked, minDetectionGap 0.05 s; with nothing to find, the idle
+    /// rates: searches every idleSearchInterval after idleSearchAfter, ball scans every idleBallInterval after
+    /// idleBallAfter, as the app's tracker does from a still camera) and the app's pipeline: frame i
     /// is captured at i/60 and reaches ARKit's delegate `latency` later (ARKit's own delay). The tracker stays in the
     /// scenario's state; its detector runs take the scenario's kinds in turn; a processed frame takes its kind's cost x
     /// `scale`.
@@ -129,6 +136,9 @@ enum CadenceSim {
     static func run(_ sc: Scenario, scale: Double = 1, seconds: Double = 30, latency: Double = 0.03, pipeline: Pipeline = .handoff) -> CadenceResult {
         let settings = RecordingSettings().trackerSettings
         let dt = 1 / FrameBudget.fps
+        // the idle rates (nothing to find, a still camera): after idleSearchAfter / idleBallAfter of camera time
+        let idleSearchFrom = sc.idleSearches == true && settings.idleSearchAfter > 0 ? settings.idleSearchAfter : Double.infinity
+        let idleBallFrom = sc.idleBall == true && settings.idleBallAfter > 0 ? settings.idleBallAfter : Double.infinity
         var lastCheck = -Double.infinity, lastRun = -Double.infinity, lastBall = -Double.infinity, lastImage = -Double.infinity
         var processed = 0, skipped = 0, searches = 0, rechecks = 0, balls = 0, cycle = 0
         var busy = 0.0, worst = 0.0, worstKind = FrameKind.plain, lastProcessed: Double? = nil, longestGap = 0.0, waits = 0.0
@@ -139,14 +149,16 @@ enum CadenceSim {
         /// what the tracker runs on the frame captured at c (its own rule, `detectionDue` / `ballDue`), and its cost (ms)
         func kindAndCost(_ c: Double) -> (FrameKind, Double) {
             var kind = FrameKind.plain
+            let searchInterval = c >= idleSearchFrom ? max(settings.searchInterval, settings.idleSearchInterval) : settings.searchInterval
             let detection = c - lastRun >= settings.minDetectionGap
-                && c - lastCheck >= (sc.state == .searching ? settings.searchInterval : settings.recheckInterval)
+                && c - lastCheck >= (sc.state == .searching ? searchInterval : settings.recheckInterval)
             if detection {
                 lastCheck = c; lastRun = c
                 kind = sc.detectionCycle.isEmpty ? defaultDetection : sc.detectionCycle[cycle % sc.detectionCycle.count]
                 cycle += 1
             }
-            if sc.state == .locked && sc.ballScans && c - lastBall >= settings.ballInterval {
+            let ballInterval = c >= idleBallFrom ? max(settings.ballInterval, settings.idleBallInterval) : settings.ballInterval
+            if sc.state == .locked && sc.ballScans && c - lastBall >= ballInterval {
                 lastBall = c
                 kind = kind.withBall
             }
@@ -335,6 +347,8 @@ extension BudgetModel {
             n = n.filter { c[$0.key] != nil }
             var sc = Scenario(name: name, state: r.state, costs: c, counts: n, detectionCycle: cycle)
             sc.ballScans = r.kinds.contains { $0.kind.isBall }
+            sc.idleSearches = r.state == .searching && r.phase == "searching" && !r.kinds.contains { $0.kind == .searchRefine }
+            sc.idleBall = r.state == .locked && (r.ballShownFrames.map { $0 == 0 } ?? false)
             if r.recording { sc.imageInterval = RecordingCadence().imageInterval }
             if let kc = percentile95 ? r.kitP95 : r.kitP50 {
                 // a 60 fps shot (every frame to the kit) and a 30 fps one (every other frame)

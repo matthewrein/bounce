@@ -1669,6 +1669,9 @@ public final class BallLocator {
         current = nil; followed = nil; pendingPartial = nil; lastPartials = []; missed = 0
     }
 
+    /// The last scan found half an outline that it reports only if the next scan finds it again (`partialNeedsTwoScans`).
+    public var awaitsConfirmation: Bool { pendingPartial != nil }
+
     /// Where a ball held between `heights` over the slab (camera axes) would be seen, and how large: its centre's image
     /// position and imageCircle radius for balls over the slab's footprint (within the 5% that still counts as landing
     /// on it) at heights spaced evenly in log height. Only those in view.

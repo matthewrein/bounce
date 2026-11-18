@@ -94,6 +94,8 @@ struct FrameSample {
     var encode: Double = 0
     /// the slab search's sweep (regions grown, of at most maxSweepRegions), when the bench is built instrumented
     var regionsGrown: Int? = nil
+    /// the frame's tracker output showed a ball
+    var ballShown = false
 }
 
 struct KindSummary: Codable {
@@ -138,6 +140,8 @@ struct SessionResult: Codable {
     /// regions grown per sweep (instrumented build only): mean, max, sweeps
     var regionsGrownMean: Double? = nil
     var regionsGrownMax: Int? = nil
+    /// frames whose tracker output showed a ball (nil in reports from before it was counted)
+    var ballShownFrames: Int? = nil
 
     func kind(_ k: FrameKind) -> KindSummary? { kinds.first { $0.kind == k } }
 
@@ -161,6 +165,7 @@ struct SessionResult: Codable {
         var r = SessionResult(scene: scene, phase: phase, state: state, seconds: seconds, frames: samples.count, kinds: ks,
                               detectionCycle: samples.filter { $0.kind.isDetection }.map { $0.kind.withoutBall },
                               kitP50: ks2.isEmpty ? nil : Stats(ks2).p50, kitP95: ks2.isEmpty ? nil : Stats(ks2).p95, recording: recording, note: note)
+        r.ballShownFrames = samples.filter(\.ballShown).count
         let g = samples.compactMap(\.regionsGrown)
         if !g.isEmpty { r.regionsGrownMean = Double(g.reduce(0, +)) / Double(g.count); r.regionsGrownMax = g.max() }
         return r
@@ -313,7 +318,7 @@ final class AppLoop {
         if kind == .plain && ycc != nil { kind = .plainImage }
         return (FrameSample(kind: kind, total: total, convert: convert, colorFrame: colorMs, depth: depthMs, ballCrop: ballMs,
                             slabCrop: Double(slabNs) / 1e6, process: processMs - Double(slabNs) / 1e6, glue: glueMs, kit: kitMs,
-                            record: recordMs, encode: encodeMs, regionsGrown: grown), out)
+                            record: recordMs, encode: encodeMs, regionsGrown: grown, ballShown: out.ball != nil), out)
     }
 
     /// Frames until the tracker locks (at most `maxSeconds`); the samples and the camera time it took (nil: no lock).
