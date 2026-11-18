@@ -133,12 +133,18 @@ final class AppModel: ObservableObject {
     @Published var recordingError: String? = nil
     /// the capture kit (a developer tool, Settings > Developer > Capture kit) is open over the camera
     @Published var kitOpen = false
+    /// Settings > Developer > Pre-flight is running (the capture kit and recording wait for it)
+    @Published var preflightRunning = false
+    /// Settings > Developer > Copy log: the text shown in its sheet (the clipboard has all of it)
+    @Published var logText: String? = nil
 
     let controller = ARController()
     private(set) lazy var kit = KitSession(model: self, controller: controller)
+    private(set) lazy var preflight = PreflightRunner(model: self, controller: controller)
 
     init() {
         controller.model = self
+        AppLog.start()
     }
 
     private var running = false
@@ -165,6 +171,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         guard !running else { return }
+        AppLog.info("app", "active: " + (AppModel.demoScriptRequested() ? "demo scene" : ARController.isSupported ? "camera" : "no ARKit on this device"))
         if let demo = AppModel.demoScript() {
             running = true; runningDemo = true
             arUnsupported = false
@@ -185,6 +192,7 @@ final class AppModel: ObservableObject {
 
     /// The demo switch changed: restart on the camera or the demo (a running recording is stopped and saved first).
     func restart() {
+        AppLog.info("app", "restarting on the " + (AppModel.demoScriptRequested() ? "demo scene" : "camera"))
         if isRecording { stopRecording() }
         if running { controller.stop(); running = false; UIApplication.shared.isIdleTimerDisabled = false }
         background = nil
@@ -194,6 +202,8 @@ final class AppModel: ObservableObject {
     func stop() {
         guard running else { return }
         running = false
+        AppLog.info("app", "background")
+        if preflightRunning { preflight.cancel("the app left the foreground") }
         if kitOpen { kit.appBackgrounded() }
         if isRecording { stopRecording() }
         UIApplication.shared.isIdleTimerDisabled = false
@@ -202,6 +212,7 @@ final class AppModel: ObservableObject {
 
     /// Settings closed: apply the drop height, rebound and the developer switches.
     func settingsChanged() {
+        if preflightRunning { preflight.cancel("Settings was closed") }
         settings = AppSettings.load()
         controller.update(settings: settings)
         if !running || runningDemo != AppModel.demoScriptRequested() { restart() }
@@ -218,7 +229,7 @@ final class AppModel: ObservableObject {
     }
 
     func startRecording() {
-        guard !isRecording else { return }
+        guard !isRecording, !preflightRunning else { return }
         recordingError = nil
         isRecording = true
         isStopping = false
@@ -237,7 +248,9 @@ final class AppModel: ObservableObject {
                 self.recordingStartedAt = nil
                 switch result {
                 case .success(let url): self.shareURL = url
-                case .failure(let e): self.recordingError = "Could not save the recording: \(SessionRecorder.describe(e))"
+                case .failure(let e):
+                    self.recordingError = "Could not save the recording: \(SessionRecorder.describe(e))"
+                    AppLog.error("session-rec", "could not save the recording", e)
                 }
             }
         }
@@ -247,7 +260,7 @@ final class AppModel: ObservableObject {
 
     /// Open the capture kit. Only the Developer screen calls this: the kit never opens by itself.
     func openKit() {
-        guard !kitOpen else { return }
+        guard !kitOpen, !preflightRunning else { return }
         if isRecording { stopRecording() }
         kitOpen = true
         kit.open()
@@ -266,10 +279,24 @@ final class AppModel: ObservableObject {
 
     /// Called by the controller when a recording could not start.
     func recordingDidFail(_ message: String) {
+        AppLog.error("session-rec", message)
         isRecording = false
         isStopping = false
         recordingStartedAt = nil
         recordingError = message
+    }
+
+    /// Settings > Developer > Copy log: every line of the developer log to the clipboard, and the last ones in a sheet.
+    func copyLog() {
+        let text = AppLog.copyText()
+        UIPasteboard.general.string = text
+        logText = AppLog.shownText(text)
+    }
+
+    /// Settings > Developer > Clear log (after confirming).
+    func clearLog() {
+        AppLog.shared.clear()
+        AppLog.info("app", "log cleared (build \(appBuild), \(Device.model), iOS \(UIDevice.current.systemVersion))")
     }
 
     /// Copies the diagnostics JSON and shows it.

@@ -110,6 +110,33 @@ final class SlabBounceUITests: XCTestCase {
         return v
     }
 
+    /// Scroll the Developer screen until the element is on screen (its last rows start below the fold, and a list makes
+    /// its rows only when they come into view).
+    @discardableResult
+    func reveal(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        let e = element(app, id)
+        for i in 0..<10 {
+            if e.exists && e.isHittable { break }
+            let list = app.collectionViews.firstMatch.exists ? app.collectionViews.firstMatch : app.tables.firstMatch
+            let target = list.exists ? list : app
+            if i < 6 { target.swipeUp() } else { target.swipeDown() }
+        }
+        return e
+    }
+
+    /// Settings > Developer > Copy log: the text its sheet shows (the sheet is closed again, Developer stays open).
+    func readLog(_ app: XCUIApplication, screenshotName: String? = nil) -> String {
+        reveal(app, "copyLog")
+        tap(app, "copyLog")
+        let text = app.staticTexts["logText"]
+        XCTAssertTrue(text.waitForExistence(timeout: 10), "no log sheet")
+        if let n = screenshotName { screenshot(app, n) }
+        let log = text.label
+        tap(app, "logDone")
+        waitGone(app, "logText")
+        return log
+    }
+
     func screenshot(_ app: XCUIApplication, _ name: String) {
         let a = XCTAttachment(screenshot: app.screenshot())
         a.name = name
@@ -356,7 +383,10 @@ final class SlabBounceUITests: XCTestCase {
         tap(app, "shotNext")
         XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10))
 
-        // Quit, and back through Settings > Developer > Capture kit: Resume shows the progress
+        // the next shot (the slab arc, 5 s here) is started and Quit is tapped in the middle of its recording: that
+        // attempt is thrown away and every shot before it is kept (Resume below still says 4 of 28 done)
+        element(app, "shotStart").tap()
+        let quitMidShot = element(app, "kitRecording").waitForExistence(timeout: 15)
         tap(app, "kitQuit")
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 10), "Quit did not close the kit")
         openDeveloper(app)
@@ -396,10 +426,11 @@ final class SlabBounceUITests: XCTestCase {
         let shared = waitUntil(20) { app.otherElements["ActivityListView"].exists || app.navigationBars["UIActivityContentView"].exists || app.buttons["Close"].exists }
         screenshot(app, "kit share sheet")
         summary("kit: \(formProgress) form, scan (\(scanProgress), \"\(scanInstruction)\"): recording shown \(recordingSeen), check \"\(scanVerdict)\"; "
-                + "flat (\(flatProgress)); hold still: \"\(stillVerdict)\"; resume \"\(resumeText)\", slab-moved question \(askedMoved); "
+                + "flat (\(flatProgress)); hold still: \"\(stillVerdict)\"; quit mid-recording \(quitMidShot); resume \"\(resumeText)\", slab-moved question \(askedMoved); "
                 + "\(skips) skips (\(heightSkips) heights); summary \"\(summaryLabel.split(separator: "\n").first ?? "")\"; bundle: \(bundle); "
                 + String(format: "share sheet after %.1f s", shared ?? -1))
         XCTAssertTrue(recordingSeen, "no recording indicator during the scan")
+        XCTAssertTrue(quitMidShot, "the fifth shot never showed its recording, so Quit was not tested mid-shot")
         XCTAssertEqual(skips, 22, "skips: the 21 remaining required shots and the optional third tilt (one skip for its three shots)")
         XCTAssertTrue(bundle.contains("part"), "bundle: \(bundle)")
         XCTAssertNotNil(shared, "no share sheet after Share kit")
@@ -432,5 +463,131 @@ final class SlabBounceUITests: XCTestCase {
                        frames, elapsed.isEmpty ? "-" : elapsed, counts["recordingPixelsDropped"] ?? 0, shared ?? -1))
         XCTAssertGreaterThan(frames, 5)
         XCTAssertNotNil(shared, "no share sheet after stopping the recording")
+    }
+
+    /// Pre-flight (Settings > Developer > Pre-flight) in the Simulator, on the demo scene: it does nothing until Run is
+    /// tapped, then finishes in about 10-15 s with a result on every item. The Simulator has no camera, ARKit or LiDAR, so
+    /// those read N/A (motion too); the recorder test records the demo's frames through the kit's recorder (H.264 here),
+    /// reads them back and deletes them: what it shows is reported, not required. Its lines go to the log.
+    func testPreflight() {
+        let app = launch()
+        XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
+        openDeveloper(app)
+        reveal(app, "preflightRow")
+        tap(app, "preflightRow")
+        XCTAssertTrue(element(app, "preflightRun").waitForExistence(timeout: 10), "no pre-flight screen")
+        // nothing runs by itself
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(element(app, "preflightDone").exists, "the pre-flight ran by itself")
+        let before = element(app, "preflightItem-camera").label
+        XCTAssertTrue(before.contains("not run yet"), "before Run the camera item says \"\(before)\"")
+        screenshot(app, "preflight before")
+
+        let t0 = Date()
+        element(app, "preflightRun").tap()
+        let sawProgress = element(app, "preflightProgress").waitForExistence(timeout: 5)
+        let done = element(app, "preflightDone")
+        XCTAssertTrue(done.waitForExistence(timeout: 30), "the pre-flight did not finish: \(element(app, "preflightNote").exists ? element(app, "preflightNote").label : "")")
+        let seconds = Date().timeIntervalSince(t0)
+        let headline = done.label
+        screenshot(app, "preflight results")
+        var items: [String: String] = [:]
+        for c in PreflightCheck.allCases {
+            let e = element(app, "preflightItem-\(c.rawValue)")
+            items[c.rawValue] = e.exists ? e.label : ""
+        }
+        func tag(_ c: PreflightCheck) -> String { (items[c.rawValue] ?? "").split(separator: " ").first.map(String.init) ?? "" }
+
+        tap(app, "preflightCopy")
+        let copied = element(app, "preflightCopied").waitForExistence(timeout: 5)
+        // its lines are in the log (back to Developer, Copy log)
+        let back = app.navigationBars.buttons["Developer"]
+        if back.exists { back.tap() } else { app.navigationBars.buttons.element(boundBy: 0).tap() }
+        XCTAssertTrue(element(app, "developerDone").waitForExistence(timeout: 10), "not back on the Developer screen")
+        let log = readLog(app)
+        let headlineStart = String(headline.prefix(12))
+        let logged = log.contains("preflight started") && log.contains("preflight " + headlineStart)
+        let took = String(format: "%.1f", seconds)
+        let tags = PreflightCheck.allCases.map { c in "\(c.rawValue) \(tag(c))" }.joined(separator: ", ")
+        let recorderLine = items["recorder"] ?? "", storageLine = items["storage"] ?? ""
+        summary("preflight: finished \(took) s after Run (progress shown \(sawProgress)); \"\(headline)\"; \(tags); "
+                + "recorder: \"\(recorderLine)\"; storage: \"\(storageLine)\"; copied \(copied); in the log \(logged)")
+        XCTAssertTrue(sawProgress, "no progress bar while it ran")
+        XCTAssertLessThan(seconds, 20, "the pre-flight took \(seconds) s")
+        for c in PreflightCheck.allCases {
+            XCTAssertTrue(["PASS", "WARN", "FAIL", "N/A"].contains(tag(c)), "\(c.rawValue) shows no result: \"\(items[c.rawValue] ?? "")\"")
+        }
+        for c in [PreflightCheck.camera, .arkit, .lidar] {
+            XCTAssertEqual(tag(c), "N/A", "in the Simulator \(c.rawValue) should read not available: \"\(items[c.rawValue] ?? "")\"")
+        }
+        XCTAssertTrue(copied, "Copy results did not say it copied")
+        XCTAssertTrue(logged, "the pre-flight's lines are not in the log")
+        closeSettings(app)
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
+    }
+
+    /// Copy log (Settings > Developer): after Clear log, a short capture-kit run on the demo leaves its milestones in the
+    /// log, with the recorder's summary line, and nothing in it is a file path. The run: a new kit, the measurements
+    /// skipped, the room scan quit in the middle of its recording (Resume then offers the scan again, with the skipped
+    /// step kept), then the scan recorded and kept.
+    func testCopyLogShowsKitMilestones() throws {
+        let app = launch(["kitFast": "YES"])
+        XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
+        openDeveloper(app)
+        reveal(app, "clearLog")
+        tap(app, "clearLog")
+        tap(app, "clearLogConfirm")
+        closeSettings(app)
+
+        openDeveloper(app)
+        tap(app, "captureKitRow")
+        XCTAssertTrue(element(app, "kitNew").waitForExistence(timeout: 15), "the kit did not open")
+        element(app, "kitNew").tap()
+        if element(app, "kitNewConfirm").waitForExistence(timeout: 2) { element(app, "kitNewConfirm").tap() }
+        // step 1 skipped
+        XCTAssertTrue(element(app, "kitStart").waitForExistence(timeout: 10), "no measurements form")
+        tap(app, "shotSkip")
+        // step 2, the room scan (5 s here): Quit in the middle of its recording
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10), "no shot screen after skipping the measurements")
+        element(app, "shotStart").tap()
+        let midShot = element(app, "kitRecording").waitForExistence(timeout: 15)
+        tap(app, "kitQuit")
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 10), "Quit did not close the kit")
+
+        // Resume: back at the scan, the skipped step kept; then the scan is recorded and kept
+        openDeveloper(app)
+        tap(app, "captureKitRow")
+        let resume = element(app, "kitResume")
+        XCTAssertTrue(resume.waitForExistence(timeout: 15), "no Resume after quitting mid-shot")
+        let resumeText = resume.label
+        resume.tap()
+        XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10), "no shot screen after Resume")
+        let resumedAt = label(app, "kitProgress")
+        element(app, "shotStart").tap()
+        XCTAssertTrue(app.staticTexts["qualityVerdict"].waitForExistence(timeout: 40), "no quality check after the scan: \(label(app, "kitError"))")
+        tap(app, "kitQuit")
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 10), "Quit did not close the kit")
+
+        openDeveloper(app)
+        let log = readLog(app, screenshotName: "log")
+        let lines = log.split(separator: "\n").map(String.init)
+        let milestones: [(String, String)] = [
+            ("cleared", "INFO app log cleared"), ("opened", "INFO kit opened"), ("created", "INFO kit created slab-kit-"),
+            ("skipped", " skipped"), ("started", " started (Step 2 of 12"), ("cancelled", " cancelled during recording"),
+            ("quit", "INFO kit quit"), ("closed", "INFO kit closed"), ("resumed", "INFO kit resumed"),
+            ("committed", " committed: "), ("recorder summary", " done: "),
+        ]
+        let missing = milestones.filter { m in !lines.contains { $0.contains(m.1) } }.map { $0.0 }
+        let paths = lines.filter { $0.contains("/var/") || $0.contains("/Users/") || $0.contains("file://") || $0.contains("/Library/") }
+        let missingWords = missing.isEmpty ? "none" : missing.joined(separator: ", ")
+        let errors = lines.filter { $0.contains(" ERROR ") }.count, warnings = lines.filter { $0.contains(" WARN ") }.count
+        summary("log: \(lines.count) lines after a short kit run (quit mid-recording \(midShot); then \"\(resumeText)\", resumed at \(resumedAt)); "
+                + "milestones missing: \(missingWords); lines with a path: \(paths.count); errors \(errors), warnings \(warnings)")
+        XCTAssertTrue(midShot, "the scan never showed its recording, so Quit was not tested mid-shot")
+        XCTAssertTrue(resumeText.contains("Step 2 of 12") && resumeText.contains("1 of 28"),
+                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done)")
+        XCTAssertTrue(missing.isEmpty, "milestones missing from the log: \(missing); log:\n\(log.suffix(3000))")
+        XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")
+        closeSettings(app)
     }
 }

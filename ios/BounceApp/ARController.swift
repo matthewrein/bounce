@@ -76,6 +76,10 @@ final class ARController: NSObject, ARSessionDelegate {
     /// ids of the current ARKit run and CoreMotion run (new ones whenever either restarts), for the kit's shot.json
     private var arRunId = UUID().uuidString
     private var motionRunId = UUID().uuidString
+    /// Settings > Developer > Pre-flight, while it runs: it sees every camera frame and motion sample
+    private var preflightTap: PreflightTap? = nil
+    /// CoreMotion errors in the current motion run (the first few are logged)
+    private var motionErrors = 0
 
     // main thread
     /// the capture kit is open: ARKit runs its 4:3 format with the highest frame rate, CoreMotion at 100 Hz
@@ -274,15 +278,17 @@ final class ARController: NSObject, ARSessionDelegate {
         lock.unlock()
     }
 
-    /// Device motion: 100 Hz with a handler while the kit is open, else 60 Hz read by the session recordings.
+    /// Device motion: 100 Hz with a handler while the kit is open (or the pre-flight runs), else 60 Hz read by the
+    /// session recordings.
     private func startMotion() {
         guard motion.isDeviceMotionAvailable else { return }
         motion.stopDeviceMotionUpdates()
-        lock.lock(); latestKitMotion = nil; lock.unlock()
+        lock.lock(); latestKitMotion = nil; motionErrors = 0; let push = kitMode || preflightTap != nil; lock.unlock()
         newRunId(ar: false, motion: true)
-        if kitMode {
+        if push {
             motion.deviceMotionUpdateInterval = 1.0 / 100
-            motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: motionQueue) { [weak self] m, _ in
+            motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: motionQueue) { [weak self] m, e in
+                if let e = e { self?.motionFailed(e) }
                 guard let self = self, let m = m else { return }
                 self.kitMotion(m)
             }
@@ -302,21 +308,47 @@ final class ARController: NSObject, ARSessionDelegate {
                                 rotationRate: Vec3(m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
                                 attitude: KitQuaternion(x: q.x, y: q.y, z: q.z, w: q.w))
         lock.lock()
-        let h = kitMotionHandler
-        if h != nil { latestKitMotion = m }
+        let h = kitMotionHandler, p = preflightTap
+        if h != nil || p != nil { latestKitMotion = m }
         lock.unlock()
         h?(s)
+        p?.motionSample(s)
+    }
+
+    /// CoreMotion reported an error (motion queue): the first few of each run go to the log.
+    private func motionFailed(_ e: Error) {
+        lock.lock(); motionErrors += 1; let n = motionErrors; lock.unlock()
+        if n <= 5 { AppLog.error("motion", "device motion error (\(n) in this run)", e) }
     }
 
     /// The latest device motion, whichever way it is running (the kit's cached sample only while the kit is open).
     private func currentMotion() -> CMDeviceMotion? {
-        lock.lock(); let k = kitMotionHandler != nil ? latestKitMotion : nil; lock.unlock()
+        lock.lock(); let k = kitMotionHandler != nil || preflightTap != nil ? latestKitMotion : nil; lock.unlock()
         return k ?? motion.deviceMotion
     }
 
     /// The kit's shot recorder takes frames from the next one on, until it has enough (it detaches itself) or is detached.
     func attachKitRecorder(_ r: KitRecorder) { queue.async { self.kitRecorder = r } }
     func detachKitRecorder() { queue.async { self.kitRecorder = nil } }
+
+    // MARK: the pre-flight (main thread; Settings > Developer > Pre-flight)
+
+    /// While `tap` is set, it sees every camera frame and every device-motion sample (motion then runs at 100 Hz with a
+    /// handler, as for the kit); nil ends it and motion goes back to how it ran. The session and its video format are
+    /// left as they are.
+    func setPreflight(_ tap: PreflightTap?) {
+        lock.lock(); preflightTap = tap; lock.unlock()
+        guard !kitMode else { return }   // the kit's 100 Hz run already hands every sample over
+        if tap != nil || cameraRunning { startMotion() } else { motion.stopDeviceMotionUpdates() }
+    }
+
+    private func preflightTapNow() -> PreflightTap? { lock.lock(); defer { lock.unlock() }; return preflightTap }
+
+    /// CoreMotion's device motion exists here (not in the Simulator)
+    var motionAvailable: Bool { motion.isDeviceMotionAvailable }
+
+    /// the running camera format's frame rate (nil while the camera is not running)
+    var videoFps: Double? { cameraRunning ? session.configuration.map { Double($0.videoFormat.framesPerSecond) } : nil }
 
     /// the demo's frame interval (s)
     static let demoFrameInterval = 0.08
@@ -400,6 +432,9 @@ final class ARController: NSObject, ARSessionDelegate {
             tracker.noteWorldDiscontinuity("relocalized")
             note("relocalized", at: t)
         }
+        // the pre-flight sees every frame ARKit delivers (ahead of any early return), with the app's work per frame
+        if let p = preflightTapNow() { p.frame(frame, tracking: kt, processingMs: msAverage) }
+
         // the video format, from the frames themselves (whatever re-ran the session): a change is a world discontinuity,
         // noted on the first frame that shows the new format (its size, or the spacing of frames at the new rate)
         let w = Int(camera.imageResolution.width), h = Int(camera.imageResolution.height)
@@ -642,6 +677,8 @@ final class ARController: NSObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didFailWithError error: Error) {
         let code = (error as NSError).code
+        AppLog.error("arkit", "the AR session failed", error)
+        preflightTapNow()?.arkit.sessionFailed(code: code)
         queue.async { self.note("session error \(code)") }
         let msg = "Camera stopped: \(error.localizedDescription)"
         Task { @MainActor [weak model] in
@@ -652,6 +689,8 @@ final class ARController: NSObject, ARSessionDelegate {
     }
 
     func sessionWasInterrupted(_ session: ARSession) {
+        AppLog.warn("arkit", "session interrupted (a call, or another app took the camera)")
+        preflightTapNow()?.arkit.interrupted()
         // the frames stop: a pause, not frames the camera missed
         let at = CACurrentMediaTime()
         queue.async { self.note("interrupted"); self.pacer.expectPause(at: at) }
@@ -663,6 +702,7 @@ final class ARController: NSObject, ARSessionDelegate {
     /// it sees the slab where it should be.
     func sessionInterruptionEnded(_ session: ARSession) {
         newRunId(ar: true, motion: false)   // ARKit's world may have moved: shots after this are another run
+        AppLog.info("arkit", "interruption ended")
         queue.async {
             guard !self.isDemo else { return }
             self.tracker.noteWorldDiscontinuity("interruption")
@@ -725,6 +765,7 @@ final class ARController: NSObject, ARSessionDelegate {
                 note(how.description)
             } catch {
                 note("capture lock failed: error \((error as NSError).code)")
+                AppLog.error("arkit", "capture lock failed", error)
             }
         }
     }
@@ -740,6 +781,7 @@ final class ARController: NSObject, ARSessionDelegate {
                 device.unlockForConfiguration()
             } catch {
                 note("capture unlock failed: error \((error as NSError).code)")
+                AppLog.error("arkit", "capture unlock failed", error)
             }
         }
         captureLocked = false
@@ -911,8 +953,10 @@ final class ARController: NSObject, ARSessionDelegate {
             _ = captureGate.disarm(reason: "recording")
             unlockCapture()
             note("recording started")
+            AppLog.info("session-rec", "recording started (\(w)x\(h) processing frames)")
         } catch {
             note("recording failed to start: error \((error as NSError).code)")
+            AppLog.error("session-rec", "recording failed to start", error)
             let msg = "Could not start the recording: \(SessionRecorder.describe(error))"
             Task { @MainActor [weak model] in model?.recordingDidFail(msg) }
         }

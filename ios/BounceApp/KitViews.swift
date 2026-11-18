@@ -362,10 +362,7 @@ struct KitShotView: View {
                 Button(action: { kit.start() }) { Text("Start").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("shotStart")
-                Button("Skip") { kit.skip() }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .accessibilityIdentifier("shotSkip")
+                skipOrKeep
             }
         case .review, .failed:
             if kit.phase == .review && confirmDiscard {
@@ -398,15 +395,28 @@ struct KitShotView: View {
                             .tint(.white)
                             .accessibilityIdentifier("shotDiscard")
                     } else {
-                        Button("Skip") { kit.skip() }
-                            .buttonStyle(.bordered)
-                            .tint(.white)
-                            .accessibilityIdentifier("shotSkip")
+                        skipOrKeep
                     }
                 }
             }
         case .countdown, .recording, .flat, .saving:
             EmptyView()
+        }
+    }
+
+    /// Skip; or, when a retake failed or was cut short and the shot already has a take, Keep earlier (Skip would delete
+    /// that take).
+    @ViewBuilder private var skipOrKeep: some View {
+        if kit.hasEarlierCapture {
+            Button("Keep earlier") { kit.keepEarlier() }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .accessibilityIdentifier("shotKeepEarlier")
+        } else {
+            Button("Skip") { kit.skip() }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .accessibilityIdentifier("shotSkip")
         }
     }
 

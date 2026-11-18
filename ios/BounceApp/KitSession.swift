@@ -31,7 +31,11 @@ final class KitMotionRoute {
 /// It never opens by itself. While it is open: ARKit runs its 4:3 format with the highest frame rate (one ARSession,
 /// never reset by the kit), CoreMotion runs at 100 Hz (one run), and the screen stays awake. Progress is saved after
 /// every shot; a shot cut short (the app leaving the foreground, the camera interrupted, Quit) is thrown away and stays
-/// pending.
+/// pending, and every shot before it stays as it was. A retake that fails or is cut short leaves the earlier take in
+/// place ("Keep earlier").
+///
+/// Every error and every milestone (kit opened, shot started, committed, skipped, cancelled, bundle made) goes to the
+/// developer log (`AppLog`, area "kit"), so one failed attempt on the phone still says what happened.
 @MainActor
 final class KitSession: ObservableObject {
     enum Screen: Equatable { case start, measurements, shot, finish }
@@ -71,6 +75,8 @@ final class KitSession: ObservableObject {
     /// a passing note (e.g. a shot thrown away when the app went to the background)
     @Published private(set) var notice: String? = nil
     @Published private(set) var error: String? = nil
+    /// the shown shot already has a take on the phone (a retake failed or was cut short): offer to keep it, not Skip
+    @Published private(set) var hasEarlierCapture = false
 
     // the measurements form (step 1)
     @Published var widthText = ""
@@ -111,6 +117,9 @@ final class KitSession: ObservableObject {
     private var flatStart = 0.0
     private var flatResult: KitTrueTilt? = nil
     private var runIds: (ar: String, motion: String) = ("", "")
+    /// kits whose bundle is being made (kept across Quit and reopening): another build of the same kit would delete
+    /// this one's working folder, so Make bundle waits for it
+    private var bundlesInFlight: Set<String> = []
 
     init(model: AppModel, controller: ARController) {
         self.model = model
@@ -119,16 +128,28 @@ final class KitSession: ObservableObject {
 
     // MARK: places and settings
 
-    /// Application Support/Kits: the working kits (not shown in the Files app)
+    /// Application Support/Kits: the working kits (not shown in the Files app). nil (and a log line with why) if the
+    /// folder cannot be had.
     nonisolated static var kitsRoot: URL? {
-        try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Kits", isDirectory: true)
+        do {
+            return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("Kits", isDirectory: true)
+        } catch {
+            AppLog.error("kit", "no Application Support folder for the kits", error)
+            return nil
+        }
     }
 
-    /// Documents/Kits: the bundle parts, one folder per kit (shown in Files under On My iPhone > Slab Bounce > Kits)
+    /// Documents/Kits: the bundle parts, one folder per kit (shown in Files under On My iPhone > Slab Bounce > Kits).
+    /// nil (and a log line with why) if the folder cannot be had.
     nonisolated static var outboxRoot: URL? {
-        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Kits", isDirectory: true)
+        do {
+            return try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("Kits", isDirectory: true)
+        } catch {
+            AppLog.error("kit", "no Documents folder for the bundle parts", error)
+            return nil
+        }
     }
 
     /// The plan: the standard one, or at a quarter of its timings for the UI tests (launch argument -kitFast YES).
@@ -149,12 +170,20 @@ final class KitSession: ObservableObject {
     func open() {
         resetAll()
         screen = .start
+        AppLog.info("kit", "opened (\(isDemo ? "demo scene" : "camera"), plan at \(KitSession.plan.timeScale == 1 ? "full" : "test") speed)")
         feedback.prepare()
         UIApplication.shared.isIdleTimerDisabled = true
         controller.setKitMode(true, motion: KitSession.motionHandler(route))
-        if let root = KitSession.kitsRoot, let out = KitSession.outboxRoot {
-            for k in KitStore.list(root: root) {
-                KitBundle.removeLeftovers(kitId: k.kitId, in: out.appendingPathComponent(k.kitId, isDirectory: true))
+        if let root = KitSession.kitsRoot {
+            // a kit whose kit.json cannot be read is left out of Resume and Last kit: say which, and why
+            for u in KitStore.unreadable(root: root) {
+                AppLog.warn("kit", "kit folder \(u.name) is left out: its kit.json cannot be read", u.error)
+            }
+            if let out = KitSession.outboxRoot {
+                // (a bundle still being made keeps its working folder)
+                for k in KitStore.list(root: root) where !bundlesInFlight.contains(k.kitId) {
+                    KitBundle.removeLeftovers(kitId: k.kitId, in: out.appendingPathComponent(k.kitId, isDirectory: true))
+                }
             }
         }
         refreshStart()
@@ -162,11 +191,13 @@ final class KitSession: ObservableObject {
 
     /// Quit: progress is saved after every shot; a shot in progress is thrown away.
     func quit() {
-        cancelShot(notice: nil)
+        AppLog.info("kit", "quit" + (store.map { " (\($0.kitId): \(KitSession.progressWords($0.progress)))" } ?? ""))
+        cancelShot(notice: nil, reason: "Quit")
         close()
     }
 
     private func close() {
+        AppLog.info("kit", "closed")
         token += 1
         task?.cancel(); task = nil
         demoFeed?.stop(); demoFeed = nil
@@ -184,7 +215,7 @@ final class KitSession: ObservableObject {
         task?.cancel(); task = nil
         store = nil; resumable = nil; lastFinished = nil; recorder = nil; runner = nil
         resumeText = nil; lastKitText = nil; confirmingNew = false; slabMovedLabel = nil
-        shot = nil; phase = .ready; progressLabel = ""; shotInStep = ""
+        shot = nil; phase = .ready; progressLabel = ""; shotInStep = ""; hasEarlierCapture = false
         resetShotDisplay()
         notice = nil; error = nil; formProblems = []
         summary = nil; finished = false; bundling = false; bundleText = nil; bundleURLs = []; share = nil; confirmingDelete = false
@@ -197,13 +228,18 @@ final class KitSession: ObservableObject {
 
     /// The app is leaving the foreground: a shot in progress is thrown away, and the kit stays where it was.
     func appBackgrounded() {
-        cancelShot(notice: "The app went to the background, so that shot was not saved. Start it again when you are ready.")
+        AppLog.info("kit", "the app went to the background")
+        cancelShot(notice: "The app went to the background, so that shot was not saved. Start it again when you are ready.",
+                   reason: "the app went to the background")
     }
 
     /// ARKit's session was interrupted: a video shot in progress is thrown away (a flat-phone shot needs no camera).
     func cameraInterrupted() {
-        guard shot?.isFlat != true else { return }
-        cancelShot(notice: "The camera was interrupted, so that shot was not saved. Start it again.")
+        guard shot?.isFlat != true else {
+            AppLog.info("kit", "camera interrupted during a flat-phone shot (it carries on)")
+            return
+        }
+        cancelShot(notice: "The camera was interrupted, so that shot was not saved. Start it again.", reason: "the camera was interrupted")
     }
 
     // MARK: the start screen
@@ -221,16 +257,18 @@ final class KitSession: ObservableObject {
         guard let listing = KitStore.resumable(root: root) else { return }
         do {
             let s = try KitStore.load(folder: listing.folder)
+            KitSession.logLoad(s)
             let p = s.progress
             resumable = s
             resumeText = "Resume: \(p.label), \(p.done) of \(p.total) shots done"
         } catch {
-            self.error = "The unfinished kit could not be opened: \(KitSession.describe(error))"
+            showError("The unfinished kit could not be opened: \(KitSession.describe(error))", error)
         }
     }
 
     func resume() {
         guard let s = resumable else { return }
+        AppLog.info("kit", "resumed \(s.kitId): \(KitSession.progressWords(s.progress))")
         store = s
         error = nil
         if let p = s.positionInProgress { slabMovedLabel = p.label } else { goToNext() }
@@ -240,9 +278,10 @@ final class KitSession: ObservableObject {
     func answerSlabMoved(_ moved: Bool) {
         guard let s = store else { return }
         slabMovedLabel = nil
+        AppLog.info("kit", "slab moved since the last shot: \(moved ? "yes" : "no")")
         if moved, let next = s.progress.nextShotId {
             do { try s.restartPosition(forShot: next, date: Date()) } catch {
-                self.error = "Could not set the slab up again: \(KitSession.describe(error))"
+                showError("Could not set the slab up again: \(KitSession.describe(error))", error)
             }
         }
         goToNext()
@@ -253,6 +292,8 @@ final class KitSession: ObservableObject {
         guard let l = lastFinished else { return }
         do {
             let s = try KitStore.load(folder: l.folder)
+            KitSession.logLoad(s)
+            AppLog.info("kit", "opened the last kit \(s.kitId)")
             store = s
             showFinish()
             if let out = KitSession.outboxRoot?.appendingPathComponent(s.kitId, isDirectory: true) {
@@ -265,7 +306,7 @@ final class KitSession: ObservableObject {
                 }
             }
         } catch {
-            self.error = "The last kit could not be opened: \(KitSession.describe(error))"
+            showError("The last kit could not be opened: \(KitSession.describe(error))", error)
         }
     }
 
@@ -281,21 +322,25 @@ final class KitSession: ObservableObject {
         confirmingNew = false
         error = nil
         if let old = resumable {
-            try? old.delete()
+            AppLog.info("kit", "deleting the unfinished kit \(old.kitId) for a new one (\(KitSession.progressWords(old.progress)))")
+            do { try old.delete() } catch { AppLog.error("kit", "could not delete the unfinished kit \(old.kitId)", error) }
             KitSession.removeOutbox(kitId: old.kitId)
             resumable = nil; resumeText = nil
         }
-        guard let root = KitSession.kitsRoot else { error = "No place to keep the kit on this phone."; return }
+        guard let root = KitSession.kitsRoot else { showError("No place to keep the kit on this phone.", nil); return }
         let format = controller.kitCameraFormat
         let device = KitDevice(modelIdentifier: Device.model, systemVersion: UIDevice.current.systemVersion,
                                hasLiDAR: ARController.depthSupported, cameraFormat: format, highFrameRateFormat: format)
         do {
-            store = try KitStore.create(root: root, plan: KitSession.plan, device: device,
+            let s = try KitStore.create(root: root, plan: KitSession.plan, device: device,
                                         measurements: KitMeasurements(settings: AppSettings().recording), build: appBuild, date: Date())
+            store = s
+            let formatWords = format.map { f in String(format: "%dx%d at %.0f fps", f.width, f.height, f.fps) } ?? "no camera format (demo)"
+            AppLog.info("kit", "created \(s.kitId): \(device.modelIdentifier), LiDAR \(device.hasLiDAR ? "yes" : "no"), \(formatWords)")
             KitSession.excludeFromBackup(root)
             goToNext()
         } catch {
-            self.error = "Could not create the kit: \(KitSession.describe(error))"
+            showError("Could not create the kit: \(KitSession.describe(error))", error)
         }
     }
 
@@ -315,6 +360,7 @@ final class KitSession: ObservableObject {
     private func show(_ spec: KitShotSpec) {
         guard let s = store else { return }
         shot = spec
+        hasEarlierCapture = s.record(spec.id)?.status == .captured
         progressLabel = s.plan.progressLabel(step: spec.step)
         let inStep = s.plan.shots(inStep: spec.step)
         if inStep.count > 1, let i = inStep.firstIndex(where: { $0.id == spec.id }) {
@@ -336,13 +382,23 @@ final class KitSession: ObservableObject {
     /// Skip the shown shot (a capture it had is removed; skipping the optional third tilt's flat-phone shot skips the tilt).
     func skip() {
         guard let s = store, let spec = shot else { return }
-        cancelShot(notice: nil)
+        cancelShot(notice: nil, reason: "Skip")
+        let had = s.record(spec.id)?.status == .captured
         do {
             try s.skipShot(spec.id, date: Date())
+            AppLog.info("kit", "shot \(spec.id) skipped" + (had ? " (its take was deleted)" : ""))
             goToNext()
         } catch {
-            self.error = "Could not skip: \(KitSession.describe(error))"
+            showError("Could not skip: \(KitSession.describe(error))", error)
         }
+    }
+
+    /// Keep earlier: a retake failed or was cut short, and the take already on the phone is kept (it is never lost).
+    func keepEarlier() {
+        guard let spec = shot else { return }
+        cancelShot(notice: nil, reason: "Keep earlier")
+        AppLog.info("kit", "shot \(spec.id): the earlier take is kept")
+        goToNext()
     }
 
     /// Take the shot again (the earlier capture stays until the new one is saved).
@@ -353,7 +409,8 @@ final class KitSession: ObservableObject {
 
     /// Finish now: the end screen with what is done (the kit can still be resumed until the bundle is made).
     func finishNow() {
-        cancelShot(notice: nil)
+        AppLog.info("kit", "Finish now")
+        cancelShot(notice: nil, reason: "Finish now")
         showFinish()
     }
 
@@ -388,12 +445,18 @@ final class KitSession: ObservableObject {
                                 slabThicknessInches: KitSession.number(thicknessText) ?? .nan,
                                 dishInches: dish.isEmpty ? nil : (KitSession.number(dish) ?? .nan),
                                 ballDiameterMm: KitSession.number(ballText) ?? .nan)
-        guard m.isValid else { formProblems = m.problems; return }
+        guard m.isValid else {
+            formProblems = m.problems
+            AppLog.info("kit", "measurements not accepted: \(m.problems.count) problem(s)")
+            return
+        }
         do {
             try s.commitMeasurements(m, date: Date())
+            AppLog.info("kit", "measurements saved")
             formProblems = []
             goToNext()
         } catch {
+            AppLog.error("kit", "could not save the measurements", error)
             formProblems = [KitSession.describe(error)]
         }
     }
@@ -410,9 +473,10 @@ final class KitSession: ObservableObject {
         notice = nil; error = nil
         let folder: URL
         do { folder = try s.beginShot(spec.id) } catch {
-            fail("Could not start the shot: \(KitSession.describe(error))")
+            fail("Could not start the shot: \(KitSession.describe(error))", error)
             return
         }
+        AppLog.info("kit", "shot \(spec.id) started (\(s.plan.progressLabel(step: spec.step))" + (hasEarlierCapture ? ", a retake" : "") + ")")
         phase = .countdown
         task = Task { [weak self] in
             await self?.run(spec, folder: folder, token: tk)
@@ -441,10 +505,11 @@ final class KitSession: ObservableObject {
         let rec: KitRecorder
         do {
             rec = try KitRecorder(folder: folder, video: true, duration: seconds, highFrameRate: spec.kind.highFrameRate, sourceFps: sourceFps,
-                                  wantsDepth: ARController.depthSupported && !isDemo, onStart: cb.started, completion: cb.done)
+                                  wantsDepth: ARController.depthSupported && !isDemo, label: "shot \(spec.id)",
+                                  onStart: cb.started, completion: cb.done)
         } catch {
             discardAttempt()
-            fail("Could not start the recording: \(KitSession.describe(error))")
+            fail("Could not start the recording: \(KitSession.describe(error))", error)
             return
         }
         recorder = rec
@@ -464,7 +529,11 @@ final class KitSession: ObservableObject {
             let since = startUptime.map { CACurrentMediaTime() - $0 } ?? 0
             secondsLeft = max(0, seconds - since)
             // no frames coming (the camera stopped): stop with what there is
-            if !stopped && CACurrentMediaTime() - t0 > seconds + 8 { stopped = true; rec.finish() }
+            if !stopped && CACurrentMediaTime() - t0 > seconds + 8 {
+                stopped = true
+                AppLog.warn("kit", "shot \(spec.id): no frames for \(Int(seconds + 8)) s, stopping with what there is")
+                rec.finish()
+            }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
@@ -491,7 +560,7 @@ final class KitSession: ObservableObject {
         controller.detachKitRecorder()
         if let e = r.error {
             discardAttempt()
-            fail("The recording failed: \(e). Retry or Skip.")
+            fail("The recording failed: \(e). " + retryHint)
             return
         }
         phase = .saving
@@ -513,15 +582,26 @@ final class KitSession: ObservableObject {
                                         reference: s.qualityReference)
             m.quality = q
             if isDemo { m.notes = "demo scene: synthetic frames, no motion samples" }
+            // a retake worse than the take on the phone is not committed: the earlier take stays
+            if let why = s.retakeLoss(spec.id, manifest: m) {
+                discardAttempt()
+                fail("Not saved: \(why). " + retryHint)
+                return
+            }
             try s.commitShot(spec.id, manifest: m, date: Date())
-            report = q
+            let seconds = String(format: "%.1f s", duration)
+            let video = r.video.map { "\($0.codec) \($0.fileBytes) bytes" } ?? "no video"
+            AppLog.info("kit", "shot \(spec.id) committed: \(r.frames) frames, \(seconds), \(video), depth \(r.depthFrames), "
+                        + "motion \(r.motionSamples), check \(q.verdict.rawValue)")
+            self.report = q
+            hasEarlierCapture = true
             heightAsked = spec.asksHeight
             heightText = ""
             heightPlaceholder = spec.nominalHeightInches.map { "about " + KitSession.fmt($0) } ?? "inches"
             phase = .review
         } catch {
             discardAttempt()
-            fail("Could not save the shot: \(KitSession.describe(error)). Retry or Skip.")
+            fail("Could not save the shot: \(KitSession.describe(error)). " + retryHint, error)
         }
     }
 
@@ -536,10 +616,10 @@ final class KitSession: ObservableObject {
         let rec: KitRecorder
         do {
             rec = try KitRecorder(folder: folder, video: false, duration: 0, highFrameRate: false, sourceFps: 100, wantsDepth: false,
-                                  onStart: cb.started, completion: cb.flatDone)
+                                  label: "shot \(spec.id)", onStart: cb.started, completion: cb.flatDone)
         } catch {
             discardAttempt()
-            fail("Could not start the reading: \(KitSession.describe(error))")
+            fail("Could not start the reading: \(KitSession.describe(error))", error)
             return
         }
         recorder = rec
@@ -568,6 +648,8 @@ final class KitSession: ObservableObject {
             if snap.phase != lastPhase {
                 if snap.phase == .waitingForLift { feedback.play(.turn) }
                 if snap.phase == .done { feedback.play(.done) }
+                let after = String(format: "%.1f s", CACurrentMediaTime() - start)
+                AppLog.info("kit", "shot \(spec.id): \(lastPhase.rawValue) -> \(snap.phase.rawValue) after \(after), \(snap.samples) samples")
                 lastPhase = snap.phase
             }
             if snap.phase == .done { break }
@@ -576,13 +658,20 @@ final class KitSession: ObservableObject {
         guard tk == token else { return }
         demoFeed?.stop(); demoFeed = nil
         route.clear()
-        flatResult = fr.snapshot().result ?? fr.finish()
+        let result = fr.snapshot().result ?? fr.finish()
+        flatResult = result
+        if !result.isUsable {
+            AppLog.warn("kit", "shot \(spec.id): no usable true tilt (\(result.method.rawValue)): " + (result.reasons.first ?? "no reason given"))
+        }
         phase = .saving
         rec.finish()
     }
 
     /// Stop the flat-phone readings now (the result from what was read so far).
-    func stopFlat() { runner?.finish() }
+    func stopFlat() {
+        AppLog.info("kit", "flat-phone readings stopped by hand")
+        runner?.finish()
+    }
 
     /// motion.jsonl is closed: commit the flat-phone shot with its result and check.
     fileprivate func flatRecordingDone(_ r: KitRecorder.Result, token tk: Int) {
@@ -591,7 +680,7 @@ final class KitSession: ObservableObject {
         runner = nil
         if let e = r.error {
             discardAttempt()
-            fail("The reading failed: \(e). Retry or Skip.")
+            fail("The reading failed: \(e). " + retryHint)
             return
         }
         let end = flat?.result?.readingB?.end ?? flat?.result?.readingA?.end ?? CACurrentMediaTime()
@@ -605,13 +694,23 @@ final class KitSession: ObservableObject {
             let q = KitQuality.evaluate(shot: spec, flat: result)
             m.quality = q
             if isDemo { m.notes = "demo scene: synthetic motion with a 1.5 degree camera bump" }
+            // a failed reading never replaces a usable one: the earlier take and its true tilt stay
+            if let why = s.retakeLoss(spec.id, manifest: m) {
+                discardAttempt()
+                fail("Not saved: \(why). " + retryHint)
+                return
+            }
             try s.commitShot(spec.id, manifest: m, date: Date())
+            let tilt = result.tiltDegrees.map { String(format: "%.2f deg", $0) } ?? "none"
+            AppLog.info("kit", "shot \(spec.id) committed: true tilt \(tilt) (\(result.method.rawValue)), \(r.motionSamples) motion samples, "
+                        + "check \(q.verdict.rawValue)")
             trueTilt = result
-            report = q
+            self.report = q
+            hasEarlierCapture = true
             phase = .review
         } catch {
             discardAttempt()
-            fail("Could not save the shot: \(KitSession.describe(error)). Retry or Skip.")
+            fail("Could not save the shot: \(KitSession.describe(error)). " + retryHint, error)
         }
     }
 
@@ -625,9 +724,11 @@ final class KitSession: ObservableObject {
         }
         do {
             try s.setHeight(spec.id, inches: h, date: Date())
+            AppLog.info("kit", "shot \(spec.id): height saved")
             heightAsked = false
             heightNote = "Height saved: \(KitSession.fmt(h)) in."
         } catch {
+            AppLog.error("kit", "shot \(spec.id): could not save the height", error)
             heightNote = "Could not save the height: \(KitSession.describe(error))"
         }
     }
@@ -639,9 +740,11 @@ final class KitSession: ObservableObject {
 
     // MARK: cancelling
 
-    /// Throw away a shot in progress (it stays pending; an earlier capture of it stays).
-    private func cancelShot(notice text: String?) {
+    /// Throw away a shot in progress (it stays pending; an earlier capture of it stays, and so does every other shot).
+    private func cancelShot(notice text: String?, reason: String) {
         guard phase == .countdown || phase == .recording || phase == .flat || phase == .saving else { return }
+        AppLog.info("kit", "shot \(shot?.id ?? "?") cancelled during \(phase) (\(reason)): this attempt is thrown away"
+                    + (hasEarlierCapture ? ", the earlier take stays" : ", the shot stays pending"))
         token += 1
         task?.cancel(); task = nil
         controller.detachKitRecorder()
@@ -658,12 +761,30 @@ final class KitSession: ObservableObject {
 
     private func discardAttempt() {
         guard let s = store, let spec = shot, !spec.isForm else { return }
-        try? s.discardAttempt(spec.id)
+        do { try s.discardAttempt(spec.id) } catch {
+            // the next Start (or the next load) removes it; nothing committed is touched
+            AppLog.warn("kit", "shot \(spec.id): could not remove the unfinished attempt", error)
+        }
     }
 
-    private func fail(_ message: String) {
+    /// A shot failed: its attempt is already thrown away (an earlier take of it stays).
+    private func fail(_ message: String, _ cause: Error? = nil) {
         error = message
         phase = .failed
+        if let s = store, let spec = shot { hasEarlierCapture = s.record(spec.id)?.status == .captured }
+        AppLog.error("kit", "shot \(shot?.id ?? "?"): " + message + (cause.map { " [" + DevLog.describe($0) + "]" } ?? ""))
+    }
+
+    /// What a failed shot's message suggests: with an earlier take on the phone, keeping it.
+    private var retryHint: String {
+        guard let s = store, let spec = shot, s.record(spec.id)?.status == .captured else { return "Retry or Skip." }
+        return "Retry, or Keep earlier to keep the take you have."
+    }
+
+    /// An error on the start or finish screen (shown, and logged with its cause).
+    private func showError(_ message: String, _ cause: Error?) {
+        error = message
+        AppLog.error("kit", message + (cause.map { " [" + DevLog.describe($0) + "]" } ?? ""))
     }
 
     // MARK: finish
@@ -672,8 +793,10 @@ final class KitSession: ObservableObject {
         guard let s = store else { return }
         screen = .finish
         summary = s.summary()
+        AppLog.info("kit", "end screen for \(s.kitId): " + (summary?.headline ?? ""))
         finished = s.isFinished
         confirmingDelete = false
+        bundling = bundlesInFlight.contains(s.kitId)
     }
 
     var hasPendingShots: Bool { (summary?.pending ?? 0) > 0 }
@@ -682,13 +805,20 @@ final class KitSession: ObservableObject {
     /// Documents/Kits/<kitId>/, JSON, JSONL and depth deflated with Apple's Compression framework.
     func makeBundle() {
         guard let s = store, !bundling, let outRoot = KitSession.outboxRoot else { return }
+        guard !bundlesInFlight.contains(s.kitId) else {
+            // the first build is still running (Quit and reopened meanwhile): it reports here when done
+            AppLog.info("kit", "the bundle for \(s.kitId) is still being made")
+            bundling = true
+            return
+        }
         error = nil
         if !s.isFinished {
             do { try s.finish(date: Date()) } catch {
-                self.error = "Could not finish the kit: \(KitSession.describe(error))"
+                showError("Could not finish the kit: \(KitSession.describe(error))", error)
                 return
             }
         }
+        AppLog.info("kit", "making the bundle for \(s.kitId) (" + String(format: "%.1f MB", Double(s.bytesOnDisk()) / 1e6) + ")")
         finished = true
         summary = s.summary()
         bundling = true
@@ -696,30 +826,43 @@ final class KitSession: ObservableObject {
         bundleURLs = []
         let kitFolder = s.folder, outbox = outRoot.appendingPathComponent(s.kitId, isDirectory: true)
         let done = KitSession.bundleCallback(self, kitId: s.kitId)
+        bundlesInFlight.insert(s.kitId)
         DispatchQueue.global(qos: .userInitiated).async {
             done(Result<KitBundleResult, Error>(catching: { try KitBundle.build(kitFolder: kitFolder, outbox: outbox, deflate: KitDeflate.raw) }))
         }
     }
 
     fileprivate func bundleDone(_ r: Result<KitBundleResult, Error>, kitId: String) {
+        bundlesInFlight.remove(kitId)
+        guard store?.kitId == kitId else {
+            // the kit was closed meanwhile: its parts are on the phone (or the failure is in the log)
+            switch r {
+            case .success(let b): AppLog.info("kit", "bundle made for \(kitId) after it was closed: \(b.parts.count) part(s), \(b.totalBytes) bytes")
+            case .failure(let e): AppLog.error("kit", "the bundle for \(kitId) failed after it was closed", e)
+            }
+            return
+        }
         bundling = false
-        guard store?.kitId == kitId else { return }
         switch r {
         case .success(let b):
             bundleURLs = b.urls
             let n = b.parts.count
+            let partSizes: [String] = b.parts.map { p in "part \(p.index): \(p.bytes)" + (p.oversized ? " oversized" : "") }
+            AppLog.info("kit", "bundle made for \(kitId): \(n) part(s), \(b.totalBytes) bytes (\(partSizes.joined(separator: ", "))), "
+                        + "\(b.deflated.count) files deflated")
             var text = "\(n) part\(n == 1 ? "" : "s"), " + String(format: "%.1f MB", Double(b.totalBytes) / 1_000_000)
                 + " (\(b.totalBytes) bytes), in Files: On My iPhone > Slab Bounce > Kits > \(kitId)."
             if !b.oversized.isEmpty { text += " \(b.oversized.count) file(s) were larger than a part on their own." }
             bundleText = text
         case .failure(let e):
-            error = "Could not make the bundle: \(KitSession.describe(e))"
+            showError("Could not make the bundle: \(KitSession.describe(e)). Tap Make bundle to try again.", e)
         }
     }
 
     /// Share kit: every part at once (AirDrop, Save to Files, ...).
     func shareKit() {
         guard !bundleURLs.isEmpty else { return }
+        AppLog.info("kit", "share sheet opened with \(bundleURLs.count) part(s)")
         share = KitShareItem(urls: bundleURLs)
     }
 
@@ -732,10 +875,11 @@ final class KitSession: ObservableObject {
         guard let s = store else { return }
         do {
             try s.delete()
+            AppLog.info("kit", "deleted \(s.kitId)")
             KitSession.removeOutbox(kitId: s.kitId)
             close()
         } catch {
-            self.error = "Could not delete the kit: \(KitSession.describe(error))"
+            showError("Could not delete the kit: \(KitSession.describe(error))", error)
         }
     }
 
@@ -762,15 +906,35 @@ final class KitSession: ObservableObject {
     }
 
     nonisolated static func removeOutbox(kitId: String) {
-        guard let out = outboxRoot?.appendingPathComponent(kitId, isDirectory: true) else { return }
-        try? FileManager.default.removeItem(at: out)
+        guard let out = outboxRoot?.appendingPathComponent(kitId, isDirectory: true),
+              FileManager.default.fileExists(atPath: out.path) else { return }
+        do { try FileManager.default.removeItem(at: out) } catch {
+            AppLog.error("kit", "could not delete the bundle parts of \(kitId)", error)
+        }
     }
 
     nonisolated static func excludeFromBackup(_ folder: URL) {
         var url = folder
         var v = URLResourceValues()
         v.isExcludedFromBackup = true
-        try? url.setResourceValues(v)
+        do { try url.setResourceValues(v) } catch { AppLog.warn("kit", "could not exclude the kits from backup", error) }
+    }
+
+    /// What `KitStore.load` repaired after an earlier run stopped mid-step (logged; nothing is shown).
+    nonisolated static func logLoad(_ s: KitStore) {
+        AppLog.info("kit", "loaded \(s.kitId): \(progressWords(s.progress))")
+        if !s.discardedOnLoad.isEmpty {
+            AppLog.warn("kit", "unfinished attempts thrown away on load (the app stopped mid-shot): " + s.discardedOnLoad.joined(separator: ", "))
+        }
+        if !s.repairedOnLoad.isEmpty {
+            AppLog.warn("kit", "records rebuilt from shot.json on load (the app stopped mid-commit): " + s.repairedOnLoad.joined(separator: ", "))
+        }
+        if s.unsavedRepairOnLoad { AppLog.warn("kit", "the repaired kit.json could not be saved yet (out of space?); the next step saves it") }
+    }
+
+    /// "Step 4 of 12, 4 of 28 done (4 captured, 0 skipped), next p1-arc"
+    nonisolated static func progressWords(_ p: KitProgress) -> String {
+        "\(p.label), \(p.done) of \(p.total) done (\(p.captured) captured, \(p.skipped) skipped)" + (p.nextShotId.map { ", next \($0)" } ?? "")
     }
 
     /// A number typed by the owner ("7", "7.25", "7,25").

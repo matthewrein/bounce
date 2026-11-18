@@ -16,6 +16,11 @@ import Foundation
 // between, `load` finishes the job. A commit whose files are in place counts: a shot folder whose shot.json disagrees
 // with kit.json (another attempt, or a record not marked captured) is the newer truth, and its record is rebuilt from
 // it. A skip that kit.json does not know of did not happen: its trash goes back into place.
+//
+// kit.json and shot.json are written all or nothing (`KitFileOps.writeAtomically`: a hidden temporary file, flushed,
+// then renamed over the old one), so a kill or a full disk mid-write leaves the old file whole; `load` removes the
+// temporary files. Every file operation goes through the store's `ops`, so tests can fail any of them or look at the
+// disk just before each one.
 
 /// Errors from the kit store. IO errors from Foundation are passed through as they are.
 public enum KitStoreError: Error, Equatable, CustomStringConvertible {
@@ -127,12 +132,17 @@ public final class KitStore {
     /// shots whose kit.json record was rebuilt from their shot.json when the kit was loaded (the app died after moving
     /// a capture into place, or after writing an entered height, but before kit.json was saved)
     public private(set) var repairedOnLoad: [String] = []
+    /// `load` repaired kit.json in memory but could not save it (a full disk). The kit is usable; the next change saves
+    /// everything, and until then loading it again repairs it the same way.
+    public private(set) var unsavedRepairOnLoad = false
+    /// the file operations (the real file system unless a test swaps them)
+    public let ops: KitFileOps
 
     public var kitId: String { manifest.kitId }
     public var isFinished: Bool { manifest.isFinished }
 
-    init(folder: URL, plan: KitPlan, manifest: KitManifest) {
-        self.folder = folder; self.plan = plan; self.manifest = manifest
+    init(folder: URL, plan: KitPlan, manifest: KitManifest, ops: KitFileOps = .standard) {
+        self.folder = folder; self.plan = plan; self.manifest = manifest; self.ops = ops
     }
 
     // MARK: create, load, list
@@ -140,19 +150,24 @@ public final class KitStore {
     /// Start a new kit in a new folder under `root` (created if needed), named after `date` ("slab-kit-...", with
     /// "-2", "-3" appended if that name is taken). Measurements are usually the app's settings until step 1 commits.
     public static func create(root: URL, plan: KitPlan = .standard, device: KitDevice, measurements: KitMeasurements,
-                              build: String, date: Date) throws -> KitStore {
+                              build: String, date: Date, ops: KitFileOps = .standard) throws -> KitStore {
         let fm = FileManager.default
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try ops.makeFolder(root)
         let base = KitTime.kitId(for: date)
         var id = base, n = 1
         while fm.fileExists(atPath: root.appendingPathComponent(id).path) { n += 1; id = "\(base)-\(n)" }
         let folder = root.appendingPathComponent(id)
-        try fm.createDirectory(at: folder.appendingPathComponent(shotsFolder), withIntermediateDirectories: true)
         let records = plan.shots.map { KitShotRecord(id: $0.id, step: $0.step, optional: $0.optional) }
         let m = KitManifest(kitId: id, planId: plan.id, timeScale: plan.timeScale == 1 ? nil : plan.timeScale, build: build,
                             createdAt: KitTime.iso(date), device: device, measurements: measurements, shots: records)
-        let store = KitStore(folder: folder, plan: plan, manifest: m)
-        do { try store.save() } catch { try? fm.removeItem(at: folder); throw error }
+        let store = KitStore(folder: folder, plan: plan, manifest: m, ops: ops)
+        do {
+            try ops.makeFolder(folder.appendingPathComponent(shotsFolder))
+            try store.save()
+        } catch {
+            if fm.fileExists(atPath: folder.path) { try? ops.remove(folder) }
+            throw error
+        }
         return store
     }
 
@@ -169,13 +184,17 @@ public final class KitStore {
     /// Open a kit. Cleans up after a crash: unfinished attempt folders are removed (the shot stays as it was), an
     /// interrupted commit or skip is finished, a shot folder whose shot.json disagrees with kit.json has its record
     /// rebuilt from that shot.json (`repairedOnLoad`), a shot marked captured whose files are gone becomes pending again,
-    /// and records missing for the plan's shots are added.
-    public static func load(folder: URL) throws -> KitStore {
+    /// records missing for the plan's shots are added, and temporary files of interrupted writes are removed. Removing
+    /// leftovers is best effort (one that will not go does not stop the kit from opening; bundles never include them);
+    /// moving a capture back into place is not. If the repaired kit.json cannot be saved (a full disk), the kit still
+    /// opens (`unsavedRepairOnLoad`).
+    public static func load(folder: URL, ops: KitFileOps = .standard) throws -> KitStore {
         var m = try readManifest(folder)
         guard let plan = KitPlan.named(m.planId, timeScale: m.timeScale ?? 1) else { throw KitStoreError.unsupported("plan \(m.planId)") }
         let fm = FileManager.default
         let shots = folder.appendingPathComponent(shotsFolder)
-        try fm.createDirectory(at: shots, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: shots.path) { try ops.makeFolder(shots) }
+        ops.removeLeftoverTemps(in: folder)
         var changed = false, discarded: [String] = []
 
         // records in plan order, one per plan shot (unknown ones kept at the end)
@@ -193,36 +212,42 @@ public final class KitStore {
         for name in names where name.hasSuffix(oldSuffix) {
             let id = String(name.dropLast(oldSuffix.count)), old = shots.appendingPathComponent(name), final = shots.appendingPathComponent(id)
             if fm.fileExists(atPath: final.appendingPathComponent(shotManifestFile).path) {
-                try fm.removeItem(at: old)
+                try? ops.remove(old)
             } else {
-                if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
-                try fm.moveItem(at: old, to: final)
+                if fm.fileExists(atPath: final.path) { try ops.remove(final) }
+                try ops.move(old, final)
             }
         }
         for name in names where name.hasSuffix(attemptSuffix) {
-            try fm.removeItem(at: shots.appendingPathComponent(name))
+            try? ops.remove(shots.appendingPathComponent(name))
             discarded.append(String(name.dropLast(attemptSuffix.count)))
         }
         for name in names where name.hasSuffix(trashSuffix) {
             let id = String(name.dropLast(trashSuffix.count)), trash = shots.appendingPathComponent(name), final = shots.appendingPathComponent(id)
             if byId[id]?.status == .captured, !fm.fileExists(atPath: final.path),
                fm.fileExists(atPath: trash.appendingPathComponent(shotManifestFile).path) {
-                try fm.moveItem(at: trash, to: final) // the skip (or restart) was never saved: it did not happen
+                try ops.move(trash, final) // the skip (or restart) was never saved: it did not happen
             } else {
-                try fm.removeItem(at: trash)
+                try? ops.remove(trash)
             }
         }
         for name in (try? fm.contentsOfDirectory(atPath: shots.path)) ?? [] {
             let u = shots.appendingPathComponent(name)
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue,
-               !fm.fileExists(atPath: u.appendingPathComponent(shotManifestFile).path) {
-                try fm.removeItem(at: u)
+            guard fm.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
+            if !isDir.boolValue {
+                if KitFileOps.isLeftoverTemp(name) { try? ops.remove(u) }
+            } else if name.hasSuffix(attemptSuffix) || name.hasSuffix(oldSuffix) || name.hasSuffix(trashSuffix) {
+                continue // one that would not go (best effort above)
+            } else if !fm.fileExists(atPath: u.appendingPathComponent(shotManifestFile).path) {
+                try? ops.remove(u)
                 discarded.append(name)
+            } else {
+                ops.removeLeftoverTemps(in: u) // an entered height whose shot.json write was cut short
             }
         }
         m.shots = records
-        let store = KitStore(folder: folder, plan: plan, manifest: m)
+        let store = KitStore(folder: folder, plan: plan, manifest: m, ops: ops)
 
         // a shot folder that disagrees with its record is the newer truth
         var repaired: [String] = []
@@ -247,7 +272,7 @@ public final class KitStore {
         store.repairedOnLoad = repaired
         if changed || !discarded.isEmpty || !repaired.isEmpty {
             store.refreshPositionIds()
-            try store.save()
+            do { try store.save() } catch { store.unsavedRepairOnLoad = true }
         }
         return store
     }
@@ -266,6 +291,21 @@ public final class KitStore {
                                   loadable: KitPlan.named(m.planId, timeScale: m.timeScale ?? 1) != nil))
         }
         return out.sorted { ($0.createdAt, $0.kitId) > ($1.createdAt, $1.kitId) }
+    }
+
+    /// Folders under `root` that `list` leaves out because their kit.json cannot be read, with the reason, so the app
+    /// can log why a kit is missing from Resume. Hidden names and plain files are not kits and are not listed.
+    public static func unreadable(root: URL) -> [(name: String, error: Error)] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+        var out: [(name: String, error: Error)] = []
+        for name in names.sorted() where !name.hasPrefix(".") {
+            let f = root.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: f.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            do { _ = try readManifest(f) } catch { out.append((name: name, error: error)) }
+        }
+        return out
     }
 
     /// The newest kit that is not finished and that this build can open (the app offers Resume for it).
@@ -300,8 +340,10 @@ public final class KitStore {
         if let i = manifest.shots.firstIndex(where: { $0.id == r.id }) { manifest.shots[i] = r }
     }
 
+    /// Write kit.json all or nothing. A successful save also covers a repair `load` could not save.
     func save() throws {
-        try KitJSON.encode(manifest).write(to: manifestURL, options: .atomic)
+        try ops.writeAtomically(KitJSON.encode(manifest), to: manifestURL)
+        unsavedRepairOnLoad = false
     }
 
     func touch(_ date: Date) { manifest.updatedAt = KitTime.iso(date) }
@@ -481,15 +523,42 @@ public final class KitStore {
         guard !s.isForm else { throw KitStoreError.wrongKind("\(id) is a form: use commitMeasurements") }
         let fm = FileManager.default
         let a = attemptFolder(id)
-        if fm.fileExists(atPath: a.path) { try fm.removeItem(at: a) }
-        try fm.createDirectory(at: a, withIntermediateDirectories: true)
+        if fm.fileExists(atPath: a.path) { try ops.remove(a) }
+        try ops.makeFolder(a)
         return a
     }
 
     /// Throw away the attempt being recorded (the shot stays as it was).
     public func discardAttempt(_ id: String) throws {
         let a = attemptFolder(id)
-        if FileManager.default.fileExists(atPath: a.path) { try FileManager.default.removeItem(at: a) }
+        if FileManager.default.fileExists(atPath: a.path) { try ops.remove(a) }
+    }
+
+    /// Would committing `m` as a retake of shot `id` lose a better take already on the phone? Then the reason in words
+    /// (the app does not commit it: it throws the attempt away and offers Retry or Keep earlier); nil for a first capture,
+    /// or a retake at least as good. A retake would lose when its flat-phone reading has no usable true tilt while the
+    /// earlier take's slab position has one (committing would clear the true tilt every shot of that position is scored
+    /// against), or when its check is poor while the earlier take's was not.
+    public func retakeLoss(_ id: String, manifest m: KitShotManifest) -> String? {
+        guard let s = plan.shot(id), !s.isForm, let r = record(id), r.status == .captured else { return nil }
+        if s.startsPosition != nil, let earlier = position(forShot: id)?.groundTruth, earlier.isUsable, !(m.flat?.isUsable ?? false) {
+            let why = (m.flat?.reasons.first).map { " (" + KitStore.trimmedReason($0) + ")" } ?? ""
+            let tilt = earlier.tiltDegrees.map { String(format: " of %.2f°", $0) } ?? ""
+            return "the new reading has no usable true tilt\(why), and the earlier one has its true tilt\(tilt)"
+        }
+        if let new = m.quality?.verdict, new == .poor, let old = r.verdict, old < .poor {
+            let check = m.quality?.checks.first(where: { !$0.passed && $0.severity == .poor })
+            let why = check.map { " (" + KitStore.trimmedReason($0.message) + ")" } ?? ""
+            return "the new take's check is poor\(why), and the earlier take's is \(old.rawValue)"
+        }
+        return nil
+    }
+
+    /// A reason inside a sentence: without its final full stop.
+    static func trimmedReason(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        while t.hasSuffix(".") { t.removeLast() }
+        return t
     }
 
     /// Commit the attempt: writes shot.json (with the store's ids, attempt number, position and true tilt filled in),
@@ -515,13 +584,13 @@ public final class KitStore {
         m.positionId = pos?.id; m.trueTilt = pos?.groundTruth
         var hadOld = false
         do {
-            try KitJSON.encode(m).write(to: attempt.appendingPathComponent(KitStore.shotManifestFile), options: .atomic)
+            try ops.writeAtomically(KitJSON.encode(m), to: attempt.appendingPathComponent(KitStore.shotManifestFile))
             // swap in: keep the old capture aside until kit.json says the new one is in
-            if fm.fileExists(atPath: old.path) { try fm.removeItem(at: old) }
+            if fm.fileExists(atPath: old.path) { try ops.remove(old) }
             hadOld = fm.fileExists(atPath: final.path)
-            if hadOld { try fm.moveItem(at: final, to: old) }
-            do { try fm.moveItem(at: attempt, to: final) } catch {
-                if hadOld { try? fm.moveItem(at: old, to: final) }
+            if hadOld { try ops.move(final, old) }
+            do { try ops.move(attempt, final) } catch {
+                if hadOld { try? ops.move(old, final) }
                 throw error
             }
         } catch {
@@ -533,11 +602,11 @@ public final class KitStore {
         touch(date)
         do { try save() } catch {
             manifest = saved
-            try? fm.moveItem(at: final, to: attempt)
-            if hadOld { try? fm.moveItem(at: old, to: final) }
+            try? ops.move(final, attempt)
+            if hadOld { try? ops.move(old, final) }
             throw error
         }
-        if hadOld { try? fm.removeItem(at: old) }
+        if hadOld { try? ops.remove(old) }
         return m
     }
 
@@ -562,20 +631,18 @@ public final class KitStore {
 
     /// Rename a shot's files to shots/<id>.trash (deleted once kit.json is saved; `load` deletes any left behind).
     func moveToTrash(_ id: String) throws {
-        let fm = FileManager.default
-        if fm.fileExists(atPath: trashFolder(id).path) { try fm.removeItem(at: trashFolder(id)) }
-        try fm.moveItem(at: shotFolder(id), to: trashFolder(id))
+        if FileManager.default.fileExists(atPath: trashFolder(id).path) { try ops.remove(trashFolder(id)) }
+        try ops.move(shotFolder(id), trashFolder(id))
     }
 
     /// Save kit.json; then delete the trash. If the save fails, restore `saved` in memory and the trashed folders.
     func saveOrRestore(_ saved: KitManifest, trash: [(trash: URL, back: URL)] = []) throws {
-        let fm = FileManager.default
         do { try save() } catch {
             manifest = saved
-            for t in trash { try? fm.moveItem(at: t.trash, to: t.back) }
+            for t in trash { try? ops.move(t.trash, t.back) }
             throw error
         }
-        for t in trash { try? fm.removeItem(at: t.trash) }
+        for t in trash { try? ops.remove(t.trash) }
     }
 
     /// Skip a shot (removing a capture it had). Skipping a flat-phone shot still starts its slab position, without a true
@@ -603,7 +670,7 @@ public final class KitStore {
                 }
             }
         } catch {
-            for t in trash { try? fm.moveItem(at: t.trash, to: t.back) }
+            for t in trash { try? ops.move(t.trash, t.back) }
             throw error
         }
         for x in ids {
@@ -632,8 +699,9 @@ public final class KitStore {
         var m = try KitJSON.decode(KitShotManifest.self, from: Data(contentsOf: url))
         m.enteredHeightInches = inches
         let saved = manifest
-        try KitJSON.encode(m).write(to: url, options: .atomic)
+        try ops.writeAtomically(KitJSON.encode(m), to: url)
         r.enteredHeightInches = inches
+        r.bytes = KitFiles.size(of: shotFolder(id)) // shot.json changed size (as `load` counts it when it repairs)
         setRecord(r)
         touch(date)
         try saveOrRestore(saved) // if this fails, shot.json holds the height and `load` copies it into kit.json
