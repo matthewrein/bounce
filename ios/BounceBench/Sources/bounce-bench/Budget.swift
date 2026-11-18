@@ -41,6 +41,10 @@ struct Scenario: Codable {
     /// the detector runs' kinds in the order they came in the app loop (without the ball): the model takes them in turn
     /// (empty: searches find the slab while searching, re-checks follow it while locked)
     var detectionCycle: [FrameKind] = []
+    /// for each run of the cycle, whether the ball finder ran on the same frame in the app loop: the model follows it
+    /// (a run without it defers a ball scan that falls due to the next frame), so the share of re-checks that carry a ball
+    /// scan is the measured one, not one fixed by the two cadences' starting phases (nil: the model's own cadence alone)
+    var detectionBall: [Bool]? = nil
     /// the session recorder keeps the image this often (s; RecordingCadence.imageInterval): a frame with nothing else
     /// converting it pays the conversion (`plainImage` - `plain`); nil: not recording
     var imageInterval: Double? = nil
@@ -117,6 +121,9 @@ struct CadenceResult: Codable {
     var maxFramesHeld: Int
     var meanFramesHeld: Double
     var pipeline: Pipeline? = nil
+    /// through the hand-off: frames a second that reached the delegate only as its previous call ended (waited in its
+    /// queue: the delegate's own work, the kit's scale, outran the camera), as the app's diagnostics count them
+    var framesQueuedOnDelegate: Double? = nil
 }
 
 enum CadenceSim {
@@ -142,7 +149,7 @@ enum CadenceSim {
         var lastCheck = -Double.infinity, lastRun = -Double.infinity, lastBall = -Double.infinity, lastImage = -Double.infinity
         var processed = 0, skipped = 0, searches = 0, rechecks = 0, balls = 0, cycle = 0
         var busy = 0.0, worst = 0.0, worstKind = FrameKind.plain, lastProcessed: Double? = nil, longestGap = 0.0, waits = 0.0
-        var maxHeld = 0, sumHeld = 0
+        var maxHeld = 0, sumHeld = 0, queuedOnDelegate = 0
         let n = Int(seconds * FrameBudget.fps)
         let defaultDetection: FrameKind = sc.state == .searching ? (sc.costs[.searchRefine] != nil ? .searchRefine : .search) : .recheck
         func kitMs(_ i: Int) -> Double { sc.kitEvery > 0 && i % sc.kitEvery == 0 ? sc.kitCost : 0 }
@@ -152,13 +159,20 @@ enum CadenceSim {
             let searchInterval = c >= idleSearchFrom ? max(settings.searchInterval, settings.idleSearchInterval) : settings.searchInterval
             let detection = c - lastRun >= settings.minDetectionGap
                 && c - lastCheck >= (sc.state == .searching ? searchInterval : settings.recheckInterval)
+            var measuredBall: Bool? = nil
             if detection {
                 lastCheck = c; lastRun = c
-                kind = sc.detectionCycle.isEmpty ? defaultDetection : sc.detectionCycle[cycle % sc.detectionCycle.count]
+                if !sc.detectionCycle.isEmpty {
+                    let j = cycle % sc.detectionCycle.count
+                    kind = sc.detectionCycle[j]
+                    if let fl = sc.detectionBall, fl.count == sc.detectionCycle.count { measuredBall = fl[j] }
+                } else {
+                    kind = defaultDetection
+                }
                 cycle += 1
             }
             let ballInterval = c >= idleBallFrom ? max(settings.ballInterval, settings.idleBallInterval) : settings.ballInterval
-            if sc.state == .locked && sc.ballScans && c - lastBall >= ballInterval {
+            if sc.state == .locked && sc.ballScans && (measuredBall ?? (c - lastBall >= ballInterval)) {
                 lastBall = c
                 kind = kind.withBall
             }
@@ -241,8 +255,10 @@ enum CadenceSim {
                 let ms = (sc.skipCost + kitMs(i)) * scale
                 deliveryFree = delivered + ms / 1000
                 deliveryEnds.append(deliveryFree)
+                h.delegateReturned(entered: delivered, now: deliveryFree)
             }
-            skipped = h.report.total.framesDroppedBusy
+            skipped = h.report.total.framesDroppedBusy ?? 0
+            queuedOnDelegate = h.report.total.framesQueuedOnDelegate ?? 0
         }
         let secs = Double(n) * dt
         return CadenceResult(scenario: sc.name, state: sc.state, timeScale: scale, framesProcessed: Double(processed) / secs,
@@ -250,7 +266,8 @@ enum CadenceSim {
                              ballScans: Double(balls) / secs, loadMsPerSecond: busy / secs, loadPercent: busy / secs / 10,
                              worstFrameMs: worst, worstFrameKind: worstKind, longestGapMs: longestGap,
                              meanQueueWaitMs: processed > 0 ? waits / Double(processed) : 0,
-                             maxFramesHeld: maxHeld, meanFramesHeld: Double(sumHeld) / Double(max(1, n)), pipeline: pipeline)
+                             maxFramesHeld: maxHeld, meanFramesHeld: Double(sumHeld) / Double(max(1, n)), pipeline: pipeline,
+                             framesQueuedOnDelegate: pipeline == .handoff ? Double(queuedOnDelegate) / secs : nil)
     }
 }
 
@@ -305,6 +322,8 @@ struct BudgetModel: Codable {
     var hostToMac: Double
     var hostToMacBasis: String
     var scenarios: [Scenario]
+    /// the same scenarios with each kind's p95 cost (nil in reports from before it)
+    var p95Scenarios: [Scenario]? = nil
     /// at this host's speed (scaled to the CI Mac), p50 and p95 costs
     var onMac: [CadenceResult]
     var onMacP95: [CadenceResult]
@@ -336,16 +355,20 @@ extension BudgetModel {
             var (c, n) = costs(r)
             var name = "\(r.phase), \(r.scene)"
             var cycle = r.detectionCycle
+            var balls = r.detectionBall.flatMap { $0.count == cycle.count ? $0 : nil }
             switch r.state {
             case .searching:
                 c = c.filter { $0.key.isSearch || $0.key == .plain }
                 if r.phase == "acquiring" { name = "searching/confirming, \(r.scene)" }
+                balls = nil
             case .locked:
                 c = c.filter { !$0.key.isSearch }
+                if let b = balls { balls = zip(cycle, b).filter { $0.0.isRecheck }.map { $0.1 } }
                 cycle = cycle.filter { $0.isRecheck }
             }
             n = n.filter { c[$0.key] != nil }
             var sc = Scenario(name: name, state: r.state, costs: c, counts: n, detectionCycle: cycle)
+            sc.detectionBall = balls
             sc.ballScans = r.kinds.contains { $0.kind.isBall }
             sc.idleSearches = r.state == .searching && r.phase == "searching" && !r.kinds.contains { $0.kind == .searchRefine }
             sc.idleBall = r.state == .locked && (r.ballShownFrames.map { $0 == 0 } ?? false)
@@ -379,7 +402,7 @@ extension BudgetModel {
                                  throttled: s50.map { CadenceSim.run($0, scale: f * Chip.thermal) },
                                  contended: s50.map { CadenceSim.run($0, scale: f * Chip.contended) })
         }
-        return BudgetModel(hostToMac: hostToMac, hostToMacBasis: basis, scenarios: s50, onMac: mac, onMacP95: mac95, onMacP95Queue: mac95q,
-                           phones: phones)
+        return BudgetModel(hostToMac: hostToMac, hostToMacBasis: basis, scenarios: s50, p95Scenarios: s95, onMac: mac, onMacP95: mac95,
+                           onMacP95Queue: mac95q, phones: phones)
     }
 }

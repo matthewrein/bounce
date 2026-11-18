@@ -92,8 +92,8 @@ final class FrameHandoffTests: XCTestCase {
         let r = p.handoff.report.total
         XCTAssertEqual(r.framesReceived, n)
         XCTAssertEqual(r.framesProcessed, p.processedCount)
-        XCTAssertEqual(r.framesProcessed + r.framesDroppedBusy, n, "each frame processed or dropped")
-        XCTAssertGreaterThan(r.framesDroppedBusy, 0, "the slow frames made the frames behind them drop")
+        XCTAssertEqual(r.framesProcessed + (r.framesDroppedBusy ?? 0), n, "each frame processed or dropped")
+        XCTAssertGreaterThan(r.framesDroppedBusy ?? 0, 0, "the slow frames made the frames behind them drop")
         XCTAssertLessThanOrEqual(r.maxFramesHeld ?? 99, 2)
         XCTAssertLessThanOrEqual(p.maxHeldSeen, 2)
         XCTAssertLessThanOrEqual(Frame.maxLive, 4, "two held, plus the one being handed over and the one whose block is ending")
@@ -172,7 +172,7 @@ final class FrameHandoffTests: XCTestCase {
         }
         let r = h.report.total
         XCTAssertEqual(r.maxFramesHeld, 2)
-        XCTAssertGreaterThan(r.framesDroppedBusy, n / 2, "the frames during the searches are dropped, not held")
+        XCTAssertGreaterThan(r.framesDroppedBusy ?? 0, n / 2, "the frames during the searches are dropped, not held")
         XCTAssertEqual(r.framesProcessed, processedCount)
         // a frame taken after a search waited at most about a frame interval (it is the latest)
         XCTAssertLessThanOrEqual(r.handoffWaitMs?.max ?? 99, dt * 1000 + 1)
@@ -223,25 +223,107 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(FramePacingReport.self, from: data), rep)
     }
 
-    /// The demo's frames go through the pacer behind the hand-off's lock (the app's calls, as written there).
-    func testTheDemoUsesThePacerBehindTheLock() {
-        let h = FrameHandoff<Int>()
-        var p = FramePacer()
-        p.rule.countsCameraGaps = false
-        h.resetPacer(p)
+    /// The demo keeps a pacer of its own (processing-queue state in the app), so a demo tick still queued when the
+    /// camera starts cannot write the demo's clock into the camera's fresh numbers. The shape of the app's calls, then
+    /// what a stray tick did to the camera's numbers when the two shared the hand-off's pacer.
+    func testTheDemosOwnPacerKeepsTheCamerasNumbersClean() {
+        var demo = FramePacer()
+        demo.rule.countsCameraGaps = false
         let interval = 0.08
-        h.withPacer { $0.expectPause(at: 0) }
-        for i in 0..<20 {
+        demo.expectPause(at: 0)
+        for i in 0..<250 {
             let t = Double(i) * interval
-            guard h.withPacer({ $0.frameArrived(captureTime: t, now: t, nominalInterval: interval) }) == .process else { continue }
-            let secs = 0.01
-            h.withPacer { $0.frameProcessed(captureTime: t, seconds: secs, search: i % 2 == 0, recheck: false, ball: false) }
+            guard demo.frameArrived(captureTime: t, now: t, nominalInterval: interval) == .process else { continue }
+            demo.frameProcessed(captureTime: t, seconds: 0.01, search: i % 2 == 0, recheck: false, ball: false)
         }
-        let r = h.report.total
-        XCTAssertEqual(r.framesReceived, 20)
-        XCTAssertEqual(r.framesProcessed, 20)
-        XCTAssertNil(r.maxFramesHeld, "the demo's frames do not go through the slot")
-        XCTAssertFalse(h.report.rule.countsCameraGaps)
+        XCTAssertEqual(demo.report.total.framesProcessed, 250)
+        XCTAssertNil(demo.report.total.maxFramesHeld, "the demo's frames do not go through the slot")
+        XCTAssertFalse(demo.report.rule.countsCameraGaps)
+
+        /// 30 s of 60 fps camera frames at uptime 50 000 s through a freshly reset hand-off; `stray`: a demo tick that
+        /// was still queued writes into the hand-off's pacer just after the reset
+        func camera(stray: Bool) -> FramePacingReport.Window {
+            let h = FrameHandoff<Int>()
+            h.resetPacer()
+            if stray {
+                _ = h.withPacer { $0.frameArrived(captureTime: 20, now: 20, nominalInterval: interval) }
+                h.withPacer { $0.frameProcessed(captureTime: 20, seconds: 0.01, search: false, recheck: false, ball: false) }
+            }
+            let dt = 1.0 / 60
+            for i in 0..<1800 {
+                let c = 50_000 + Double(i) * dt
+                if let f = h.deliver(i, captureTime: c, now: c + 0.03, nominalInterval: dt) {
+                    _ = h.finished(captureTime: Double(f) * dt + 50_000, seconds: 0.004, now: c + 0.034, search: false, recheck: false, ball: false)
+                }
+            }
+            return h.report.total
+        }
+        let clean = camera(stray: false)
+        XCTAssertEqual(clean.seconds, 30, accuracy: 0.05)
+        XCTAssertEqual(clean.pauses, 0)
+        XCTAssertEqual(clean.processedPerSecond, 60, accuracy: 0.5)
+        let shared = camera(stray: true)
+        XCTAssertGreaterThan(shared.seconds, 1000, "why the demo must not share the camera's pacer: its clock spans both")
+        XCTAssertEqual(shared.pauses, 1)
+    }
+
+    /// A report from a build before the hand-off's numbers (n9 on: no framesDroppedBusy, maxFramesHeld, handoffWaitMs,
+    /// framesQueuedOnDelegate, delegateMs) still reads, alone and inside the diagnostics.
+    func testAFramePacingReportFromAnOlderBuildStillReads() throws {
+        let h = FrameHandoff<Int>()
+        _ = h.deliver(0, captureTime: 0, now: 0.03, nominalInterval: 1.0 / 60)
+        h.delegateReturned(entered: 0.03, now: 0.031)
+        _ = h.finished(captureTime: 0, seconds: 0.005, now: 0.035, search: false, recheck: false, ball: false)
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(h.report)) as! [String: Any]
+        for w in ["recent", "total"] {
+            var win = json[w] as! [String: Any]
+            for k in ["framesDroppedBusy", "maxFramesHeld", "handoffWaitMs", "framesQueuedOnDelegate", "delegateMs"] {
+                XCTAssertNotNil(win.removeValue(forKey: k), "\(w).\(k)")
+            }
+            json[w] = win
+        }
+        let old = try JSONDecoder().decode(FramePacingReport.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(old.total.framesDroppedBusy); XCTAssertNil(old.total.maxFramesHeld); XCTAssertNil(old.recent.delegateMs)
+        XCTAssertEqual(old.total.framesReceived, 1)
+        var rep = DiagnosticsReport(build: "n9", device: "d", system: "s", time: "t", settings: RecordingSettings(), state: "searching",
+                                    tracking: "normal", fps: 60, msProcess: 5, lens: nil, depthSupported: false, depth: nil, captureLocked: false,
+                                    slab: nil, outline: nil, sideModes: [], ball: nil, readouts: nil, counts: [:], recentEvents: [], recording: nil)
+        rep.framePacing = h.report
+        var whole = try JSONSerialization.jsonObject(with: Data(rep.json().utf8)) as! [String: Any]
+        whole["framePacing"] = json
+        let back = try DiagnosticsReport.decode(json: String(decoding: JSONSerialization.data(withJSONObject: whole), as: UTF8.self))
+        XCTAssertEqual(back.framePacing?.total.framesReceived, 1)
+        XCTAssertNil(back.framePacing?.total.framesDroppedBusy)
+    }
+
+    /// The delegate's own work is timed per call; when it outruns the camera (here 25 ms a call at 60 fps, as a capture
+    /// kit's scale might on a busy older phone), each next frame reaches the delegate only as its previous call ends: it
+    /// waited in the delegate's queue (held by the app, outside the hand-off) and is counted queued, not late from ARKit.
+    func testTheDelegatesOwnWorkIsTimedAndFramesQueuedBehindItAreCounted() {
+        func run(delegateMs: Double) -> FramePacingReport.Window {
+            let h = FrameHandoff<Int>()
+            let dt = 1.0 / 60
+            var free = -Double.infinity
+            for i in 0..<600 {
+                let c = Double(i) * dt
+                let entered = max(c + 0.03, free)
+                if let f = h.deliver(i, captureTime: c, now: entered, nominalInterval: dt) {
+                    _ = h.finished(captureTime: Double(f) * dt, seconds: 0.004, now: entered + 0.004, search: false, recheck: false, ball: false)
+                }
+                free = entered + delegateMs / 1000
+                h.delegateReturned(entered: entered, now: free)
+            }
+            return h.report.total
+        }
+        let cheap = run(delegateMs: 0.2)
+        XCTAssertEqual(cheap.framesQueuedOnDelegate, 0)
+        XCTAssertEqual(cheap.delegateMs?.p50 ?? -1, 0.2, accuracy: 0.05)
+        XCTAssertEqual(cheap.framesLateButIdle, 0)
+        let slow = run(delegateMs: 25)
+        XCTAssertEqual(slow.delegateMs?.p50 ?? -1, 25, accuracy: 0.5)
+        XCTAssertGreaterThan(slow.framesQueuedOnDelegate ?? 0, 500, "every frame after the first few waited behind the previous call")
+        XCTAssertLessThan(slow.framesLateButIdle, 10, "the queued frames are not ARKit's lateness")
+        XCTAssertLessThanOrEqual(slow.maxFramesHeld ?? 99, 2, "the hand-off itself still holds at most two")
     }
 
     struct SplitMix {

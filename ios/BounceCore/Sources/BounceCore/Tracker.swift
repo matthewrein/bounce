@@ -401,6 +401,10 @@ public struct TrackerOutput {
     /// the ball finder ran on this frame (`ball` is then its result, nil if it found none; otherwise `ball` is the last
     /// result, kept)
     public var ballSearched: Bool = false
+    /// the ball finder ran on this frame and holds something for its next scan to confirm (`BallLocating
+    /// .awaitsConfirmation`): the idle ball rate does not start (a recording keeps it, so a replay that uses the phone's
+    /// ball result follows the same rate)
+    public var ballAwaitsConfirmation: Bool = false
     /// what the slab detector's run on this frame was for (nil: it did not run; then `detections` is nil too)
     public var detectionKind: TrackerDetectionKind? = nil
     /// the full-resolution crop the tracker got for the slab's edges on this frame (`TrackerFrame.slabDetail`), if any
@@ -876,7 +880,9 @@ public final class SlabTracker {
                 ballState = (f.view.toWorld(b.center), b.circle, b.radius); bump("ballFrames"); lastBallSeen = t
             } else { ballState = nil }
             // nothing shown or about to be: the run of empty scans goes on (or starts)
-            if ballState == nil && !loc.awaitsConfirmation { emptyBallScans = emptyBallScans ?? t } else { emptyBallScans = nil }
+            let awaits = loc.awaitsConfirmation
+            out.ballAwaitsConfirmation = awaits
+            if ballState == nil && !awaits { emptyBallScans = emptyBallScans ?? t } else { emptyBallScans = nil }
         }
         // a new lock, a re-lock or a discontinuity: the ball is looked for at the usual rate again
         if events.contains(where: { $0 == "locked" || $0 == "relocked" || $0.hasPrefix("lock-unconfirmed") }) { emptyBallScans = nil }

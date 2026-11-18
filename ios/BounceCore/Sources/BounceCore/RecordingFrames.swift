@@ -96,6 +96,9 @@ public struct RecordedOutput: Codable, Equatable {
     public var detections: [DetectedOutline]?
     /// the ball finder ran on this frame (then `ball` is its result)
     public var ballSearched: Bool?
+    /// after this frame's scan the ball finder held something for its next scan to confirm (`TrackerOutput
+    /// .ballAwaitsConfirmation`; nil: no, or a recording from before it, whose settings never read it)
+    public var ballAwaitsConfirmation: Bool?
     /// the ball: world centre x, y, z (m), then its circle's x, y and radius in the ball finder's image (pixels)
     public var ball: [Double]?
     public var depthFused: Bool?
@@ -116,6 +119,7 @@ public struct RecordedOutput: Codable, Equatable {
         measurement = o.measurement?.map { [$0.x, $0.y] }
         detections = o.detections
         ballSearched = o.ballSearched ? true : nil
+        ballAwaitsConfirmation = o.ballAwaitsConfirmation ? true : nil
         ball = o.ball.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
         depthFused = o.depthFused ? true : nil
         lockUnconfirmed = o.lockUnconfirmed ? true : nil

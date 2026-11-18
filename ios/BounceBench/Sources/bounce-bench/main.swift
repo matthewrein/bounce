@@ -25,6 +25,8 @@ import Foundation
 //                         for the budget model and the iPhone estimate (default: 1 on an Apple-silicon Mac, else 1 with
 //                         a warning)
 //   --no-app-loop         skip the whole-frame runs and the budget model
+//   --no-view-searches    skip the searches on the cluttered floor seen from other sides (an accuracy check of the
+//                         app's sweep: does it still find the slab)
 //   --skip-calibration    a token calibration only (for profiling runs under valgrind, where it would take minutes)
 //   --render JSON         write the Markdown of an earlier run's JSON report (the CI Mac's, say) and stop: its budget
 //                         model made again from its whole-frame runs (with --mac-calibration: scaled to that Mac)
@@ -53,6 +55,7 @@ func has(_ flag: String) -> Bool {
 let quick = has("--quick")
 let noAppLoop = has("--no-app-loop")
 let noExtras = has("--no-extras")
+let noViewSearches = has("--no-view-searches")
 let skipCalibration = has("--skip-calibration")
 let markdownPath = take("--markdown")
 let jsonPath = take("--json")
@@ -132,6 +135,14 @@ if fixtures == nil {
 let bench = StageBench(scenes: sceneSet, quick: quick, only: only, iterations: iterations, fixtures: fixtures, log: log, probe: probe)
 bench.runAll()
 
+// the search on the cluttered floor seen from other sides: does the app's sweep still find the slab
+var viewSearches: [ViewSearch]? = nil
+if !noViewSearches && !noExtras && only == nil {
+    log("view searches (the cluttered floor from other sides):")
+    viewSearches = ViewSearches.run(quick: quick, log: log)
+    probe("after the view searches")
+}
+
 // whole frames and the budget model
 var sessions: [SessionResult] = []
 var lockTimes: [LockTimeResult] = []
@@ -144,7 +155,8 @@ if let mc = macCal, mc > 0 {
 }
 if runLoop {
     log("app loop (whole frames):")
-    let cfg = LoopConfig(quick: quick, lockedSeconds: lockedSecondsArg ?? (quick ? 3 : 30), acquisitions: quick ? 2 : 6,
+    // 12 acquisitions: about 36 searches per scene, so a search's p95 is not just its slowest run
+    let cfg = LoopConfig(quick: quick, lockedSeconds: lockedSecondsArg ?? (quick ? 3 : 30), acquisitions: quick ? 2 : 12,
                          pacedScales: [(hostToMac, "x1: the CI Mac (an A15)"), (hostToMac * 2, "x2: an A12, or a contended A15"),
                                        (hostToMac * 4, "x4: an A11 contended")],
                          pacedRuns: quick ? 1 : 3)
@@ -166,7 +178,7 @@ if !host.isAppleSiliconMac && macCal == nil {
     notes.append("The budget model and the iPhone table treat this host as if it were the CI Mac (no --mac-calibration given): only the CI Mac's report is meant to be read for them.")
 }
 let report = BenchReport(host: host, quick: quick, calibration: cal, probes: probes, stages: bench.results, sessions: sessions, lockTimes: lockTimes,
-                         budget: budget, notes: notes, seconds: Double(nowNs() &- startTime) / 1e9)
+                         budget: budget, notes: notes, seconds: Double(nowNs() &- startTime) / 1e9, viewSearches: viewSearches)
 let md = report.markdown()
 if let p = markdownPath { try md.write(toFile: p, atomically: true, encoding: .utf8) } else { print(md) }
 if let p = jsonPath { try report.json().write(to: URL(fileURLWithPath: p)) }

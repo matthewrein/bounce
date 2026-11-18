@@ -81,11 +81,11 @@ public struct RecordingSettings: Codable, Equatable {
     /// run (a discontinuity reported frame after frame, taps); a forced run waits at most this long. The scheduled
     /// intervals (0.12 s searching, 0.3 s re-checking) are longer and unaffected.
     public static let appMinDetectionGap = 0.05
-    /// The app's slab sweep grows at most this many regions per search (the finder's own cap is 48), skips starting
-    /// points inside what it already found, and refines one outline per start once (`TrackerSettings.maxSweepRegions`,
-    /// `sweepSkipsFinds`, `sweepSameOutlinePixels`): on the bench's frames the slab is always among the first 21 regions
-    /// grown, a plain floor's search at 2 ft takes a quarter of the time and a cluttered floor's two thirds.
-    public static let appMaxSweepRegions = 32
+    /// The app's slab sweep skips starting points inside what it already found, and refines one outline per start once
+    /// (`TrackerSettings.sweepSkipsFinds`, `sweepSameOutlinePixels`): the same outlines, a plain floor's search at 2 ft
+    /// in about a quarter of the time. It keeps the finder's own cap on the regions grown (48, `maxSweepRegions` unset):
+    /// on cluttered floors seen from some sides the slab is only reached at region 33-48, and a lower cap (32 was tried)
+    /// then misses it and can lock a slab-sized patch of the floor instead.
     public static let appSweepSameOutlinePixels = 1.5
     /// The app backs its searches off after this long (s) of searches from a still camera that found nothing
     /// (`TrackerSettings.idleSearchAfter`): then every 0.36 s instead of 0.12 until the camera moves, a tap, a candidate.
@@ -104,7 +104,6 @@ public struct RecordingSettings: Codable, Equatable {
         t.launchRule = launchRule
         t.searchInterval = RecordingSettings.appSearchInterval
         t.minDetectionGap = RecordingSettings.appMinDetectionGap
-        t.maxSweepRegions = RecordingSettings.appMaxSweepRegions
         t.sweepSkipsFinds = true
         t.sweepSameOutlinePixels = RecordingSettings.appSweepSameOutlinePixels
         t.idleSearchAfter = RecordingSettings.appIdleSearchAfter

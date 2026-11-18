@@ -130,6 +130,9 @@ struct SessionResult: Codable {
     var kinds: [KindSummary]
     /// the detector runs' kinds in order, without the ball (search, search + refine; re-check, missed, whole view)
     var detectionCycle: [FrameKind]
+    /// for each of those runs, whether the ball finder ran on the same frame (as the tracker's own rule had it in this
+    /// run; nil in reports from before it)
+    var detectionBall: [Bool]? = nil
     /// the capture kit recorder ran on every frame: its work per frame (ms, p50 and p95)
     var kitP50: Double?
     var kitP95: Double?
@@ -166,6 +169,7 @@ struct SessionResult: Codable {
                               detectionCycle: samples.filter { $0.kind.isDetection }.map { $0.kind.withoutBall },
                               kitP50: ks2.isEmpty ? nil : Stats(ks2).p50, kitP95: ks2.isEmpty ? nil : Stats(ks2).p95, recording: recording, note: note)
         r.ballShownFrames = samples.filter(\.ballShown).count
+        r.detectionBall = samples.filter { $0.kind.isDetection }.map { $0.kind.isBall }
         let g = samples.compactMap(\.regionsGrown)
         if !g.isEmpty { r.regionsGrownMean = Double(g.reduce(0, +)) / Double(g.count); r.regionsGrownMax = g.max() }
         return r
@@ -415,13 +419,19 @@ func runAppLoops(scenes set: SceneSet, config cfg: LoopConfig, probe: (String) -
     var lockTimes: [LockTimeResult] = []
     let crop = AppReplicas.CropVariant.app
     let L = cfg.lockedSeconds
-    func searching(_ s: BenchScene) {
-        let loop = AppLoop(still: s.ring(), crop: crop)
+    func searching(_ s: BenchScene, moving: Bool = false) {
+        let ring = s.ring()
+        // moving: the camera pans at 10 cm/s (the pose alone moves, the pixels are the same view's), as when the owner
+        // looks for the slab: the tracker's idle back-off (a still camera, 4 cm / 4 deg) never starts
+        let loop = moving ? AppLoop(source: { k in ring[k % ring.count].worldShifted(Vec3(0.10 * Double(k) / 60, 0, 0)) }, crop: crop)
+                          : AppLoop(still: ring, crop: crop)
         _ = loop.run(seconds: 0.5)   // warm-up
         let smp = loop.run(seconds: cfg.quick ? 2 : 10)
-        results.append(SessionResult.summarise(scene: s.name, phase: "searching", state: .searching, seconds: Double(smp.count) / 60, samples: smp,
-                                               note: "\(loop.tracker.state.rawValue) at the end" + (loop.tracker.state == .locked ? " (a false lock on the floor)" : "")))
-        log("  app loop \(s.name), searching: \(smp.count) frames, \(loop.tracker.state.rawValue) at the end")
+        let phase = moving ? "searching, camera moving" : "searching"
+        results.append(SessionResult.summarise(scene: s.name, phase: phase, state: .searching, seconds: Double(smp.count) / 60, samples: smp,
+                                               note: "\(loop.tracker.state.rawValue) at the end" + (loop.tracker.state == .locked ? " (a false lock on the floor)" : "")
+                                                   + (moving ? "; the camera moving 10 cm/s (never backed off)" : "; a still camera")))
+        log("  app loop \(s.name), \(phase): \(smp.count) frames, \(loop.tracker.state.rawValue) at the end")
     }
     /// a loop locked on `s` (rotating among copies of it), or nil
     func lockedLoop(_ s: BenchScene, _ ring: [BenchScene]) -> AppLoop? {
@@ -431,7 +441,7 @@ func runAppLoops(scenes set: SceneSet, config cfg: LoopConfig, probe: (String) -
         return loop
     }
     for s in set.scenes {
-        if s.kind == .nothing { searching(s); probe("app loop, \(s.name)"); continue }
+        if s.kind == .nothing { searching(s); searching(s, moving: true); probe("app loop, \(s.name)"); continue }
         let ring = s.ring()
         // a hand over a corner: locked on the clear view first, then the hand comes in (the same camera)
         if s.variant == .hand {

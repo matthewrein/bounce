@@ -118,10 +118,16 @@ public struct FramePacer {
         /// over (nil: not through the hand-off)
         var dropped = false
         var held: Int? = nil
+        /// it reached the delegate right as the delegate's previous call ended: it waited in the delegate's own queue
+        /// behind that call's work (`delegateReturned`), not on ARKit
+        var queued = false
     }
     private struct Processed { var c: Double; var ms: Double; var overran: Bool; var search: Bool; var recheck: Bool; var ball: Bool }
     /// how long frames taken from the hand-off had waited there (capture time, ms)
     private var waits: [(c: Double, ms: Double)] = []
+    /// the delegate's own work on each frame (capture time of the last delivered frame, ms), and when its last call ended
+    private var delegateWork: [(c: Double, ms: Double)] = []
+    private var lastDelegateEnd: Double?
     private struct Gap { var c: Double; var missing: Int }
     private struct Pause { var c: Double; var seconds: Double }
     private var arrivals: [Arrival] = []
@@ -145,6 +151,9 @@ public struct FramePacer {
         var droppedBusy = 0
         var maxHeld: Int?
         var wait = Histogram()
+        /// the delegate's own work per call (ms), and the deliveries that waited behind its previous call
+        var delegate = Histogram()
+        var queued = 0
     }
 
     /// What ran on a processed frame, for the processing times by kind: the slab search, a re-check of the lock, the ball
@@ -285,7 +294,9 @@ public struct FramePacer {
     /// A frame ARKit delivered to the hand-off (`FrameHandoff`), every one, processed or not: counted (received, latency
     /// at delivery, gaps, pauses), and judged late or not against the baseline as an idle handler's frame is (the
     /// delegate's queue does only cheap work, so its frames do not wait: a late one is ARKit's own delay,
-    /// `framesLateButIdle`). `held`: the camera frames the app holds once this one is handed over (the one being
+    /// `framesLateButIdle`; unless the delegate's own work outran the camera, as `delegateReturned` tells, and the frame
+    /// waited behind its previous call: then it is counted queued, `framesQueuedOnDelegate`, not late from ARKit).
+    /// `held`: the camera frames the app holds once this one is handed over (the one being
     /// processed and the one waiting: at most 2). Nothing is skipped here: the hand-off keeps the latest frame and drops
     /// the one it replaces (`frameDropped`).
     public mutating func frameDelivered(captureTime c: Double, now: Double, nominalInterval: Double, held: Int) {
@@ -293,18 +304,41 @@ public struct FramePacer {
         let age = now - c
         restartIfClockWentBack(c)
         noteStep(to: c, nominal: nominal)
+        // a call that starts as the delegate's previous one ends waited behind it in the delegate's queue: its lateness is
+        // the app's (the delegate's own work outran the camera), not ARKit's, and it stays out of the baseline
+        let queued = lastDelegateEnd.map { now >= $0 - 1e-9 && now - $0 <= FramePacer.delegateQueuedWithin } ?? false
         var late = false
-        if age.isFinite { window.append((c, age, true, false)) }
+        if age.isFinite && !queued { window.append((c, age, true, false)) }
         let idleAges = window.map { $0.age }
         if !idleAges.isEmpty { idleBaseline = FramePacer.percentile(idleAges, rule.baselinePercentile) }
-        if window.count >= max(1, rule.minBaselineFrames), age.isFinite, let base = idleBaseline {
+        if !queued, window.count >= max(1, rule.minBaselineFrames), age.isFinite, let base = idleBaseline {
             let threshold = base + rule.lateIntervals * effectiveInterval
             lastBaseline = base; lastThreshold = threshold
             late = age > threshold
         }
         countArrival(c, age: age, skipped: false, forced: false, lateIdle: late, held: held)
+        if queued {
+            arrivals[arrivals.count - 1].queued = true
+            total.queued += 1
+        }
         total.maxHeld = max(total.maxHeld ?? 0, held)
         trim(c)
+    }
+
+    /// A delivery that starts within this long (s) of the delegate's previous call ending is taken to have waited in the
+    /// delegate's queue behind it (at 60 fps an idle delegate's next call starts about a frame interval after the last).
+    public static let delegateQueuedWithin = 0.001
+
+    /// The delegate's call for a frame (the one delivered last) ended: it began at `entered` and ended at `now` (the
+    /// `now` clock). Its own work (the notes, the hand-off, the capture kit's recorder) is timed, and a delivery that
+    /// starts right as this ends is counted as queued behind it (`framesQueuedOnDelegate`).
+    public mutating func delegateReturned(entered: Double, now: Double) {
+        let ms = (now - entered) * 1000
+        if ms.isFinite && ms >= 0 {
+            total.delegate.add(ms)
+            delegateWork.append((lastCapture ?? 0, ms))
+        }
+        lastDelegateEnd = now
     }
 
     /// The hand-off dropped the frame captured at `c`: it waited while processing was busy with an earlier one, and a
@@ -374,6 +408,7 @@ public struct FramePacer {
         pauses.removeAll { $0.c < from }
         unprocessed.removeAll { $0.c < from }
         waits.removeAll { $0.c < from }
+        delegateWork.removeAll { $0.c < from }
     }
 
     /// The numbers so far, rounded (`FramePacingReport`).
@@ -411,7 +446,8 @@ public struct FramePacer {
             searchesPerSecond: rate(processed.filter { $0.search }.count, rs), rechecksPerSecond: rate(processed.filter { $0.recheck }.count, rs),
             ballSearchesPerSecond: rate(processed.filter { $0.ball }.count, rs),
             framesDroppedBusy: arrivals.filter { $0.dropped }.count, maxFramesHeld: arrivals.compactMap { $0.held }.max(),
-            handoffWaitMs: stats(waits.map { $0.ms }))
+            handoffWaitMs: stats(waits.map { $0.ms }),
+            framesQueuedOnDelegate: delegateWork.isEmpty ? nil : arrivals.filter { $0.queued }.count, delegateMs: stats(delegateWork.map { $0.ms }))
         let ts = total.first.map { max(interval, (total.last ?? $0) - $0 + interval) } ?? 0
         let all = FramePacingReport.Window(
             seconds: r2(ts), framesReceived: total.received, framesProcessed: total.processed, framesSkippedLate: total.skipped,
@@ -423,7 +459,8 @@ public struct FramePacer {
             searches: total.searches, rechecks: total.rechecks, ballSearches: total.balls,
             processedPerSecond: rate(total.processed, ts),
             searchesPerSecond: rate(total.searches, ts), rechecksPerSecond: rate(total.rechecks, ts), ballSearchesPerSecond: rate(total.balls, ts),
-            framesDroppedBusy: total.droppedBusy, maxFramesHeld: total.maxHeld, handoffWaitMs: hstats(total.wait))
+            framesDroppedBusy: total.droppedBusy, maxFramesHeld: total.maxHeld, handoffWaitMs: hstats(total.wait),
+            framesQueuedOnDelegate: total.delegate.count > 0 ? total.queued : nil, delegateMs: hstats(total.delegate))
         return FramePacingReport(nominalFrameIntervalMs: nominalInterval.map { r2($0 * 1000) }, effectiveFrameIntervalMs: r2(effectiveInterval * 1000),
                                  baselineLatencyMs: lastBaseline.map { r1($0 * 1000) }, lateAfterMs: lastThreshold.map { r1($0 * 1000) },
                                  longestSkipRun: total.longestSkipRun, rule: rule, recent: recent, total: all)
@@ -526,10 +563,17 @@ public struct FramePacingReport: Codable, Equatable {
         /// one waits, the latest. Frames dropped because processing was busy (a newer frame replaced them while they
         /// waited; released at once, never processed), the most camera frames the app held at once after a frame was
         /// handed over (the one being processed and the one waiting: at most 2, whatever processing costs; nil when no
-        /// frame went through the hand-off, as in the demo), and how long the processed frames waited there.
-        public var framesDroppedBusy: Int = 0
+        /// frame went through the hand-off, as in the demo), and how long the processed frames waited there. (Optional,
+        /// so reports from builds before them still read; nil also in the demo, whose frames skip the hand-off.)
+        public var framesDroppedBusy: Int? = nil
         public var maxFramesHeld: Int? = nil
         public var handoffWaitMs: Millis? = nil
+        /// The delegate's own queue: how long its call took per frame (the notes, the hand-off, and the capture kit's
+        /// recorder while a shot records), and the frames that reached it only as its previous call ended, having waited
+        /// behind that call in the delegate's queue (ARKit's frames held there are not in `maxFramesHeld`; these are not
+        /// counted as late from ARKit). Nil when not timed (older builds, the demo).
+        public var framesQueuedOnDelegate: Int? = nil
+        public var delegateMs: Millis? = nil
     }
     /// the video format's frame interval, and the one the rule used (larger when frames come more slowly)
     public var nominalFrameIntervalMs: Double?

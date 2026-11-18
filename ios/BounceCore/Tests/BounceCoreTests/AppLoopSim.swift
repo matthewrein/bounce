@@ -113,6 +113,8 @@ struct AppLoopSim {
     var restartAt: Double? = nil
     /// the slab detector to make for each new tracker (default: one CornerCodeDetector for the whole run)
     var makeDetector: (() -> SlabDetecting)? = nil
+    /// the ball finder for the whole run (default: the run's DiscBallLocator)
+    var ballLocator: BallLocating? = nil
     /// the camera's full-resolution pixels for the slab's edges (`TrackerFrame.slabDetail`), cut from the virtual full
     /// image as `FrameConversion.lumaCrop` would
     var slabCrops = false
@@ -204,7 +206,8 @@ struct AppLoopSim {
         var settings = RecordingSettings(dishBounce: false).trackerSettings
         settings.spec = .standard
         let det = CornerCodeDetector(), loc = DiscBallLocator()
-        var tracker = SlabTracker(settings: settings, detector: makeDetector?() ?? det, ballLocator: loc)
+        let ballLoc: BallLocating = ballLocator ?? loc
+        var tracker = SlabTracker(settings: settings, detector: makeDetector?() ?? det, ballLocator: ballLoc)
         let pK = processing
         let session = RecordingSession(build: "sim", device: "sim", frameWidth: pK.width, frameHeight: pK.height,
                                        settings: RecordingSettings(dishBounce: false), tracker: version1 ? nil : tracker.settings,
@@ -224,7 +227,7 @@ struct AppLoopSim {
             if crossed(settingsAt) { var s = tracker.settings; s.launchRule = .dishNormal; s.ballInterval = 0.15; tracker.settings = s }
             if crossed(resetAt) { tracker.reset() }
             if crossed(discontinuityAt) { tracker.noteWorldDiscontinuity("interruption") }
-            if crossed(restartAt) { tracker = SlabTracker(settings: tracker.settings, detector: makeDetector?() ?? det, ballLocator: loc) }
+            if crossed(restartAt) { tracker = SlabTracker(settings: tracker.settings, detector: makeDetector?() ?? det, ballLocator: ballLoc) }
             let fv = fullView(t)
             let pv = CameraView(worldFromCamera: fv.worldFromCamera, intrinsics: pK)
             let normal = !(limited?.contains(t) ?? false)

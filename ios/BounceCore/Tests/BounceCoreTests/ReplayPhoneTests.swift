@@ -260,6 +260,93 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(tr2.settings, exact)
         XCTAssertNil(tr2.settings.cradleRadius)
     }
+
+    /// The slab finder a replay runs gets the recording's tracker settings for its sweep (`SlabDetecting.apply`: the app's
+    /// sweepSkipsFinds and sweepSameOutlinePixels), at the start and at each settings change, as the phone's finder did:
+    /// the replay's wrapper passes them on.
+    func testTheReplaysSlabFinderGetsTheRecordingsSweepSettings() throws {
+        let app = RecordingSettings().trackerSettings
+        let phone = SlabFinderDetector(), inReplay = SlabFinderDetector()
+        _ = SlabTracker(settings: app, detector: phone)
+        _ = SlabTracker(settings: app, detector: ReplaySlabDetector(inReplay))
+        XCTAssertTrue(phone.finder.options.skipSeedsInFinds)
+        XCTAssertEqual(inReplay.finder.options.maxSweepRegions, phone.finder.options.maxSweepRegions)
+        XCTAssertEqual(inReplay.finder.options.skipSeedsInFinds, phone.finder.options.skipSeedsInFinds)
+        XCTAssertEqual(inReplay.finder.options.sameOutlinePixels, phone.finder.options.sameOutlinePixels)
+
+        // a whole replay: a recording made with the app's settings, then a settings change that turns the sweep's options off
+        final class Spy: SlabDetecting {
+            let inner = SlabFinderDetector()
+            private(set) var applied: [TrackerSettings] = []
+            func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] { [] }
+            func apply(_ settings: TrackerSettings) { applied.append(settings); inner.apply(settings) }
+        }
+        var off = app
+        off.sweepSkipsFinds = false; off.sweepSameOutlinePixels = 0
+        let K = CameraIntrinsics(fx: 8, fy: 8, cx: 4, cy: 3, width: 8, height: 6)
+        let folder = tmp.appendingPathComponent("sweep.bouncerec")
+        let w = try RecordingWriter(folder: folder, session: RecordingSession(build: "t", device: "d", frameWidth: 8, frameHeight: 6, settings: RecordingSettings(),
+                                                                              tracker: app, everyFrame: true, trackerStateAtStart: .searching))
+        var f0 = RecordedFrame(index: 0, timestamp: 0, file: "", worldFromCamera: RigidTransform.identity.columnMajor4x4, intrinsics: K)
+        f0.controls = [TrackerControl(kind: .start, settings: app)]
+        try w.append(f0, image: nil)
+        var f1 = RecordedFrame(index: 1, timestamp: 1.0 / 60, file: "", worldFromCamera: RigidTransform.identity.columnMajor4x4, intrinsics: K)
+        f1.controls = [TrackerControl(kind: .settings, settings: off)]
+        try w.append(f1, image: nil)
+        w.close()
+        let spy = Spy()
+        _ = try ReplayRunner(reader: try RecordingReader(folder: folder)).replay(makeDetector: { spy })
+        XCTAssertEqual(spy.applied.first, app, "the recording's settings at the start")
+        XCTAssertEqual(spy.applied.last, off, "and the settings change")
+        XCTAssertFalse(spy.inner.finder.options.skipSeedsInFinds)
+        XCTAssertEqual(spy.inner.finder.options.sameOutlinePixels, 0)
+    }
+
+    /// A ball finder that holds half an outline for its next scan to confirm (as BallLocator does with a partial disc):
+    /// the phone's idle ball rate reads that after each scan (`BallLocating.awaitsConfirmation`) and scans again at the
+    /// usual rate; the recording keeps it (`RecordedOutput.ballAwaitsConfirmation`), and a replay follows the same rate,
+    /// running the finder (the replay's wrapper passes the flag on) or using the phone's results (the recorded flag).
+    func testTheBallFindersWaitForASecondScanReplaysExactly() throws {
+        final class TwoScanDisc: BallLocating {
+            let inner = DiscBallLocator()
+            private var pending = false, confirmed = false
+            var awaitsConfirmation: Bool { pending }
+            func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
+                guard let r = inner.locate(image: image, intrinsics: intrinsics, slab: slab, spec: spec, ball: ball, down: down) else {
+                    pending = false; confirmed = false; return nil
+                }
+                if confirmed { return r }
+                if pending { pending = false; confirmed = true; return r }
+                pending = true
+                return nil
+            }
+            func reset() { pending = false; confirmed = false; inner.reset() }
+        }
+        var s = sim()
+        s.ballFrom = 3.0; s.duration = 5
+        s.tapAt = nil; s.settingsAt = nil; s.resetAt = nil; s.discontinuityAt = nil; s.limited = nil
+        s.ballLocator = TwoScanDisc()
+        XCTAssertGreaterThan(RecordingSettings().trackerSettings.idleBallAfter, 0, "the app's idle ball rate is on")
+        let folder = tmp.appendingPathComponent("twoscan.bouncerec")
+        let phone = try s.run(recordingTo: folder)
+        // the phone: empty scans every 0.3 s before the ball, then the half outline, and its confirmation 0.1 s later
+        let waits = try XCTUnwrap(phone.outputs.firstIndex { $0.ballAwaitsConfirmation })
+        let scans = phone.outputs.indices.filter { phone.outputs[$0].ballSearched }
+        let k = try XCTUnwrap(scans.firstIndex(of: waits))
+        XCTAssertGreaterThan(k, 1)
+        XCTAssertEqual(phone.times[scans[k]] - phone.times[scans[k - 1]], 0.3, accuracy: 0.03, "idle before the ball")
+        XCTAssertEqual(phone.times[scans[k + 1]] - phone.times[scans[k]], 0.1, accuracy: 0.02, "the usual rate while it waits")
+        XCTAssertNotNil(phone.outputs[scans[k + 1]].ball, "confirmed on the next scan")
+        let rec = try RecordingReader(folder: folder)
+        XCTAssertEqual(rec.frames[waits].output?.ballAwaitsConfirmation, true, "the recording keeps it")
+        XCTAssertNil(rec.frames[scans[k - 1]].output?.ballAwaitsConfirmation)
+
+        let run = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: TwoScanDisc())
+        XCTAssertTrue(run.report.agrees, run.report.description)
+        var o = ReplayRunner.Options(); o.ball = .recorded; o.detections = .recorded
+        let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: TwoScanDisc(), options: o)
+        XCTAssertTrue(recorded.report.agrees, recorded.report.description)
+    }
 }
 
 /// CornerCodeDetector with every corner moved half a pixel: a different detector, for the divergence report.

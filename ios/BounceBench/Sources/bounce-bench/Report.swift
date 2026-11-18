@@ -15,6 +15,8 @@ struct BenchReport: Codable {
     var budget: BudgetModel?
     var notes: [String]
     var seconds: Double
+    /// the cold search on the cluttered floor seen from other sides (nil: not run, or a report from before it)
+    var viewSearches: [ViewSearch]? = nil
 
     func json() -> Data {
         let e = JSONEncoder()
@@ -29,6 +31,8 @@ struct BenchReport: Codable {
         var m: [String] = []
         func f(_ v: Double, _ d: Int = 2) -> String { v.isFinite ? String(format: "%.\(d)f", v) : "-" }
         func cell(_ s: String) -> String { s.replacingOccurrences(of: "|", with: "/") }
+        /// a p95 from fewer than `Stats.fewSamples` runs is their largest: shown as such
+        func p95(_ st: Stats, _ d: Int = 2) -> String { st.n < Stats.fewSamples ? "\(f(st.max, d)) (max of \(st.n))" : f(st.p95, d) }
         let onMac = host.isAppleSiliconMac
         m.append("### Device budget: per-frame time of each stage (bounce-bench)")
         m.append("")
@@ -56,6 +60,7 @@ struct BenchReport: Codable {
         m.append("Every time is one frame's work on one core (the app's processing queue is serial), from a warm-up then repeated runs: "
                  + "min / p50 / p95 / max in ms. A single time on the processing queue is flagged *watch* over 8 ms (half a 60 fps frame) and "
                  + "**THREAT** over 16.7 ms (a whole frame), judged on p95; comparison-only stages and the recorder's own queue are not flagged. "
+                 + "With fewer than \(Stats.fewSamples) runs the p95 is their largest, shown as \"(max of n)\". "
                  + "Whether a state threatens 60 fps tracking is judged in the budget model below (skipped frames, frames held).")
         m.append("")
 
@@ -74,14 +79,14 @@ struct BenchReport: Codable {
             case .candidate: fl = "(before the cut)"
             }
             let role = r.role == .app ? "processing queue" : r.role.rawValue
-            m.append("| \(r.group) | \(cell(r.name)) | \(cell(r.input)) | \(role) | \(f(r.stats.min, 3)) | \(f(r.stats.p50, 3)) | \(f(r.stats.p95, 3)) | \(f(r.stats.max, 3)) | \(r.stats.n) |"
+            m.append("| \(r.group) | \(cell(r.name)) | \(cell(r.input)) | \(role) | \(f(r.stats.min, 3)) | \(f(r.stats.p50, 3)) | \(p95(r.stats, 3)) | \(f(r.stats.max, 3)) | \(r.stats.n) |"
                      + (anyRegions ? " \(r.regionsGrown.map(String.init) ?? "") |" : "") + " \(fl) | \(cell(r.note ?? "")) |")
         }
         m.append("")
         if !anyRegions {
             m.append("Regions grown per search: not visible to this build (BounceCore keeps the count internal); an instrumented build "
                      + "(ios/BounceBench/sweep-stats.sh: -D BENCH_SWEEP_STATS against a scratch copy of BounceCore whose SlabFinder logs it) "
-                     + "reports them. The search stops growing at maxSweepRegions = 48.")
+                     + "reports them. The search stops growing at maxSweepRegions = 48 (the app keeps the finder's own cap).")
             m.append("")
         }
 
@@ -103,7 +108,7 @@ struct BenchReport: Codable {
                     + (k.kitP50.map { " ; kit \(f($0))" } ?? "")
                     + (k.recordP50.map { " ; record \(f($0, 3))" } ?? "") + (k.encodeP50.map { " ; recorder queue \(f($0)) (p95 \(f(k.encodeP95 ?? .nan)))" } ?? "")
                 let fl = FrameBudget.flag(k.total.p95)
-                m.append("| \(s.scene) | \(s.phase) | \(k.kind.rawValue) | \(k.count) | \(f(k.total.min)) | \(f(k.total.p50)) | \(f(k.total.p95)) | \(f(k.total.max)) | \(parts) | \(fl.isEmpty ? "" : "**\(fl)**") |")
+                m.append("| \(s.scene) | \(s.phase) | \(k.kind.rawValue) | \(k.count) | \(f(k.total.min)) | \(f(k.total.p50)) | \(p95(k.total)) | \(f(k.total.max)) | \(parts) | \(fl.isEmpty ? "" : "**\(fl)**") |")
             }
         }
         let sessionNotes = sessions.compactMap { s -> String? in
@@ -151,12 +156,14 @@ struct BenchReport: Codable {
             m.append("#### Budget at 60 fps (16.7 ms a frame)\(onMac ? " on this Mac" : " (this host's times x \(f(b.hostToMac, 3)))")")
             m.append("")
             m.append("Each state run for 30 s of camera time through the app's cadence (search every 0.12 s while searching, every 0.36 s after a "
-                     + "second of finding nothing from a still camera: the empty views; re-check every 0.3 s and ball scan every 0.1 s while locked, "
+                     + "second of finding nothing from a still camera: the empty views, \"searching\"; a camera that moves, \"searching, camera moving\" "
+                     + "(the owner panning to find the slab), never backs off; re-check every 0.3 s and ball scan every 0.1 s while locked, "
                      + "every 0.3 s after half a second of finding no ball where none is shown; at least 0.05 s between detector runs) and the app's pipeline (frames reach ARKit's "
                      + "delegate queue 30 ms after capture, which hands each to the processing queue through BounceCore's FrameHandoff: taken at once "
                      + "when processing is idle, else it waits, the latest replacing and dropping any frame already waiting), each frame costing its "
                      + "kind's whole-frame time measured above (n per kind: the frames behind each cost), the detector runs' kinds taken in the order "
-                     + "the app loop saw them. At 60 fps the 0.1 s and 0.3 s intervals come out as 6 or 7 and 18 or 19 frames apart (the frame "
+                     + "the app loop saw them, each with the ball scan on the same frame or not as the app loop had it (so the share of re-checks "
+                     + "that carry a ball scan is the measured one). At 60 fps the 0.1 s and 0.3 s intervals come out as 6 or 7 and 18 or 19 frames apart (the frame "
                      + "times' rounding; ARKit's jittered timestamps give the same rates): about 9.2 ball scans and 3.2 re-checks a second. "
                      + "Load = processing time per second of camera time (% of one core: the processing queue's). **Skipped/s**: frames "
                      + "not processed, dropped from the hand-off because processing was busy (the overlay updates that many fewer times a "
@@ -185,7 +192,7 @@ struct BenchReport: Codable {
                 m.append("")
             }
             table(b.onMac, b.scenarios, "With each kind's p50:")
-            table(b.onMacP95, b.scenarios, "With each kind's p95 (every frame of a kind as slow as its slowest 5%):")
+            table(b.onMacP95, b.scenarios, "With each kind's p95 (every frame of a kind as slow as its slowest 5%; a kind with fewer than \(Stats.fewSamples) frames: as slow as its slowest):")
 
             // iPhones
             m.append("#### iPhone estimate (an estimate, not a measurement)")
@@ -250,6 +257,13 @@ struct BenchReport: Codable {
                      + "The last column: the frames held at the same p95 costs through one queue, as before the hand-off.")
             m.append("")
             let a14 = b.phones.first { $0.chip.chip.hasPrefix("A14") }, a11 = b.phones.first
+            /// the kinds over a frame at the CI Mac's p95 whose p95 rests on fewer than `Stats.fewSamples` frames
+            func fewSampled(_ i: Int) -> [String] {
+                let sc = b.scenarios[i], p95s = b.p95Scenarios.flatMap { i < $0.count ? $0[i] : nil }
+                return FrameKind.allCases.filter { k in
+                    (sc.counts[k] ?? Int.max) < Stats.fewSamples && b.hostToMac * (p95s?.costs[k] ?? 0) > FrameBudget.interval
+                }.map { "\($0.short) n \(sc.counts[$0] ?? 0)" }
+            }
             var order = Array(b.scenarios.indices)
             order.sort { i, j in
                 let x = b.onMacP95[i], y = b.onMacP95[j]
@@ -261,7 +275,8 @@ struct BenchReport: Codable {
                 let p50 = b.onMac[i], p95 = b.onMacP95[i]
                 let t14 = a14?.throttled[i], c11 = a11?.contended[i]
                 let fl = FrameBudget.flag(p95)
-                m.append("| \(rank + 1) | \(b.scenarios[i].name) | \(f(p50.framesSkipped, 1)) | \(f(p95.framesSkipped, 1)) | \(t14.map { f($0.framesSkipped, 1) } ?? "-") | "
+                let few = fewSampled(i).isEmpty ? "" : " †"
+                m.append("| \(rank + 1) | \(b.scenarios[i].name)\(few) | \(f(p50.framesSkipped, 1)) | \(f(p95.framesSkipped, 1)) | \(t14.map { f($0.framesSkipped, 1) } ?? "-") | "
                          + "\(c11.map { f($0.framesSkipped, 1) } ?? "-") | \(p95.maxFramesHeld) / \(t14.map { "\($0.maxFramesHeld)" } ?? "-") / \(c11.map { "\($0.maxFramesHeld)" } ?? "-") | "
                          + "\(f(p95.worstFrameMs, 0)) ms (\(p95.worstFrameKind.rawValue)) | \(fl.isEmpty ? "" : "**\(fl)**") | "
                          + "\(b.onMacP95Queue.map { q in i < q.count ? "\(q[i].maxFramesHeld) / \(f(q[i].framesSkipped, 1))" : "-" } ?? "-") |")
@@ -274,18 +289,42 @@ struct BenchReport: Codable {
                              + "\(f(r.framesSkipped, 1)) skipped/s, up to \(r.maxFramesHeld) frames held"
                              + (a14.map { "; on a throttled A14 \(f($0.throttled[i].framesSkipped, 1)) skipped/s, up to \($0.throttled[i].maxFramesHeld) held" } ?? ""))
             }
-            let a11Only = order.filter { i in !FrameBudget.flag(b.onMacP95[i]).hasPrefix("THREAT") && (a11.map { FrameBudget.flag($0.contended[i]).hasPrefix("THREAT") } ?? false) }
+            let threatMac = { (i: Int) in FrameBudget.flag(b.onMacP95[i]).hasPrefix("THREAT") }
+            let threat14 = { (i: Int) in a14.map { FrameBudget.flag($0.throttled[i]).hasPrefix("THREAT") } ?? false }
+            let a14Too = order.filter { !threatMac($0) && threat14($0) }
+            let a11Only = order.filter { i in !threatMac(i) && !threat14(i) && (a11.map { FrameBudget.flag($0.contended[i]).hasPrefix("THREAT") } ?? false) }
             if lines.isEmpty { m.append("Nothing reaches the THREAT rate on the CI Mac at p95.") } else {
                 m.append("THREAT on the CI Mac at p95:")
                 m.append("")
                 m.append(contentsOf: lines)
             }
+            if let p = a14, !a14Too.isEmpty {
+                m.append("")
+                m.append("THREAT on a throttled A14 (the oldest LiDAR phone, warm; not at the Mac's p95): "
+                         + a14Too.map { i in "\(b.scenarios[i].name) (\(f(p.throttled[i].framesSkipped, 1))/s)" }.joined(separator: "; ") + ".")
+            }
             if !a11Only.isEmpty {
                 m.append("")
                 m.append("THREAT only on a contended A11 (the oldest phone, sharing its core): " + a11Only.map { b.scenarios[$0].name }.joined(separator: "; ") + ".")
             }
+            let few = order.compactMap { i -> String? in
+                let k = fewSampled(i)
+                return k.isEmpty ? nil : "\(b.scenarios[i].name) (\(k.joined(separator: ", ")); at p50 \(f(b.onMac[i].framesSkipped, 1))/s)"
+            }
+            if !few.isEmpty {
+                m.append("")
+                m.append("† A kind over a frame whose p95 rests on fewer than \(Stats.fewSamples) frames (n given): its p95 is that kind's slowest "
+                         + "frame, so read the row's p95 figures as a worst case next to its p50 ones: " + few.joined(separator: "; ") + ".")
+            }
+            let queued = order.filter { (b.onMacP95[$0].framesQueuedOnDelegate ?? 0) > 0 }
+            if !queued.isEmpty {
+                m.append("")
+                m.append("Frames that waited in the delegate's own queue (its work outran the camera; held there, outside the hand-off): "
+                         + queued.map { "\(b.scenarios[$0].name) \(f(b.onMacP95[$0].framesQueuedOnDelegate ?? 0, 1))/s at Mac p95" }.joined(separator: "; ") + ".")
+            }
             m.append("")
-            m.append("Every slow frame here is a slab detector run (a search, a re-check over the whole view, a refine). Through the hand-off "
+            m.append("Every slow frame here is a slab detector run (a search, a re-check over the whole view, a refine) or a ball scan of the "
+                     + "whole space above the slab (a ball followed, or taken for one). Through the hand-off "
                      + "they no longer hold ARKit's frames (at most 3 at a delivery, the arriving one included); what they still cost is the "
                      + "frames dropped while they run (the overlay's updates), which only making the detector cheaper or rarer reduces.")
             m.append("")
@@ -313,10 +352,36 @@ struct BenchReport: Codable {
                 m.append("| skip ycc.colorFrame unless the detector will run | \(f(cfp, 3)) (colorFrame p50 on a plain + image frame) | - | "
                          + "\(f(cfp, 3)) ms on each of \(f(perSecond, 1)) frames/s while recording (\(f(cfp * perSecond, 1)) ms/s) | NOT applied in this build |")
             } else {
-                m.append("| skip ycc.colorFrame unless the detector will run (SlabTracker.detectorWillRun) | about 2.6 ms on each plain + image frame (2.6 a second while recording) | 0 | all of it | applied: the tracker reads the colour frame only in its detector (SpeedupIdentityTests) |")
+                let cf = stages.first { $0.group == "convert" && $0.name.hasPrefix("YCCImage -> ColorFrame") && $0.role == .app }
+                let perSecond = Double(rec.kind(.plainImage)?.count ?? 0) / max(rec.seconds, 1e-9)
+                let ms = cf?.stats.p50 ?? .nan
+                m.append("| skip ycc.colorFrame unless the detector will run (SlabTracker.detectorWillRun) | \(f(ms, 3)) ms (YCCImage -> ColorFrame p50, above) on each plain + image frame | 0 | "
+                         + "\(f(ms, 3)) ms on each of \(f(perSecond, 1)) frames/s while recording (\(f(ms * perSecond, 1)) ms/s) | applied: the tracker reads the colour frame only in its detector (SpeedupIdentityTests) |")
             }
         }
         m.append("")
+
+        if let vs = viewSearches, !vs.isEmpty {
+            m.append("#### Does the app's search still find the slab? The cluttered floor seen from other sides")
+            m.append("")
+            m.append("The scenes above see the slab from one side (25 deg). Here the clutter generator's floor is rendered around it (a new "
+                     + "clutter seed each view) and one cold search runs on each view: with the app's sweep options and with the finder's own. "
+                     + "Found: an outline within 3 px (mean corner distance) of the slab's; first: the best-ranked outline's distance. A cut to "
+                     + "the sweep must not lose views here (a cap of 32 regions, tried, missed 2 of these at 2 ft from 200 deg and locked a "
+                     + "slab-sized patch of the floor instead).")
+            m.append("")
+            let na = vs.filter(\.appFound).count, no = vs.filter(\.ownFound).count
+            m.append("Found: **\(na) of \(vs.count)** with the app's sweep, \(no) of \(vs.count) with the finder's own.")
+            m.append("")
+            m.append("| view (ft, azimuth, elevation, seed) | app's sweep: nearest / first px, ms | finder's own: nearest px, ms |")
+            m.append("|---|---|---|")
+            for v in vs {
+                let a = (v.appFound ? "found " : "**missed** ") + "\(f(v.appError ?? .nan, 1)) / \(f(v.appFirstError ?? .nan, 1)), \(f(v.appMs, 0))"
+                let o = (v.ownFound ? "found " : "**missed** ") + "\(f(v.ownError ?? .nan, 1)), \(f(v.ownMs, 0))"
+                m.append("| \(f(v.feet, 0)) ft, \(f(v.azimuthDegrees, 0)) deg, \(f(v.elevationDegrees, 0)) deg, \(v.seed) | \(a) | \(o) |")
+            }
+            m.append("")
+        }
 
         if !notes.isEmpty {
             m.append("#### Notes")

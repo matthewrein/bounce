@@ -44,6 +44,7 @@ final class BoundedWorkTests: XCTestCase {
         XCTAssertGreaterThan(app.idleBallAfter, 0)
         XCTAssertTrue(app.sweepSkipsFinds)
         XCTAssertGreaterThan(app.sweepSameOutlinePixels, 0)
+        XCTAssertNil(app.maxSweepRegions, "the app keeps the finder's own cap: a lower one (32) missed the slab on cluttered floors seen from some sides")
         XCTAssertEqual(try JSONDecoder().decode(TrackerSettings.self, from: JSONEncoder().encode(app)), app)
     }
 

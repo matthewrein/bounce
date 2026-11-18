@@ -34,6 +34,9 @@ struct Stats: Codable, Equatable {
         mean = s.reduce(0, +) / Double(s.count)
     }
 
+    /// Below this many timings a p95 is just the largest of them (nearest rank): reports say so.
+    static let fewSamples = 20
+
     /// the same timings scaled (another machine's estimate)
     func scaled(_ k: Double) -> Stats {
         var o = self

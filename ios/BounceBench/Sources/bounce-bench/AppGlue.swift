@@ -29,6 +29,7 @@ struct AppGlue {
     mutating func arrived(t: Double, width: Int, height: Int) {
         _ = formatWatch.note(width: width, height: height, at: t)
         _ = handoff.deliver(0, captureTime: t, now: t + 0.03, nominalInterval: 1.0 / 60)
+        handoff.delegateReturned(entered: t + 0.03, now: t + 0.03 + 0.00002)
     }
 
     @inline(__always) func toView(_ p: Vec3, _ view: CameraView) -> Vec2? {
@@ -85,8 +86,13 @@ struct AppGlue {
         let rate = String(format: "%.1f", Double(w.framesReceived) / w.seconds)
         let runs = String(format: "%.1f", w.searchesPerSecond + w.rechecksPerSecond)
         let k = w.processingByKind
-        return "frames: \(rate)/s in, \(share(w.framesDroppedBusy + w.framesSkippedLate))% dropped busy, "
+        let queued: Int = w.framesQueuedOnDelegate ?? 0
+        let dropped: Int = (w.framesDroppedBusy ?? 0) + w.framesSkippedLate
+        let queuedText: String = queued > 0 ? ", " + share(queued) + "% queued behind it" : ""
+        let delegate: String = "delegate " + p95(w.delegateMs) + " ms p95" + queuedText
+        return "frames: \(rate)/s in, \(share(dropped))% dropped busy, "
             + "held \(w.maxFramesHeld.map { String($0) } ?? "-"), wait \(ms(w.handoffWaitMs)) ms, \(share(w.framesLateButIdle))% late from ARKit, "
+            + delegate + ", "
             + "\(w.cameraGaps) gaps, \(w.pauses) pauses, delivery \(ms(w.deliveryLatencyMs)) ms, process \(ms(w.processingMs)) ms "
             + "(p50/p95; p95 plain \(p95(k.plain)), ball \(p95(k.ball)), search \(p95(k.search)), re-check \(p95(k.recheck))), "
             + "detector \(runs)/s"

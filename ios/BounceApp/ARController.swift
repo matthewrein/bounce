@@ -61,8 +61,10 @@ struct DeliveredFrame {
 /// frame replaces the waiting one, which is released at once), and the capture kit's recorder (fed here, on every
 /// frame, with the latest tracker result, so its video has no gaps while a long slab search runs). The tracker runs on
 /// the processing queue (`queue`), one frame at a time, on the freshest frame there is. So ARKit never has more than two
-/// of its frames held by the app, whatever a search costs (it warns at about a dozen and then stops delivering).
-/// The demo renders its frames on the processing queue and does not use the hand-off.
+/// of its frames held by the app, whatever a search costs (it warns at about a dozen and then stops delivering), unless
+/// the delegate's own work outruns the camera (the kit's scale on a busy phone): then frames wait in the delegate's
+/// queue, which the diagnostics show (`framePacing`: `delegateMs`, `framesQueuedOnDelegate`).
+/// The demo renders its frames on the processing queue and does not use the hand-off (its frame numbers are its own).
 ///
 /// State shared between queues is guarded: `lock` (the main thread's requests, the viewport, the motion samples, the
 /// floor planes, the format watch, the demo flag, the processing time the pre-flight reads), `kitLock` (the kit's
@@ -169,6 +171,9 @@ final class ARController: NSObject, ARSessionDelegate {
     private var cadence = RecordingCadence()
 
     // the demo (no camera)
+    /// the demo's frame numbers (diagnostics' framePacing while the demo runs): its own, so a demo tick still queued when
+    /// the camera starts never writes into the camera's (the hand-off's)
+    private var demoPacer = FramePacer()
     private var demoTimer: DispatchSourceTimer? = nil
     private var demoScript: DemoScript? = nil
     private var demoStart = 0.0
@@ -417,10 +422,10 @@ final class ARController: NSObject, ARSessionDelegate {
             self.videoFormat = nil
             self.lock.lock(); self.formatWatch = VideoFormatWatch(); self.lock.unlock()
             // the demo's frames come from a timer, which drops ticks while a frame takes longer than its interval: no
-            // camera missed them
+            // camera missed them (its own pacer: the camera's, in the hand-off, is never touched by the demo)
             var p = FramePacer()
             p.rule.countsCameraGaps = false
-            self.handoff.resetPacer(p)
+            self.demoPacer = p
             self.demoScript = script
             self.demoStart = CACurrentMediaTime()
             self.isDemo = true
@@ -525,6 +530,8 @@ final class ARController: NSObject, ARSessionDelegate {
             }
         }
         kitLock.unlock()
+        // this call's own work (a frame that reaches the delegate just as it ends waited behind it: framePacing counts it)
+        handoff.delegateReturned(entered: arrival, now: CACurrentMediaTime())
     }
 
     /// A frame the hand-off gave to processing (processing queue), then the next one that waited meanwhile, if any (in a
@@ -588,12 +595,15 @@ final class ARController: NSObject, ARSessionDelegate {
 
     private func demoTick() {
         let arrival = CACurrentMediaTime()
-        guard let script = demoScript else { return }
+        // a tick still queued when the demo stopped (stopDemo clears the flag on the main thread before the camera
+        // starts): nothing is rendered or published
+        lock.lock(); let active = demoActive; lock.unlock()
+        guard active, let script = demoScript else { return }
         let t = arrival - demoStart
         // counted like the camera's frames: rendered when handled, so never late (the processing time includes the
         // rendering); ticks the timer dropped while a frame took longer than its interval are not counted as camera gaps
         // (`countsCameraGaps` is off in the demo)
-        guard handoff.withPacer({ $0.frameArrived(captureTime: t, now: t, nominalInterval: ARController.demoFrameInterval) }) == .process else { return }
+        guard demoPacer.frameArrived(captureTime: t, now: t, nominalInterval: ARController.demoFrameInterval) == .process else { return }
         let scene = script.scene(at: t, spec: AppSettings.slab), view = script.view(at: t)
         let K = view.intrinsics
         let rgb = scene.renderRGB(view: view)
@@ -625,7 +635,7 @@ final class ARController: NSObject, ARSessionDelegate {
         }
         kitLock.unlock()
         let secs = CACurrentMediaTime() - arrival
-        handoff.withPacer { $0.frameProcessed(captureTime: t, seconds: secs, output: out) }
+        demoPacer.frameProcessed(captureTime: t, seconds: secs, output: out)
     }
 
     // MARK: processing (processing queue)
@@ -746,7 +756,7 @@ final class ARController: NSObject, ARSessionDelegate {
         let hud = makeHUD(out)
         // the frame numbers for the developer line, once a second (camera clock; again at once if the clock went back)
         if t - framesLineTime >= 1 || t < framesLineTime {
-            framesLine = ARController.framesLine(handoff.report)
+            framesLine = ARController.framesLine(isDemo ? demoPacer.report : handoff.report)
             framesLineTime = t
         }
         let dev = makeDeveloperStatus(out)
@@ -961,13 +971,16 @@ final class ARController: NSObject, ARSessionDelegate {
     }
 
     /// The developer line's frame numbers over the last 10 s of camera time, e.g. "frames: 58.9/s in, 40% dropped busy,
-    /// held 2, wait 4/12 ms, 1% late from ARKit, 0 gaps, 0 pauses, delivery 21/34 ms, process 6/19 ms (p50/p95; p95 plain
-    /// 6, ball 9, search 80, re-check 25), detector 8.3/s": frames delivered a second; the share dropped because
-    /// processing was busy (a newer frame replaced them in the hand-off; in the demo, skipped because they waited behind
-    /// slower processing); the most camera frames the app held at once (at most 2: the one processed and the one waiting;
-    /// "-" in the demo) and how long the processed frames waited for processing; the share ARKit itself delivered late
-    /// (not the app's delay); gaps in the camera's frames, and pauses (interruptions, re-runs with another format); how
-    /// long after capture frames reached the app; how long processing took, overall and (95th percentile) by what ran:
+    /// held 2, wait 4/12 ms, 1% late from ARKit, delegate 1 ms p95, 0 gaps, 0 pauses, delivery 21/34 ms, process 6/19 ms
+    /// (p50/p95; p95 plain 6, ball 9, search 80, re-check 25), detector 8.3/s": frames delivered a second; the share
+    /// dropped because processing was busy (a newer frame replaced them in the hand-off; in the demo, skipped because they
+    /// waited behind slower processing); the most camera frames the app held at once in the hand-off (at most 2: the one
+    /// processed and the one waiting; "-" in the demo) and how long the processed frames waited for processing; the share
+    /// ARKit itself delivered late (not the app's delay); the delegate's own work per frame (95th percentile; while the
+    /// capture kit records, its scale too) and, if it outran the camera, the share of frames that waited behind it in the
+    /// delegate's queue ("% queued behind it": held there, not in the hand-off); gaps in the camera's frames, and pauses
+    /// (interruptions, re-runs with another format); how long after capture frames reached the app; how long processing
+    /// took, overall and (95th percentile) by what ran:
     /// nothing ("plain"), the ball finder alone, a slab search, a re-check of the lock; and slab detector runs a second
     /// (searches and re-checks).
     static func framesLine(_ r: FramePacingReport) -> String? {
@@ -979,8 +992,13 @@ final class ARController: NSObject, ARSessionDelegate {
         let rate = String(format: "%.1f", Double(w.framesReceived) / w.seconds)
         let runs = String(format: "%.1f", w.searchesPerSecond + w.rechecksPerSecond)
         let k = w.processingByKind
-        return "frames: \(rate)/s in, \(share(w.framesDroppedBusy + w.framesSkippedLate))% dropped busy, "
+        let queued: Int = w.framesQueuedOnDelegate ?? 0
+        let dropped: Int = (w.framesDroppedBusy ?? 0) + w.framesSkippedLate
+        let queuedText: String = queued > 0 ? ", " + share(queued) + "% queued behind it" : ""
+        let delegate: String = "delegate " + p95(w.delegateMs) + " ms p95" + queuedText
+        return "frames: \(rate)/s in, \(share(dropped))% dropped busy, "
             + "held \(w.maxFramesHeld.map { String($0) } ?? "-"), wait \(ms(w.handoffWaitMs)) ms, \(share(w.framesLateButIdle))% late from ARKit, "
+            + delegate + ", "
             + "\(w.cameraGaps) gaps, \(w.pauses) pauses, delivery \(ms(w.deliveryLatencyMs)) ms, process \(ms(w.processingMs)) ms "
             + "(p50/p95; p95 plain \(p95(k.plain)), ball \(p95(k.ball)), search \(p95(k.search)), re-check \(p95(k.recheck))), "
             + "detector \(runs)/s"
@@ -1013,7 +1031,7 @@ final class ARController: NSObject, ARSessionDelegate {
             rep.videoFormat = videoFormat
             // how the frames came and went (delivered, processed, skipped as late, missed by the camera, latencies, detector
             // runs), how the last capture lock came about, and video format changes
-            rep.framePacing = handoff.report
+            rep.framePacing = isDemo ? demoPacer.report : handoff.report
             rep.captureLockSettle = captureGate.lastLock
             lock.lock()
             rep.videoFormatChanges = formatWatch.changes

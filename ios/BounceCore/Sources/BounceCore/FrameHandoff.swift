@@ -117,14 +117,20 @@ public final class FrameHandoff<Frame> {
         return pacer.report
     }
 
-    /// Work on the pacer under the lock: a pause about to happen (`expectPause`), the demo's own frames (which come
-    /// from a timer on the processing queue and go through `frameArrived` / `frameProcessed`, not the slot).
+    /// The delegate's call for the frame delivered last returned (the delegate's queue): when it began and ended. Its
+    /// own work per frame is timed, and a frame that reaches the delegate only as this call ends (it waited in the
+    /// delegate's queue behind it, held there by the app) is counted (`framesQueuedOnDelegate`, `delegateMs`).
+    public func delegateReturned(entered: Double, now: Double) {
+        lock.lock(); pacer.delegateReturned(entered: entered, now: now); lock.unlock()
+    }
+
+    /// Work on the pacer under the lock: a pause about to happen (`expectPause`).
     public func withPacer<R>(_ body: (inout FramePacer) -> R) -> R {
         lock.lock(); defer { lock.unlock() }
         return body(&pacer)
     }
 
-    /// The frame numbers start afresh (a new camera run, or the demo). A frame being processed or waiting stays where it
+    /// The frame numbers start afresh (a new camera run). A frame being processed or waiting stays where it
     /// is: it is finished as usual (and counted in the new numbers).
     public func resetPacer(_ p: FramePacer = FramePacer()) {
         lock.lock(); pacer = p; lock.unlock()

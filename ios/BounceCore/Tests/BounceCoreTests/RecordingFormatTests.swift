@@ -110,6 +110,7 @@ final class RecordingFormatTests: XCTestCase {
         out.detections = [DetectedOutline(quad: [Vec2(1, 2), Vec2(3, 4), Vec2(5, 6), Vec2(7, 8)], score: 0.5, sideModes: ["top", "fromCutBottom", "top", "top"]),
                           DetectedOutline(quad: [Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)])]
         out.ballSearched = true; out.ball = [0.1, 0.4, -0.9, 30.5, 12.25, 6]; out.depthFused = true; out.lockUnconfirmed = true
+        out.ballAwaitsConfirmation = true
         f.output = out
         let crop = BallImageCrop(x0: 10, y0: 4, width: 40, height: 30, factor: 2)
         f.ballCrop = crop; f.ballIntrinsics = crop.intrinsics(full: K.scaled(by: 4))
