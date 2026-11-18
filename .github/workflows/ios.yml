@@ -124,14 +124,16 @@ jobs:
       # show the right tilt / apex / drop, re-lock after the slab is slid, copy diagnostics, record and share.
       # Informational (does not fail the build) until the slab and ball detectors are merged; then blocking.
       - name: End-to-end UI tests in the Simulator (demo scene)
+        # Blocking: a failing end-to-end test fails the run. A test that fails is run once more (a slow shared
+        # Simulator can miss a time limit); its first failure still shows in the log and the summary below.
         if: matrix.xcode == 'default'
-        continue-on-error: true
         timeout-minutes: 30
         run: |
           set +e
           xcrun simctl io "$SIM_UDID" recordVideo --codec=h264 --force e2e.mp4 &
           REC=$!
           xcodebuild test -project ios/SlabBounce.xcodeproj -scheme SlabBounce -destination "id=$SIM_UDID" \
+            -retry-tests-on-failure -test-iterations 2 \
             -resultBundlePath e2e.xcresult > e2e.log 2>&1
           status=$?
           kill -INT $REC; wait $REC
