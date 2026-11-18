@@ -109,8 +109,9 @@ public struct DetectionRecord: Codable, Equatable {
     /// the detector's per-side edge modes, in pose order
     public var sideModes: [String]?
     /// where the edge steps of the outline used read their pixels: "crop" (a re-check following the lock's outline, on
-    /// the full-resolution crop around it, `SlabImageCrop`), "refined" (a search's find refined on a crop around it);
-    /// nil: the processing frame alone
+    /// the full-resolution crop around it, `SlabImageCrop`, which covered the outline found), "refined" (a search's find
+    /// refined on a crop around it); nil: the processing frame alone (no crop, a refine pass that missed, or a re-check
+    /// whose find lay outside the crop around the lock: counted as "slabCropMisses")
     public var edges: String?
 
     public init(time: Double, state: TrackerState, found: Int, rejected: [String] = [], outcome: [String] = []) {
@@ -851,7 +852,17 @@ public final class SlabTracker {
             }
             return found
         }
-        if frameDetail != nil { edges = "crop" }
+        // a re-check given the crop around the lock's outline up front: its edges came from the crop only if the crop
+        // covers the outline used and the edge steps' reach around it (the finder's own rule); one found further off
+        // (the slab moved, the lock drifted) was measured on the processing frame (counted, not labelled "crop")
+        if let d = frameDetail {
+            if FinderRun.detailCovers(chosen.quad, frameWidth: f.view.intrinsics.width, frameHeight: f.view.intrinsics.height,
+                                      detail: d.image, map: ImageMap(from: f.view.intrinsics, to: d.intrinsics)) {
+                edges = "crop"
+            } else {
+                bump("slabCropMisses")
+            }
+        }
         // a search's find (searching or confirming, or a re-check over the whole view): found on the processing frame,
         // then refined on full-resolution pixels around it, the detector following that one outline as it follows a
         // lock, so no measurement that feeds the lock is left on the processing frame's coarse edges

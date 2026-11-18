@@ -97,26 +97,31 @@ final class FramePacingTests: XCTestCase {
     }
 
     func testWorkOnSkippedFramesIsNotTakenForARKitsLatency() {
-        // while the capture kit records, the app still hands skipped frames to the kit's recorder (8 ms of scaling each):
+        // while the capture kit records, the app still hands skipped frames to the kit's recorder (12 ms of scaling each):
         // a frame that waited behind that work did not reach an idle handler. Told so, the pacer keeps ARKit's own latency
         // (25 ms) as its baseline and keeps processed frames fresh; not told, it takes the waits for latency
         var sim = QueueSim()
         sim.latency = { _ in 0.025 }
         sim.work = { _ in 0.040 }
-        sim.skipCost = 0.008
-        func run(report: Bool) -> (base: Double, maxAge: Double, skipped: Int) {
-            var p = FramePacer(); var s = sim; s.reportSkipCost = report
+        sim.skipCost = 0.012
+        func run(report: Bool, skipCost: Double = 0.012) -> (base: Double, maxAge: Double, skipped: Int) {
+            var p = FramePacer(); var s = sim; s.reportSkipCost = report; s.skipCost = skipCost
             let r = s.run(1200, pacer: &p)
             let ages = r.dropFirst(300).filter { $0.processed }.map { $0.handled - $0.capture }
             return ((p.report.baselineLatencyMs ?? 0) / 1000, ages.max() ?? 0, p.report.total.framesSkippedLate)
         }
         let told = run(report: true), untold = run(report: false)
-        print(String(format: "pacer, 8 ms of work on skipped frames: told: baseline %.1f ms, processed latency max %.1f ms, skipped %d; "
+        print(String(format: "pacer, 12 ms of work on skipped frames: told: baseline %.1f ms, processed latency max %.1f ms, skipped %d; "
                      + "not told: baseline %.1f ms, max %.1f ms, skipped %d", told.base * 1000, told.maxAge * 1000, told.skipped,
                      untold.base * 1000, untold.maxAge * 1000, untold.skipped))
         XCTAssertEqual(told.base, 0.025, accuracy: 0.001)
         XCTAssertLessThanOrEqual(told.maxAge, told.base + 1.0 / 60 + 1e-6)
         XCTAssertGreaterThan(untold.base, told.base + 0.001, "without being told, waits look like latency")
+        // work the pacer is not told of, but shorter than its idle margin (half a frame interval, as other work on the
+        // queue might be): a frame that waited behind it still does not pass for idle, so the backlog is still skipped
+        let short = run(report: false, skipCost: 0.008)
+        XCTAssertEqual(short.base, 0.025, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(short.maxAge, short.base + 1.0 / 60 + 1e-6)
         // a skipped frame's work is in no statistics
         var p = FramePacer()
         XCTAssertEqual(p.frameArrived(captureTime: 1, now: 1.02, nominalInterval: 1.0 / 60), .process)
@@ -127,26 +132,152 @@ final class FramePacingTests: XCTestCase {
     }
 
     func testAWrongBaselineCanDelayButNeverStopProcessing() {
-        // the latency jumps for good from 20 ms to 220 ms (as if one clock jumped): every frame looks late against the old
-        // baseline, but at least one frame in every 0.25 s is processed, and within the baseline window the new latency is
-        // the normal one
+        // the latency jumps for good from 20 ms to 220 ms (as if one clock jumped). With the handler idle, nothing waited
+        // in the queue: every frame is processed (late, but ARKit's lateness, not the app's) and the baseline follows
         var p = FramePacer()
         var sim = QueueSim()
         sim.latency = { i in i < 300 ? 0.020 : 0.220 }
         let r = sim.run(900, pacer: &p)
-        var lastProcessed = r[0].capture, longest = 0.0
-        for f in r where f.processed { longest = max(longest, f.capture - lastProcessed); lastProcessed = f.capture }
-        XCTAssertLessThanOrEqual(longest, FramePacer.Rule().maxUnprocessedSeconds + 1.0 / 60 + 1e-9)
-        XCTAssertGreaterThan(p.report.total.framesProcessedLate, 0, "late frames processed to keep going")
-        // two seconds after the jump, every frame is processed again
-        XCTAssertTrue(r[(300 + 150)...].allSatisfy { $0.processed })
+        XCTAssertTrue(r.allSatisfy { $0.processed })
+        XCTAssertEqual(p.report.total.framesSkippedLate, 0)
+        XCTAssertGreaterThan(p.report.total.framesLateButIdle, 0, "the frames after the jump came late to an idle handler")
+        XCTAssertEqual(p.report.total.framesProcessedLate, 0)
         XCTAssertEqual(p.report.baselineLatencyMs ?? 0, 220, accuracy: 1)
 
-        // a constant offset between the two clocks is absorbed by the baseline
+        // the same jump while the queue never empties (each frame handed over just as the last one's handling ended, so
+        // none reached an idle handler and the baseline cannot follow): every frame after the jump looks late and waited,
+        // but one is processed at least every 0.25 s
         var q = FramePacer()
+        let dt = 1.0 / 60, busy = dt - 0.0005
+        var lastProcessed = 0.0, longest = 0.0
+        for i in 0..<900 {
+            let c = Double(i) * dt
+            let d = q.frameArrived(captureTime: c, now: c + (i < 60 ? 0.020 : 0.300), nominalInterval: dt)
+            if d == .process {
+                // (the frame before the jump keeps the handler busy until the next one is handed over, 0.28 s later)
+                q.frameProcessed(captureTime: c, seconds: busy + (i == 59 ? 0.28 : 0), search: false, recheck: false, ball: false)
+                longest = max(longest, c - lastProcessed); lastProcessed = c
+            } else {
+                q.skippedFrameHandled(seconds: busy)
+            }
+        }
+        let rep = q.report
+        print(String(format: "pacer, latency jump with the queue never empty: %d skipped, %d processed late, longest unprocessed %.0f ms",
+                     rep.total.framesSkippedLate, rep.total.framesProcessedLate, rep.total.longestUnprocessedMs))
+        XCTAssertGreaterThan(rep.total.framesSkippedLate, 500)
+        XCTAssertGreaterThan(rep.total.framesProcessedLate, 0, "late frames processed to keep going")
+        XCTAssertLessThanOrEqual(longest, FramePacer.Rule().maxUnprocessedSeconds + dt + 1e-9)
+        XCTAssertEqual(rep.total.framesLateButIdle, 0)
+
+        // a constant offset between the two clocks is absorbed by the baseline
+        var o = FramePacer()
         var sim2 = QueueSim()
         sim2.latency = { _ in 1e5 }
-        XCTAssertTrue(sim2.run(300, pacer: &q).allSatisfy { $0.processed })
+        XCTAssertTrue(sim2.run(300, pacer: &o).allSatisfy { $0.processed })
+    }
+
+    func testFramesARKitDeliveredLateToAnIdleHandlerAreProcessed() {
+        // processing keeps up (5 ms a frame) but ARKit's own latency varies by more than a frame: 30 ms, or 48.5 ms for
+        // about a third of the frames. Nothing waited in the queue, so nothing is skipped; the late deliveries are counted
+        // apart (ARKit's lateness, not the app's)
+        var p = FramePacer()
+        var sim = QueueSim()
+        sim.latency = { i in (i * 7919) % 10 < 3 ? 0.0485 : 0.030 }
+        let r = sim.run(1200, pacer: &p)
+        XCTAssertTrue(r.allSatisfy { $0.processed })
+        var rep = p.report
+        XCTAssertEqual(rep.total.framesSkippedLate, 0)
+        XCTAssertGreaterThan(rep.total.framesLateButIdle, 300)
+        XCTAssertEqual(rep.total.framesProcessedLate, 0)
+        XCTAssertEqual(rep.baselineLatencyMs ?? 0, 30, accuracy: 0.5)
+
+        // ARKit's latency steps up for good, from 25 to 45 ms (more load, a warmer phone): every frame is processed,
+        // none waits for the baseline to catch up
+        var q = FramePacer()
+        sim.latency = { i in i < 600 ? 0.025 : 0.045 }
+        XCTAssertTrue(sim.run(1200, pacer: &q).allSatisfy { $0.processed })
+        rep = q.report
+        XCTAssertEqual(rep.total.framesSkippedLate, 0)
+        XCTAssertGreaterThan(rep.total.framesLateButIdle, 0)
+        XCTAssertEqual(rep.baselineLatencyMs ?? 0, 45, accuracy: 0.5, "the baseline follows within its window")
+
+        // the same latencies, 25-45 ms, with processing slower than the camera (40 ms a frame): frames that waited
+        // behind it are skipped as before, and the queue never grows
+        var b = FramePacer()
+        var slow = QueueSim()
+        slow.work = { _ in 0.040 }
+        slow.latency = { i in 0.025 + 0.020 * (0.5 + 0.5 * sin(Double(i) * 2.3)) }
+        let s = slow.run(1200, pacer: &b)
+        rep = b.report
+        XCTAssertGreaterThan(rep.total.framesSkippedLate, 600)
+        XCTAssertLessThan(s.dropFirst(30).map { $0.handled - $0.capture }.max()!, 0.045 + 0.040 + 2.0 / 60)
+        XCTAssertLessThanOrEqual(rep.recent.longestUnprocessedMs, 0.040 * 1000 + 2 * 1000.0 / 60)
+    }
+
+    func testPausesAreNotFramesTheCameraMissed() {
+        let dt = 1.0 / 60
+        var p = FramePacer()
+        var c = 100.0
+        func frames(_ n: Int) { for _ in 0..<n { _ = p.frameArrived(captureTime: c, now: c + 0.03, nominalInterval: dt); p.frameProcessed(captureTime: c, seconds: 0.004, search: false, recheck: false, ball: false); c += dt } }
+        frames(120)
+        // the session interrupted for 5 s (a call, the app in the background): one pause, no frames missed
+        c += 5
+        frames(120)
+        var rep = p.report
+        XCTAssertEqual(rep.total.pauses, 1)
+        XCTAssertEqual(rep.total.pausedSeconds, 5 + dt, accuracy: 0.01)
+        XCTAssertEqual(rep.total.cameraGaps, 0)
+        XCTAssertEqual(rep.total.framesMissedByCamera, 0)
+        XCTAssertLessThan(rep.total.longestUnprocessedMs, 2 * dt * 1000)
+        XCTAssertEqual(rep.total.framesProcessed, 240)
+        // a re-run with another format (the capture kit opening): the app says so just before; its 0.3 s stop is a pause
+        p.expectPause(at: c)
+        frames(10)
+        c += 0.3
+        frames(60)
+        rep = p.report
+        XCTAssertEqual(rep.total.pauses, 2)
+        XCTAssertEqual(rep.total.cameraGaps, 0)
+        XCTAssertEqual(rep.recent.pauses, 2)
+        XCTAssertLessThan(rep.total.longestUnprocessedMs, 2 * dt * 1000)
+        // the same stop without a re-run asked for, or after the window: frames the camera missed
+        c += 0.3
+        frames(60)
+        p.expectPause(at: c)
+        c += 1.2
+        frames(1)
+        c += 0.3
+        frames(10)
+        rep = p.report
+        XCTAssertEqual(rep.total.pauses, 3, "1.2 s is a pause anyway")
+        XCTAssertEqual(rep.total.cameraGaps, 2)
+        XCTAssertEqual(rep.total.framesMissedByCamera, 2 * 18)
+        // the demo's timer drops ticks while a frame takes longer than its interval: no camera missed them
+        var demo = FramePacer()
+        demo.rule.countsCameraGaps = false
+        for i in 0..<100 { _ = demo.frameArrived(captureTime: Double(i) * 0.16, now: Double(i) * 0.16, nominalInterval: 0.08) }
+        XCTAssertEqual(demo.report.total.cameraGaps, 0)
+        XCTAssertEqual(demo.report.total.pauses, 0)
+    }
+
+    func testProcessingTimesByWhatRan() {
+        // searches take 80 ms, re-checks 25 ms, ball-only frames 8 ms, the rest 3 ms: the overall p95 mixes them, the kinds
+        // keep them apart
+        var p = FramePacer()
+        let dt = 1.0 / 60
+        for i in 0..<600 {
+            let c = Double(i) * dt
+            guard p.frameArrived(captureTime: c, now: c + 0.03, nominalInterval: dt) == .process else { continue }
+            let search = i < 120 && i % 7 == 0, recheck = i >= 120 && i % 18 == 0, ball = i >= 120 && i % 6 == 0
+            p.frameProcessed(captureTime: c, seconds: search ? 0.080 : recheck ? 0.025 : ball ? 0.008 : 0.003, search: search, recheck: recheck, ball: ball)
+        }
+        let k = p.report.total.processingByKind
+        XCTAssertEqual(k.search?.p50 ?? 0, 80, accuracy: 0.5)
+        XCTAssertEqual(k.recheck?.p95 ?? 0, 25, accuracy: 0.5)
+        XCTAssertEqual(k.ball?.max ?? 0, 8, accuracy: 0.5)
+        XCTAssertEqual(k.plain?.p95 ?? 0, 3, accuracy: 0.5)
+        XCTAssertEqual(p.report.recent.processingByKind.search?.max ?? 0, 80, accuracy: 0.01)
+        XCTAssertNil(FramePacer().report.total.processingByKind.search)
     }
 
     func testCameraGapsAndARestartedClock() {
@@ -212,7 +343,7 @@ final class FramePacingTests: XCTestCase {
         let json = rep.json(pretty: true)
         for key in ["framePacing", "framesSkippedLate", "framesMissedByCamera", "deliveryLatencyMs", "processingMs", "searchesPerSecond",
                     "rechecksPerSecond", "ballSearchesPerSecond", "processingOverruns", "baselineLatencyMs", "lateAfterMs", "recent", "total",
-                    "captureLockSettle", "slabCrop", "videoFormatChange"] {
+                    "captureLockSettle", "slabCrop", "videoFormatChange", "framesLateButIdle", "pauses", "processingByKind"] {
             XCTAssertTrue(json.contains("\"\(key)\""), key)
         }
         let back = try DiagnosticsReport.decode(json: json)
@@ -357,6 +488,80 @@ final class FramePacingTests: XCTestCase {
         // the rate alone
         XCTAssertNotNil(w.note(width: 1280, height: 960, framesPerSecond: 30, at: 3))
         XCTAssertEqual(w.changes, 2)
+        XCTAssertEqual(w.lastChange?.basis, "caller")
         XCTAssertEqual(VideoFormatWatch.discontinuityReason, "video-format")
+    }
+
+    func testAFrameRateChangeIsNotedOnTheNewRunsFramesNotWhenItWasAsked() {
+        // the app's format 1920x1440 at 30 fps, then the capture kit's 1920x1440 at 60 fps: the same size, so only the
+        // frames' spacing shows the new run. ARKit keeps delivering the old run's frames for 0.3 s after the ask, then
+        // stops for 0.2 s while it reconfigures the camera
+        var w = VideoFormatWatch()
+        let size = (w: 1920, h: 1440)
+        func fmt(_ fps: Double, _ s: (w: Int, h: Int) = (1920, 1440)) -> VideoFormatWatch.Format { .init(width: s.w, height: s.h, framesPerSecond: fps) }
+        var changes: [VideoFormatWatch.Change] = []
+        func frames(from t0: Double, to t1: Double, fps: Double, _ s: (w: Int, h: Int) = (1920, 1440)) {
+            var t = t0
+            while t < t1 - 1e-9 { if let c = w.note(width: s.w, height: s.h, at: t) { changes.append(c) }; t += 1 / fps }
+        }
+        w.expect(fmt(30), askedAt: 0)
+        frames(from: 0.01, to: 2.0, fps: 30)
+        XCTAssertTrue(changes.isEmpty)
+        XCTAssertEqual(w.current, fmt(30), "the first frames take the rate asked for")
+        XCTAssertNil(w.expected)
+
+        w.expect(fmt(60), askedAt: 2.0)
+        frames(from: 2.0, to: 2.3, fps: 30)          // the old run's last frames, captured after the ask
+        XCTAssertTrue(changes.isEmpty, "not on frames still in the old format")
+        XCTAssertEqual(w.current?.framesPerSecond, 30, "still labelled with the old rate")
+        frames(from: 2.5, to: 3.0, fps: 60)          // the new run
+        XCTAssertEqual(changes.count, 1)
+        let up = try! XCTUnwrap(changes.first)
+        XCTAssertEqual(up.at, 2.5 + 3.0 / 60, accuracy: 1e-6, "on the new run's fourth frame: three steps at the new spacing")
+        XCTAssertEqual(up.from, fmt(30)); XCTAssertEqual(up.to, fmt(60))
+        XCTAssertEqual(up.basis, "frame-steps")
+        XCTAssertEqual(up.description, "video format 1920x1440 30 fps -> 1920x1440 60 fps")
+
+        // back to 30 fps: the old run at 60 drops two frames in a row (spaced like 30 fps twice) before the new run starts:
+        // not enough to be taken for the new rate
+        changes = []
+        w.expect(fmt(30), askedAt: 3.0)
+        var t = 2.5 + 29.0 / 60                     // the last frame above
+        for step in [1.0, 2, 2, 1, 1] { t += step / 60; if let c = w.note(width: size.w, height: size.h, at: t) { changes.append(c) } }
+        XCTAssertTrue(changes.isEmpty)
+        frames(from: 3.4, to: 3.8, fps: 30)
+        XCTAssertEqual(changes.map { $0.at }.count, 1)
+        XCTAssertEqual(changes.first?.at ?? 0, 3.4 + 3.0 / 30, accuracy: 1e-6)
+        XCTAssertEqual(w.current, fmt(30))
+
+        // a re-run whose frames never show the new rate: noted anyway, once, a second after the ask
+        changes = []
+        w.expect(fmt(60), askedAt: 5.0)
+        frames(from: 5.0, to: 6.5, fps: 30)
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(changes.first?.basis, "time")
+        XCTAssertGreaterThanOrEqual(changes.first?.at ?? 0, 6.0)
+        XCTAssertLessThan(changes.first?.at ?? 0, 6.0 + 1.0 / 30 + 1e-9)
+        XCTAssertTrue(changes.first?.description.hasSuffix("(by time)") ?? false)
+
+        // a change of size: on the first frame of the new size, with the rate asked for it; the old size's frames after
+        // the ask are not a change
+        changes = []
+        w.expect(fmt(60, (1280, 960)), askedAt: 8.0)
+        frames(from: 8.0, to: 8.2, fps: 60)
+        XCTAssertTrue(changes.isEmpty)
+        frames(from: 8.4, to: 8.5, fps: 60, (1280, 960))
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(changes.first?.at ?? 0, 8.4, accuracy: 1e-9)
+        XCTAssertEqual(changes.first?.basis, "size")
+        XCTAssertEqual(changes.first?.to, fmt(60, (1280, 960)))
+
+        // asked for the format already running: nothing
+        changes = []
+        w.expect(fmt(60, (1280, 960)), askedAt: 9.0)
+        frames(from: 9.0, to: 10.5, fps: 60, (1280, 960))
+        XCTAssertTrue(changes.isEmpty)
+        XCTAssertNil(w.expected)
+        XCTAssertEqual(w.changes, 4)
     }
 }

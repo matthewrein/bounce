@@ -252,7 +252,18 @@ final class FinderRun {
     /// (a lookalike elsewhere in the view) on the frame's, instead of reading the crop's clamped border for it. Parts
     /// beyond the frame's own edges do not count (neither image has pixels there).
     func edgeImage(for q: [Vec2]) -> (luma: Plane, map: ImageMap) {
-        guard let d = detail, let m = detailMap, q.count >= 3 else { return (yRaw, frameMap) }
+        guard let d = detail, let m = detailMap, FinderRun.detailCovers(q, frameWidth: w, frameHeight: h, detail: d, map: m) else {
+            return (yRaw, frameMap)
+        }
+        return (d.luma, m)
+    }
+
+    /// Whether the finer image `detail` covers an outline `q` (pixels of a frame `frameWidth` x `frameHeight`; `map`:
+    /// from the frame's pixels to the finer image's) and everything the edge steps look at around it (`detailReach`),
+    /// so that its edges are read on the finer image (`edgeImage`). The tracker asks the same of the outline it used,
+    /// to say whether its edges came from the crop.
+    static func detailCovers(_ q: [Vec2], frameWidth w: Int, frameHeight h: Int, detail d: DetailImage, map m: ImageMap) -> Bool {
+        guard q.count >= 3 else { return false }
         let P = q.map(m.forward)
         let longest = (0..<P.count).map { P[$0].distance(to: P[($0 + 1) % P.count]) }.max() ?? 0
         let g = FinderRun.detailReach * longest + FinderRun.detailReachUnits * max(0.5, m.scale / 2)
@@ -260,9 +271,8 @@ final class FinderRun {
         let x0 = max(P.map { $0.x }.min()! - g, a.x), x1 = min(P.map { $0.x }.max()! + g, b.x)
         let y0 = max(P.map { $0.y }.min()! - g, a.y), y1 = min(P.map { $0.y }.max()! + g, b.y)
         let tol = 1.0
-        guard x0.isFinite, x1.isFinite, y0.isFinite, y1.isFinite, x0 >= -tol, y0 >= -tol,
-              x1 <= Double(d.luma.width) + tol, y1 <= Double(d.luma.height) + tol else { return (yRaw, frameMap) }
-        return (d.luma, m)
+        return x0.isFinite && x1.isFinite && y0.isFinite && y1.isFinite && x0 >= -tol && y0 >= -tol
+            && x1 <= Double(d.luma.width) + tol && y1 <= Double(d.luma.height) + tol
     }
 
     // MARK: entry points

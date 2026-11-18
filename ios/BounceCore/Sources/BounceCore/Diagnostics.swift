@@ -156,10 +156,10 @@ public struct DiagnosticsReport: Codable, Equatable {
         "recentEvents": "prefixed with the camera clock (s), as frameTime and recordings",
         "floorY": "world y of the floor (m); floorBelowSlab: the lock's centre above it (m)",
         "lockSigmaDegrees": "how well the lock pins the normal (deg, 1 sigma); cornerNoisePixels: the detector's corner noise (processing px)",
-        "framePacing": "camera clock: frames received / processed / skipped late / missed by the camera; latencies and processing times in ms (p50, p95, max); detector runs per second; recent window and total",
+        "framePacing": "camera clock: frames received / processed / skipped late (waited behind processing) / late but idle (ARKit's own delay, processed) / missed by the camera; pauses (s); latencies and processing times in ms (p50, p95, max), processing also by what ran; detector runs per second; recent window and total",
         "captureLockSettle": "camera clock (s): when the capture lock was armed and taken, how long it waited, whether it timed out and what was still adjusting",
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
-        "videoFormatChange": "the last video format change (full image size, nominal fps) and the camera clock of its first frame",
+        "videoFormatChange": "the last video format change (full image size, nominal fps), the camera clock of the frame it was noted on, and what showed it (basis: size, frame-steps, time)",
     ]
 
     public init(build: String, device: String, system: String, time: String, settings: RecordingSettings, state: String, tracking: String,

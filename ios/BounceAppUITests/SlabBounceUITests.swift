@@ -203,10 +203,12 @@ final class SlabBounceUITests: XCTestCase {
             guard let m = w[k] as? [String: Any] else { return "-" }
             return String(format: "%.1f/%.1f", (m["p50"] as? NSNumber)?.doubleValue ?? -1, (m["p95"] as? NSNumber)?.doubleValue ?? -1)
         }
-        let frames = String(format: "frames: total %d received, %d processed, %d skipped late, %d gaps (%d missed), process %@ ms (p50/p95); "
-                            + "recent %.1f s: %.1f processed/s, detector %.1f searches/s %.1f re-checks/s",
-                            int(total, "framesReceived"), int(total, "framesProcessed"), int(total, "framesSkippedLate"), int(total, "cameraGaps"),
-                            int(total, "framesMissedByCamera"), ms(total, "processingMs"), num(recent, "seconds"), num(recent, "processedPerSecond"),
+        let kinds = total["processingByKind"] as? [String: Any] ?? [:]
+        let frames = String(format: "frames: total %d received, %d processed, %d skipped late, %d late but idle, %d gaps (%d missed), %d pauses, "
+                            + "process %@ ms (p50/p95; search %@, plain %@); recent %.1f s: %.1f processed/s, detector %.1f searches/s %.1f re-checks/s",
+                            int(total, "framesReceived"), int(total, "framesProcessed"), int(total, "framesSkippedLate"), int(total, "framesLateButIdle"),
+                            int(total, "cameraGaps"), int(total, "framesMissedByCamera"), int(total, "pauses"), ms(total, "processingMs"),
+                            ms(kinds, "search"), ms(kinds, "plain"), num(recent, "seconds"), num(recent, "processedPerSecond"),
                             num(recent, "searchesPerSecond"), num(recent, "rechecksPerSecond"))
         let lineFrames: String = developerLine.split(separator: "\n").first(where: { $0.hasPrefix("frames:") }).map { String($0) } ?? "(no frame line read)"
         let slabCrop = json["slabCrop"] != nil ? "yes" : "no"
@@ -225,7 +227,7 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertGreaterThan(int(total, "framesProcessed"), 0)
         XCTAssertGreaterThanOrEqual(int(total, "framesReceived"), int(total, "framesProcessed"))
         XCTAssertGreaterThanOrEqual(int(total, "framesSkippedLate"), 0)
-        XCTAssertGreaterThanOrEqual(int(total, "cameraGaps"), 0)
+        XCTAssertEqual(int(total, "cameraGaps"), 0, "the demo's timer ticks are not camera gaps")
         XCTAssertNotNil(total["processingMs"] as? [String: Any], "no processing times")
         XCTAssertGreaterThan(int(recent, "framesProcessed"), 0)
         // the slab's edges were read from a full-resolution crop (in the demo: of its own image)

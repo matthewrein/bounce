@@ -254,6 +254,45 @@ final class TrackerFramePipelineTests: XCTestCase {
         XCTAssertLessThan(zip(SlabTracker.aligned(q, to: det.truth(processing)!), det.truth(processing)!).map { $0.distance(to: $1) }.max()!, 3)
     }
 
+    func testARecheckWhoseFindLiesOutsideTheCropIsNotLabelledCrop() {
+        // locked on a slab 1 m away, re-checks get the crop around the lock up front and their finds lie inside it; then
+        // the slab is bumped 6 cm sideways (about 22 processing px, beyond the crop's slack of about 0.15 of a side): the
+        // next re-check's find lies outside the crop, its edges come from the processing frame, and it says so
+        let s = appSettings()
+        let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
+        let w = World(slab: slab, lens: .processing)
+        let det = DetailSpyDetector(w)
+        let tr = SlabTracker(settings: s, detector: det)
+        let provider = SlabImageCrop.provider(processing: processing, full: full) { c in Plane(width: c.imageWidth, height: c.imageHeight, fill: 9) }
+        let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
+        det.view = v
+        var t = 0.0, rechecks: [TrackerOutput] = []
+        func frames(_ seconds: Double) {
+            for _ in 0..<Int(seconds * 60) {
+                let out = tr.process(TrackerFrame(timestamp: t, view: v, frame: blank, slabDetail: provider))
+                if out.detectionKind == .recheck { rechecks.append(out) }
+                t += 1.0 / 60
+            }
+        }
+        frames(3)
+        XCTAssertEqual(tr.state, .locked)
+        XCTAssertFalse(rechecks.isEmpty)
+        XCTAssertEqual(tr.detectionLog.last?.edges, "crop")
+        XCTAssertNil(tr.counts["slabCropMisses"])
+        let before = rechecks.count
+        det.world = World(slab: World.slabAt(Vec3(0.06, 0.066, -1.0), tilt: 6, heading: 30), lens: .processing)
+        while rechecks.count == before && t < 10 { frames(1.0 / 60) }
+        let r = try! XCTUnwrap(rechecks.last)
+        XCTAssertNotNil(r.slabDetail, "the crop around the lock was cut")
+        XCTAssertEqual(tr.counts["slabCropMisses"], 1)
+        XCTAssertNil(tr.detectionLog.last?.edges, "\(tr.detectionLog.last?.outcome ?? [])")
+        XCTAssertTrue(tr.detectionLog.last?.outcome.contains("slabCropMisses") ?? false)
+        // the outline found really lies outside the crop's reach: further from the lock than the crop's slack
+        let found = try! XCTUnwrap(r.detections?.first?.quad), lockQ = try! XCTUnwrap(det.calls.last?.near)
+        let shift = zip(SlabTracker.aligned(found, to: lockQ), lockQ).map { $0.distance(to: $1) }.max()!
+        XCTAssertGreaterThan(shift, 15)
+    }
+
     func testSlabCropPlanning() {
         let pK = processing
         // a slab 55 px across in the processing frame (about 4 ft): 220 px in the full image, cut at factor 1
