@@ -31,7 +31,8 @@ import Foundation
 ///     pacer.frameProcessed(captureTime: frame.timestamp, seconds: CACurrentMediaTime() - start, output: trackerOutput)
 ///
 /// `seconds` must cover the whole handling, from `start` until the handler returns (it tells the pacer when the handler
-/// became free, which is how it knows which frames waited).
+/// became free, which is how it knows which frames waited). For the same reason, if the app still does some work on a
+/// skipped frame (the capture kit's recorder takes it), it says how long with `skippedFrameHandled(seconds:)`.
 ///
 /// Both clocks are the system's uptime clock (ARFrame.timestamp and CACurrentMediaTime are). Pure: it reads no clock
 /// itself, so tests drive it with made-up times.
@@ -79,6 +80,8 @@ public struct FramePacer {
     private var lastBaseline: Double?
     private var lastThreshold: Double?
     private var consecutiveSkips = 0
+    /// the last frame was skipped (`skippedFrameHandled` may still say the handler did some work on it)
+    private var lastSkipped = false
 
     // statistics
     private struct Arrival { var c: Double; var ageMs: Double; var skipped: Bool; var forced: Bool }
@@ -147,6 +150,7 @@ public struct FramePacer {
         // the handler is busy with it until `frameProcessed`, free again at once after a skip
         handlerFreeAt = now
         processingSince = skip ? nil : now
+        lastSkipped = skip
 
         // statistics
         if total.first == nil { total.first = c }
@@ -187,6 +191,17 @@ public struct FramePacer {
         if ball { total.balls += 1 }
         processed.append(Processed(c: c, ms: ms, overran: overran, search: search, recheck: recheck, ball: ball))
         trim(lastCapture ?? c)
+    }
+
+    /// A frame just skipped still took the handler `seconds` (s) of other work: the app handed it to a recorder (the
+    /// capture kit's video wants every frame, the tracker only the freshest). The handler was busy that long after the
+    /// skip, not free at once, so a frame that waited behind that work is not taken for one that reached an idle handler
+    /// (its wait is not ARKit's latency). Call it right after the skip, before the next frame; it is not a processed
+    /// frame and counts in no statistics.
+    public mutating func skippedFrameHandled(seconds: Double) {
+        guard lastSkipped, let free = handlerFreeAt, seconds.isFinite, seconds > 0 else { return }
+        handlerFreeAt = free + seconds
+        lastSkipped = false
     }
 
     /// The same, reading which detectors ran from the tracker's output (`detectionKind`, `ballSearched`).

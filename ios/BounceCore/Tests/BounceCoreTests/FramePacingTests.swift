@@ -14,6 +14,8 @@ final class FramePacingTests: XCTestCase {
         var latency: (Int) -> Double = { _ in 0.03 }
         var work: (Int) -> Double = { _ in 0.005 }
         var skipCost = 0.0002
+        /// tell the pacer about `skipCost` (`skippedFrameHandled`), as the app does when it still records a skipped frame
+        var reportSkipCost = false
         var pace = true
         var start = 1000.0
 
@@ -31,6 +33,7 @@ final class FramePacingTests: XCTestCase {
                     free = handled + w
                 } else {
                     free = handled + skipCost
+                    if reportSkipCost { pacer.skippedFrameHandled(seconds: skipCost) }
                 }
                 out.append((c, handled, process))
             }
@@ -91,6 +94,36 @@ final class FramePacingTests: XCTestCase {
         XCTAssertEqual(rep.total.framesProcessedLate, 0)
         XCTAssertLessThanOrEqual(rep.longestSkipRun, Int(FramePacer.Rule().maxUnprocessedSeconds * 60), "the start's backlog, drained")
         XCTAssertLessThanOrEqual(rep.recent.longestUnprocessedMs, 0.040 * 1000 + 2 * 1000.0 / 60)
+    }
+
+    func testWorkOnSkippedFramesIsNotTakenForARKitsLatency() {
+        // while the capture kit records, the app still hands skipped frames to the kit's recorder (8 ms of scaling each):
+        // a frame that waited behind that work did not reach an idle handler. Told so, the pacer keeps ARKit's own latency
+        // (25 ms) as its baseline and keeps processed frames fresh; not told, it takes the waits for latency
+        var sim = QueueSim()
+        sim.latency = { _ in 0.025 }
+        sim.work = { _ in 0.040 }
+        sim.skipCost = 0.008
+        func run(report: Bool) -> (base: Double, maxAge: Double, skipped: Int) {
+            var p = FramePacer(); var s = sim; s.reportSkipCost = report
+            let r = s.run(1200, pacer: &p)
+            let ages = r.dropFirst(300).filter { $0.processed }.map { $0.handled - $0.capture }
+            return ((p.report.baselineLatencyMs ?? 0) / 1000, ages.max() ?? 0, p.report.total.framesSkippedLate)
+        }
+        let told = run(report: true), untold = run(report: false)
+        print(String(format: "pacer, 8 ms of work on skipped frames: told: baseline %.1f ms, processed latency max %.1f ms, skipped %d; "
+                     + "not told: baseline %.1f ms, max %.1f ms, skipped %d", told.base * 1000, told.maxAge * 1000, told.skipped,
+                     untold.base * 1000, untold.maxAge * 1000, untold.skipped))
+        XCTAssertEqual(told.base, 0.025, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(told.maxAge, told.base + 1.0 / 60 + 1e-6)
+        XCTAssertGreaterThan(untold.base, told.base + 0.001, "without being told, waits look like latency")
+        // a skipped frame's work is in no statistics
+        var p = FramePacer()
+        XCTAssertEqual(p.frameArrived(captureTime: 1, now: 1.02, nominalInterval: 1.0 / 60), .process)
+        p.skippedFrameHandled(seconds: 0.5)   // not after a skip: ignored
+        p.frameProcessed(captureTime: 1, seconds: 0.005, search: false, recheck: false, ball: false)
+        XCTAssertEqual(p.report.total.framesProcessed, 1)
+        XCTAssertEqual(p.report.total.processingMs?.max ?? 0, 5, accuracy: 0.01)
     }
 
     func testAWrongBaselineCanDelayButNeverStopProcessing() {

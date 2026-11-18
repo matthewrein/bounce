@@ -6,9 +6,9 @@ import Foundation
 /// the folder. Recordings show the owner's surroundings: they stay on the phone unless the owner shares them.
 ///
 /// Version 2 of the format: every frame the tracker processed gets a line (`RecordingCadence` decides which pixels go
-/// with it). Lines are never dropped: if the disk falls behind, a frame's image and ball picture are left out (a replay
-/// then uses the phone's results for it), never its line or depth. Any write error (a full disk, say), the size limit or
-/// the file limit stops the recording and is reported; nothing here crashes the app.
+/// with it). Lines are never dropped: if the disk falls behind, a frame's image, ball picture and slab crop are left out
+/// (a replay then uses the phone's results for it), never its line or depth. Any write error (a full disk, say), the size
+/// limit or the file limit stops the recording and is reported; nothing here crashes the app.
 final class SessionRecorder {
     enum RecorderError: LocalizedError {
         case notRecording, writeFailed(String)
@@ -42,7 +42,7 @@ final class SessionRecorder {
 
     /// lines written so far
     var frameCount: Int { lock.lock(); defer { lock.unlock() }; return written }
-    /// frames whose image or ball picture was left out because the disk was behind
+    /// frames whose image, ball picture or slab crop was left out because the disk was behind
     var droppedPixels: Int { lock.lock(); defer { lock.unlock() }; return dropped }
     /// why the recording stopped writing, if it did
     var failure: String? { lock.lock(); defer { lock.unlock() }; return firstError }
@@ -57,8 +57,9 @@ final class SessionRecorder {
         writer = try RecordingWriter(folder: folder, session: session, byteLimit: SessionRecorder.maxBytes)
     }
 
-    /// Queue a frame's line and pixels for writing (call from one queue, in frame order).
-    func append(_ frame: RecordedFrame, image: YCCImage?, depth: DepthMap?, ball: Plane?) {
+    /// Queue a frame's line and pixels for writing (call from one queue, in frame order). `slab`: the full-resolution crop
+    /// the slab's edges were read from on this frame (`FrameRecord.slab`), if any.
+    func append(_ frame: RecordedFrame, image: YCCImage?, depth: DepthMap?, ball: Plane?, slab: Plane? = nil) {
         lock.lock()
         if firstError != nil { lock.unlock(); return }
         if pending >= SessionRecorder.maxPendingFrames {
@@ -67,11 +68,11 @@ final class SessionRecorder {
             return
         }
         let behind = pending > SessionRecorder.behindFrames
-        if behind && (image != nil || ball != nil) { dropped += 1 }
+        if behind && (image != nil || ball != nil || slab != nil) { dropped += 1 }
         pending += 1
         lock.unlock()
-        let img = behind ? nil : image, b = behind ? nil : ball
-        let newFiles = (img != nil ? 1 : 0) + (depth != nil ? 1 : 0) + (b != nil ? 1 : 0)
+        let img = behind ? nil : image, b = behind ? nil : ball, sl = behind ? nil : slab
+        let newFiles = (img != nil ? 1 : 0) + (depth != nil ? 1 : 0) + (b != nil ? 1 : 0) + (sl != nil ? 1 : 0)
         io.async {
             self.lock.lock()
             let stopped = self.firstError != nil, full = self.files + newFiles > SessionRecorder.maxFiles
@@ -79,7 +80,7 @@ final class SessionRecorder {
             self.lock.unlock()
             var err: String? = nil
             if !stopped && !full {
-                do { try self.writer.append(frame, image: img, depth: depth, ball: b) } catch { err = SessionRecorder.describe(error) }
+                do { try self.writer.append(frame, image: img, depth: depth, ball: b, slab: sl) } catch { err = SessionRecorder.describe(error) }
             }
             self.lock.lock()
             self.pending -= 1

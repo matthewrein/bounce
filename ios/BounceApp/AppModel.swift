@@ -102,9 +102,12 @@ struct DeveloperStatus: Equatable {
     var recordedFrames: Int? = nil
     /// why a running recording stopped writing, if it did
     var recordingFailure: String? = nil
+    /// how the camera's frames came and went over the last 10 s (ARController.framesLine), updated once a second
+    var frames: String? = nil
 
     var line: String {
         var parts = ["state \(state)", "lockUnconfirmed \(lockUnconfirmed)", "tracking \(tracking)"]
+        if let f = frames { parts.append(f) }
         if let d = depth { parts.append(d) }
         if let n = recordedFrames { parts.append("recorded \(n) frames") }
         parts.append("hint: " + (hint ?? "none"))

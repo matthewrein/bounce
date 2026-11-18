@@ -180,8 +180,9 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertNotNil(t, "never showed the new tilt; tilt \(label(app, "tilt")), status \(label(app, "status"))")
     }
 
-    /// Diagnostics (Settings > Developer > Copy diagnostics): the sheet shows valid JSON with the build, the lock and the
-    /// counters; the Developer screen shows the same build.
+    /// Diagnostics (Settings > Developer > Copy diagnostics): the sheet shows valid JSON with the build, the lock, the
+    /// counters and the frame numbers (framePacing: the demo's frames are counted like the camera's); the Developer screen
+    /// shows the same build and the frame line.
     func testDiagnostics() throws {
         let app = launch()
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") })
@@ -190,16 +191,47 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["buildLabel"].waitForExistence(timeout: 10))
         let buildLabel = label(app, "buildLabel")
         screenshot(app, "developer")
+        let developerLine = label(app, "developerLine")
         let json = try readDiagnostics(app, screenshotName: "diagnostics")
         let counts = json["counts"] as? [String: Int] ?? [:]
+        // the frame numbers: delivered, processed, skipped as late, gaps, latencies and processing times (ms, p50/p95)
+        let pacing = json["framePacing"] as? [String: Any]
+        let total = pacing?["total"] as? [String: Any] ?? [:], recent = pacing?["recent"] as? [String: Any] ?? [:]
+        func int(_ w: [String: Any], _ k: String) -> Int { (w[k] as? NSNumber)?.intValue ?? -1 }
+        func num(_ w: [String: Any], _ k: String) -> Double { (w[k] as? NSNumber)?.doubleValue ?? -1 }
+        func ms(_ w: [String: Any], _ k: String) -> String {
+            guard let m = w[k] as? [String: Any] else { return "-" }
+            return String(format: "%.1f/%.1f", (m["p50"] as? NSNumber)?.doubleValue ?? -1, (m["p95"] as? NSNumber)?.doubleValue ?? -1)
+        }
+        let frames = String(format: "frames: total %d received, %d processed, %d skipped late, %d gaps (%d missed), process %@ ms (p50/p95); "
+                            + "recent %.1f s: %.1f processed/s, detector %.1f searches/s %.1f re-checks/s",
+                            int(total, "framesReceived"), int(total, "framesProcessed"), int(total, "framesSkippedLate"), int(total, "cameraGaps"),
+                            int(total, "framesMissedByCamera"), ms(total, "processingMs"), num(recent, "seconds"), num(recent, "processedPerSecond"),
+                            num(recent, "searchesPerSecond"), num(recent, "rechecksPerSecond"))
+        let lineFrames: String = developerLine.split(separator: "\n").first(where: { $0.hasPrefix("frames:") }).map { String($0) } ?? "(no frame line read)"
+        let slabCrop = json["slabCrop"] != nil ? "yes" : "no"
         summary("diagnostics: build \(json["build"] ?? "?") (Developer shows \"\(buildLabel)\"), state \(json["state"] ?? "?"), "
                 + "tracking \(json["tracking"] ?? "?"), fps \(json["fps"] ?? "?"), ms per frame \(json["msProcess"] ?? "?"), "
                 + "tilt \(json["tiltDegrees"] ?? "?"), thermal \(json["thermalState"] ?? "?"), "
                 + "counts \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        summary("diagnostics frames: " + frames + "; slab crop \(slabCrop); Developer line: " + lineFrames)
         XCTAssertEqual(json["state"] as? String, "locked")
         let build = try XCTUnwrap(json["build"] as? String)
         XCTAssertTrue(buildLabel.contains(build), "the Developer screen shows build \"\(buildLabel)\", diagnostics \(build)")
         XCTAssertGreaterThan(counts["locks"] ?? 0, 0)
+        // the frame numbers are there and the demo's frames were processed (no rates asserted: the Simulator is slow and
+        // shared)
+        XCTAssertNotNil(pacing, "no framePacing in the diagnostics")
+        XCTAssertGreaterThan(int(total, "framesProcessed"), 0)
+        XCTAssertGreaterThanOrEqual(int(total, "framesReceived"), int(total, "framesProcessed"))
+        XCTAssertGreaterThanOrEqual(int(total, "framesSkippedLate"), 0)
+        XCTAssertGreaterThanOrEqual(int(total, "cameraGaps"), 0)
+        XCTAssertNotNil(total["processingMs"] as? [String: Any], "no processing times")
+        XCTAssertGreaterThan(int(recent, "framesProcessed"), 0)
+        // the slab's edges were read from a full-resolution crop (in the demo: of its own image)
+        XCTAssertGreaterThan((counts["slabCrops"] ?? 0), 0, "the tracker never got a slab crop")
+        // (the Developer line is checked only when the list showed it: a row scrolled out of view may not be readable)
+        if !developerLine.isEmpty { XCTAssertTrue(developerLine.contains("frames:"), "the Developer line has no frame numbers: \(developerLine)") }
         closeSettings(app)
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }

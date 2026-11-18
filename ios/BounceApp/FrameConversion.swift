@@ -124,8 +124,15 @@ enum FrameConversion {
         return YCCImage.fromBiplanar(luma: luma, lumaWidth: w, lumaHeight: h, lumaBytesPerRow: lb, cbcr: chroma, cbcrBytesPerRow: cb, factor: k)
     }
 
-    /// A crop of the full-resolution luma plane, shrunk by an integer factor, as a Float plane.
+    /// A crop of the full-resolution luma plane, shrunk by an integer factor, as a Float plane: `k` x `k` block averages,
+    /// each the integer sum of its bytes times 1/k² (BounceCore's `KitFramePipeline.lumaCrop` mirrors it for the capture
+    /// kit's scorer, and recordings keep the crops exactly). The crop starts at (x0, y0) clamped into the image and is cut
+    /// to it; nil when it would be 8 pixels or less either way. The ball's and the slab's crops (up to about 500k output
+    /// pixels): each source row is converted with vDSP (UInt8 to Float) and the blocks summed as Floats, which stay exact
+    /// integers (k² x 255 is below 2^24 for any factor under 256; the crops use 1-4), so the values are the same as
+    /// summing integers pixel by pixel.
     static func lumaCrop(_ pb: CVPixelBuffer, x0: Int, y0: Int, width cw: Int, height chh: Int, factor k: Int) -> Plane? {
+        guard k >= 1 else { return nil }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), lb = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
@@ -135,12 +142,29 @@ enum FrameConversion {
         let ow = min(cw, w - ax) / k, oh = min(chh, h - ay) / k
         guard ow > 8, oh > 8 else { return nil }
         var d = [Float](repeating: 0, count: ow * oh)
-        let inv = 1 / Float(k * k)
-        for yy in 0..<oh {
-            for xx in 0..<ow {
-                var s = 0
-                for dy in 0..<k { let r = (ay + yy * k + dy) * lb + ax + xx * k; for dx in 0..<k { s += Int(src[r + dx]) } }
-                d[yy * ow + xx] = Float(s) * inv
+        // a row of block sums over the k source rows (n source pixels), and one source row
+        let n = ow * k
+        let acc = UnsafeMutablePointer<Float>.allocate(capacity: n), row = UnsafeMutablePointer<Float>.allocate(capacity: n)
+        defer { acc.deallocate(); row.deallocate() }
+        d.withUnsafeMutableBufferPointer { out in
+            guard let o = out.baseAddress else { return }
+            var inv = 1 / Float(k * k)
+            for yy in 0..<oh {
+                let first = src + (ay + yy * k) * lb + ax, dst = o + yy * ow
+                if k == 1 {
+                    vDSP_vfltu8(first, 1, dst, 1, vDSP_Length(ow))
+                    continue
+                }
+                // the k rows, summed column by column
+                vDSP_vfltu8(first, 1, acc, 1, vDSP_Length(n))
+                for dy in 1..<k {
+                    vDSP_vfltu8(first + dy * lb, 1, row, 1, vDSP_Length(n))
+                    vDSP_vadd(acc, 1, row, 1, acc, 1, vDSP_Length(n))
+                }
+                // then each block's k columns, and the scale
+                vDSP_vadd(acc, vDSP_Stride(k), acc + 1, vDSP_Stride(k), dst, 1, vDSP_Length(ow))
+                for dx in 2..<k { vDSP_vadd(dst, 1, acc + dx, vDSP_Stride(k), dst, 1, vDSP_Length(ow)) }
+                vDSP_vsmul(dst, 1, &inv, dst, 1, vDSP_Length(ow))
             }
         }
         return Plane(width: ow, height: oh, data: d)

@@ -122,13 +122,21 @@ opens them by itself.
   processed, skipped because processing had fallen behind, and never delivered by the camera; how long frames took to
   reach the app and to process (median, 95th percentile, largest); and how often the slab search, the lock's re-check
   and the ball finder ran. `captureLockSettle` says how long the camera took to settle before its focus, exposure and
-  white balance were locked, and `slabCrop` where the last full-resolution close-up of the slab was cut.
+  white balance were locked, `slabCrop` where the last full-resolution close-up of the slab was cut, and
+  `videoFormatChange` the last time the camera's video format changed (the capture kit opening or closing). The recent
+  events list the same moments in words, e.g. "capture locked after 0.42 s settled" (or, at the 2.5 s timeout, what
+  was still adjusting) and "video format 1920x1440 30 fps -> 1920x1440 60 fps".
 - **Reset tracking**: forgets the slab and looks for it again.
 - **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
   where it lands instead of the corner plane's. Both apply when Settings closes.
 - **Build** shows the build label (e.g. n7), and the line under it the tracker's live state, including its hints, which
-  the main screen never shows.
+  the main screen never shows. Its "frames:" row sums up the last 10 seconds and is refreshed every second, e.g.
+  "frames: 58.9/s in, 3% late-skipped, 0 gaps, delivery 21/34 ms, process 6/19 ms (p50/p95), detector 8.3/s": frames
+  a second from the camera, the share skipped because processing had fallen behind, gaps where the camera sent nothing,
+  how long frames took to reach the app and to process (typical and slow, in milliseconds), and how often the slab
+  detector ran. Many late-skipped frames, or process times well above 17 ms (one frame at 60 fps), mean the phone is not
+  keeping up.
 
 ### Recording a session
 
@@ -230,7 +238,13 @@ phone** on the app's last screen removes it and its parts.
   size finds the slab, the camera's own pixels place its edges, `TrackerFrame.slabDetail`), `CaptureLockGate` (lock
   focus, exposure and white balance once the camera has stopped adjusting them, at most 2.5 s after the slab locks)
   and `VideoFormatWatch` (a new video format, as when the capture kit opens, is a world-frame discontinuity: the lock is
-  kept only unconfirmed until the slab is seen again in the new format).
+  kept only unconfirmed until the slab is seen again in the new format). In ARController the pacer comes first: a late
+  frame is skipped before any pixel is read, except that while a capture kit shot records it still goes to the kit's
+  recorder (the kit's video matters more than the tracker; the recorder takes only the frames its video's rate needs)
+  with the last tracker result, and the pacer is told how long that took. The video format is read from the frames themselves (their
+  size, and the frame rate of the format asked for when they were captured), so any re-run of the session is covered.
+  `FrameConversion.lumaCrop` cuts the ball's and the slab's crops with vDSP, to the same values as summing pixel by
+  pixel (the scorer's `KitFramePipeline.lumaCrop` mirrors it).
 - To replay one of your recordings: unzip it and run
   `BOUNCE_RECORDING=/path/to/slab-....bouncerec swift test --filter ReplayTests` in `ios/BounceCore`.
 - CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It then repeats the owner's steps on a
