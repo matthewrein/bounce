@@ -1,0 +1,171 @@
+// bounce-score: scores capture kits against their ground truth (ios/CaptureKit.md, "Scoring").
+//
+//   bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
+//                [--fail-on-regression] [--measured]
+//   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
+//
+// Kits are private: it prints kit ids, shot ids and numbers, never paths or anything from the pictures.
+import BounceCore
+import Foundation
+
+#if os(macOS) || os(Linux)
+
+let usage = """
+usage: bounce-score <kit folder or a folder of kits> ... [options]
+       bounce-score --synthetic [--frames N] [options]
+
+Scores every video shot of each kit with the app's detectors and tracker against the kit's ground truth.
+
+options:
+  --json FILE            write the scores as JSON (kit ids only, no paths)
+  --markdown             print the scores as Markdown (default: a short summary per kit)
+  --compare FILE         compare with an earlier --json file: every metric better / worse / same
+  --fail-on-regression   exit with status 2 if any metric got worse than in --compare
+  --measured             score with the kit's measured slab and ball instead of the app's own settings
+  --synthetic            also score the synthetic kit (rendered here, known truth)
+  --frames N             synthetic kit: frames per ordinary shot (default 12)
+  --video h264|hevc      synthetic kit: encode its frames with ffmpeg and decode them as a kit's video
+  --truth-ball           synthetic kit: a ball finder that knows where the ball is (tests the ball metrics)
+  --max-tilt-error DEG   exit with status 3 if the synthetic kit's median tilt error is above DEG, or missing
+  --scorer LABEL         record who scored it (e.g. a git hash) in the JSON
+  --quiet                no progress lines
+"""
+
+func fail(_ s: String, _ code: Int32 = 1) -> Never {
+    FileHandle.standardError.write(Data(("bounce-score: " + s + "\n").utf8))
+    exit(code)
+}
+
+func progress(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+
+var paths: [String] = []
+var jsonOut: String? = nil, compareWith: String? = nil, scorerLabel: String? = nil, videoCodec: String? = nil
+var markdown = false, failOnRegression = false, measured = false, synthetic = false, truthBall = false, quiet = false
+var frames = 12
+var maxTiltError: Double? = nil
+var args = Array(CommandLine.arguments.dropFirst())
+func value(_ name: String) -> String {
+    guard !args.isEmpty else { fail("\(name) needs a value\n\n" + usage) }
+    return args.removeFirst()
+}
+while !args.isEmpty {
+    let a = args.removeFirst()
+    switch a {
+    case "--json": jsonOut = value(a)
+    case "--markdown": markdown = true
+    case "--compare": compareWith = value(a)
+    case "--fail-on-regression": failOnRegression = true
+    case "--measured": measured = true
+    case "--synthetic": synthetic = true
+    case "--frames": guard let n = Int(value(a)), n >= 2 else { fail("--frames needs a number of at least 2") }; frames = n
+    case "--video": let v = value(a); guard v == "h264" || v == "hevc" else { fail("--video is h264 or hevc") }; videoCodec = v
+    case "--truth-ball": truthBall = true
+    case "--max-tilt-error": guard let d = Double(value(a)), d > 0 else { fail("--max-tilt-error needs degrees") }; maxTiltError = d
+    case "--scorer": scorerLabel = value(a)
+    case "--quiet": quiet = true
+    case "-h", "--help": print(usage); exit(0)
+    default:
+        if a.hasPrefix("-") { fail("unknown option \(a)\n\n" + usage) }
+        paths.append(a)
+    }
+}
+if paths.isEmpty && !synthetic { fail("give a kit folder, a folder of kits, or --synthetic\n\n" + usage) }
+if failOnRegression && compareWith == nil { fail("--fail-on-regression needs --compare") }
+
+let fm = FileManager.default
+/// The kits in a folder: the folder itself, or the folders in it that hold a kit.json.
+func kits(in path: String, number: Int) -> [URL] {
+    let u = URL(fileURLWithPath: path)
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue else { fail("folder #\(number) given does not exist") }
+    if fm.fileExists(atPath: u.appendingPathComponent(KitStore.manifestFile).path) { return [u] }
+    let subs = ((try? fm.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? [])
+        .filter { !$0.lastPathComponent.hasPrefix(".") && fm.fileExists(atPath: $0.appendingPathComponent(KitStore.manifestFile).path) }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    if subs.isEmpty { fail("folder #\(number) given holds no kit (no kit.json in it or in its folders)") }
+    return subs
+}
+
+var reports: [KitScoreReport] = []
+let log: ((String) -> Void)? = quiet ? nil : progress
+for (i, p) in paths.enumerated() {
+    for k in kits(in: p, number: i + 1) {
+        var o = KitScorer.Options()
+        o.useMeasurements = measured
+        o.log = log
+        do { reports.append(try KitScorer(kitFolder: k, options: o).score()) } catch {
+            fail("could not score a kit: \(KitScorer.describe(error))")
+        }
+    }
+}
+
+if synthetic {
+    if videoCodec != nil && !KitFFmpeg.isAvailable { fail("--video needs ffmpeg and ffprobe") }
+    let root = fm.temporaryDirectory.appendingPathComponent("bounce-synthetic-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    var so = KitSyntheticKit.Options()
+    so.framesPerShot = frames
+    so.video = videoCodec
+    if !quiet { progress("synthetic kit: making \(KitPlan.standard.shotCount) shots, \(frames) frames per ordinary shot") }
+    do {
+        let kit = try KitSyntheticKit.build(root: root, options: so)
+        var o = kit.scorerOptions(truthBall: truthBall)
+        o.useMeasurements = measured
+        o.log = log
+        let r = try KitScorer(kitFolder: kit.folder, options: o).score()
+        reports.append(r)
+        kit.remove()
+    } catch {
+        try? fm.removeItem(at: root)
+        fail("the synthetic kit failed: \(KitScorer.describe(error))")
+    }
+}
+
+var set = KitScoreSet(reports: reports, scoredAt: KitTime.iso(Date()), scorer: scorerLabel)
+var comparison: KitScoreComparison? = nil
+if let c = compareWith {
+    guard let d = try? Data(contentsOf: URL(fileURLWithPath: c)), let previous = try? KitScoreSet.read(d) else {
+        fail("the --compare file is not a scores file")
+    }
+    comparison = set.compare(previous: previous)
+}
+if let j = jsonOut {
+    do { try set.json().write(to: URL(fileURLWithPath: j), options: .atomic) } catch { fail("could not write the --json file") }
+}
+
+if markdown {
+    print(set.markdown(comparison: comparison))
+} else {
+    for r in reports {
+        func v(_ id: String) -> String { r.aggregate(id)?.formatted ?? "n/a" }
+        print("\(r.kitId) (\(r.source)): lock rate \(v("lockRate")), first lock \(v("timeToLock")), "
+              + "tilt error \(v("tiltErrorMedian")) median, \(v("tiltErrorP90")) p90 (bias \(v("tiltBias"))), "
+              + "normal \(v("normalErrorMedian")), corners \(v("cornerRms")), false slab \(v("slabFoundRate")), "
+              + "ball \(v("ballDetectionRate")), landing \(v("landingError"))")
+    }
+    if let c = comparison {
+        print("compared: \(c.regressions.count) worse, \(c.improvements.count) better")
+        for x in c.regressions {
+            print("  worse: \(x.kitId) \(x.scope) \(x.metric): \(KitMetric.format(x.before, x.unit)) -> \(KitMetric.format(x.after, x.unit))")
+        }
+    }
+}
+
+var status: Int32 = 0
+if failOnRegression, let c = comparison, c.hasRegressions {
+    progress("bounce-score: \(c.regressions.count) metrics got worse")
+    status = 2
+}
+if let maxErr = maxTiltError, synthetic {
+    let r = reports.last { $0.source == "synthetic" }
+    let e = r?.aggregate("tiltErrorMedian")?.value
+    if e == nil || e! > maxErr {
+        progress("bounce-score: the synthetic kit's median tilt error is \(e.map { String(format: "%.2f°", $0) } ?? "missing"), over \(maxErr)°")
+        status = 3
+    }
+}
+exit(status)
+
+#else
+print("bounce-score runs on macOS and Linux")
+#endif

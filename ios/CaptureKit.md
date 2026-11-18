@@ -291,23 +291,147 @@ kit is uploaded, the session attaches that repository and clones it outside this
 
 ## Scoring (replay against ground truth)
 
-`bounce-score` (an executable in the BounceCore package, macOS and Linux) runs every clip of a kit through the app's
-detectors and `SlabTracker`. It decodes the video with `ffmpeg` and scores the result against the manifest:
+`bounce-score` (an executable in the BounceCore package, macOS and Linux) scores kits against their ground truth. It
+reads a kit without changing it (`KitScorer`), runs every video shot through the app's own per-frame path
+(`KitFramePipeline`) and a fresh `SlabTracker` per shot, with the app's detectors (`AppDetectors.slab()` and
+`.ball()`) and the app's own settings (`RecordingSettings()`: the slab, ball and tuning baked into the app, as the owner's
+phone runs them). `--measured` scores with the kit's measured slab and ball instead, only when `measurementsEnteredAt`
+is set (otherwise the app's settings, with a note). The video is decoded with `ffmpeg` (`KitVideoDecoder`).
 
-- **Lock**: lock rate and time to first lock (slab shots).
-- **Tilt**: tilt error against the flat-phone true tilt (median and p90, for shots of positions that have one). The true
-  tilt of a shot is that of its record's position and generation (`manifest.position(forShot:)`). Only the size of the
-  tilt can be scored until the CoreMotion-to-ARKit link (above) is in; then the downhill direction too.
-- **Corners**: corner stability, the RMS spread of the per-frame world corners (mm), and slab size against the measured size
-  (only when `measurementsEnteredAt` is set; otherwise the measurements are the app's settings).
-- **Ball**: detection rate (ball shots), false positives (slab-only and negative shots), and the size check (ball on the
-  slab: distance from its size against its distance from the slab pose).
-- **Drop height**: the error against the entered heights. Drops are found after `releaseTime` (or `startTime + releaseCue`).
-- **Bounce**: predicted against actual landing and apex, plus the rebound measured from the bounces.
+```
+bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
+             [--fail-on-regression] [--measured]
+bounce-score --synthetic [--frames N] [--markdown] [--json out.json] [--video h264|hevc] [--truth-ball]
+             [--max-tilt-error DEG]
+```
 
-It prints a Markdown table and writes JSON. `--compare` against an earlier JSON shows the changes, so a change that makes
-any score worse is caught. The same scorer runs on a **synthetic kit**, rendered by `SyntheticScene` with known truth,
-in CI on every change, alongside the real kits scored locally.
+It prints kit ids, shot ids and numbers, never paths. `--fail-on-regression` exits with status 2 when a metric got
+worse than in `--compare`; `--max-tilt-error` exits with status 3 when the synthetic kit's median tilt error is above
+it or missing; `--scorer LABEL` records who scored (a git hash) in the JSON.
+
+**From a video frame to the tracker** (`KitFramePipeline`), as `ARController.handle` does it: the processing frame is
+the image shrunk by an integer box factor (`YCCImage.fromBiplanar`), converted only when `SlabTracker.detectionDue` (the
+app's 2x2 blank otherwise); its camera is the frame's ARKit pose (`ARKitConvention`) with the video `K` scaled to it;
+while locked and `ballDue`, the ball finder gets the app's crop of the full-resolution luma (`BallImageCrop.plan`, the
+app's integer block average) with its intrinsics; while locked, LiDAR depth when the frame has a BDP2 file (`K` scaled by
+depth width ÷ video width); `trackingNormal` from `track`. A test checks this against a copy of the app's code path.
+How it differs from the phone:
+
+- compression: the frames went through HEVC (or H.264) at 3-5 Mbit/s;
+- resolution: the app shrinks the 1920x1440 camera image by 4; from a 1440x1080 video the same 480x360 frame comes by a
+  factor of 3, from 1280x960 it is resized by area averaging (the intrinsics scaled per axis), and the ball finder's
+  crop is cut from the video, with fewer pixels across the ball (a video smaller than 480 px is used as it is);
+- frames: ordinary shots keep every other ARKit frame (30 fps) and drops every frame, while the app processes every
+  frame at 60 fps, so searches and re-checks fall on other frames;
+- depth: about one frame a second in the kit, every locked frame on the phone;
+- floor: the kit has no ARKit plane anchors, so `floorY` is nil (the app's readouts then end the path at the slab's
+  lowest corner; this changes neither the slab nor the ball);
+- no taps, resets or settings changes; each shot starts a new tracker.
+
+**Decoding** (`KitVideoDecoder`, ffmpeg and ffprobe): frames are streamed one at a time (the video is never held whole)
+as 8-bit 4:2:0 YCbCr in full range, like the camera's buffer. The colour range comes from the stream's tags (ffprobe's
+`color_range`, or a `yuvj` pixel format): a limited-range stream, or one without a tag, is expanded (luma
+(Y - 16) x 255/219, chroma (C - 128) x 255/224 + 128). Every decoded frame is kept (no frames dropped or repeated for a
+constant rate) and a rotation tag is ignored (the frames stay in sensor orientation, which `K` describes). A video with
+another number of frames than frames.jsonl has lines is an error for that shot; so is a missing ffmpeg.
+
+**Metrics.** Frames are a shot's video frames; t0 is its first frame's time. A metric that cannot be measured is n/a,
+with the reason (no ball finder in this build, the slab never locked, no true tilt for the position, measurements not
+entered, no height entered, no CoreMotion-to-ARKit link, ...).
+
+| Metric (id) | Shots | Definition |
+|---|---|---|
+| `lockRate` | slab expected in view | share of the frames with t - t0 ≥ 1 s on which the tracker is locked |
+| `timeToLock` | slab expected | first locked frame's t - t0 (s) |
+| `tiltErrorMedian`, `tiltErrorP90`, `tiltBias` | shots of a position with a usable true tilt (`manifest.position(forShot:)?.groundTruth`) | on every locked frame, the tracker's tilt (`Readouts.tiltDegrees`) minus the flat-phone `tiltDegrees`: median and 90th percentile of its absolute value, median of the signed value; per shot and per position (frames pooled) |
+| `normalErrorMedian`, `normalErrorP90` | the same | angle between the tracker's normal and the true normal (below), on every locked frame |
+| `cornerRms` | slab expected | the lock's four world corners on every locked frame (matched to the first locked frame's), RMS distance from each corner's per-axis median (mm) |
+| `slabSizeError` | slab expected, measurements entered | each locked frame's detected outline cast onto the lock's plane; mean of (long side - measured long side) and (short side - measured short side), median over frames (mm). The pose's distance scales with the size the app assumes, so this shows how well the outline fits the measured shape (and the size, once LiDAR is fused) |
+| `slabFoundRate`, `slabLockedRate` | slab must not be in view (ball on the floor, `s12-no-slab`) | share of frames confirming or locked / locked |
+| `ballDetectionRate` | ball expected | of the frames on which the app's ball finder ran (only while locked, every `ballInterval`), the share that found a ball |
+| `ballFalsePositiveRate` | ball must not be in view | the same share, where there is no ball |
+| `ballDistanceError` | ball in the dish (`s08`) | the ball's distance from the camera from its size minus the distance along the same ray to where its centre must be (the ball's radius above the dish's bottom: the lock's plane less the dish depth); median (mm) |
+| `dropHeightError` | held ball with an entered height (`s09`) | the app's drop height while it comes from the ball (`Readouts.dropHeight`: the ball's bottom above the dish below it), median, minus the entered height (mm); up to the dish depth of it can be how the owner measured |
+| `landingError`, `landingDistanceError`, `apexError`, `impactPointError`, `rebound` | drops (`s10`, `s11`) | see below |
+
+The ball metrics are written against `BallLocating`: while `AppDetectors.ball()` is nil they are n/a ("no ball finder
+in this build"). `--truth-ball` gives the synthetic kit a finder that knows where the ball is
+(`KitTruthBallLocator`), to exercise them.
+
+**Bounces** (`KitBounceAnalysis`). On drops the ball finder also runs on every frame (a separate instance, on the app's
+crop around the lock), giving the ball's centre in the world. The release cue is `releaseTime`, else `startTime +
+releaseCue`. Held: the median position from 1.5 s before the cue to 0.05 s after it. The fall starts with the first
+sample after cue - 0.3 s at least 1.5 cm below the held height (and the next sample too); the impact is the lowest
+sample before the ball rises 1 cm again. Free fall with gravity known (`p = a + b t + g t²/2`) is fitted to the falling
+samples (the release is where its vertical speed is 0) and to the samples after the impact, grown one at a time while
+each lies within max(15 mm, 5 x the fall's RMS misfit, 4 x its own) of the fit (one sample off is skipped, two in a row
+end the flight, at the floor; samples at the end more than max(6 mm, 3 x RMS) off are dropped). The impact time is
+where the two fits' heights meet, the impact point their mean there, the velocities in and out the fits' velocities
+there; **rebound** = |v_out|² / |v_in|² (the app's rebound). The **apex** is the post-impact fit's highest point and the
+**landing** where it comes back down to the impact point's height (extrapolated past the last sample if need be). The
+app's **prediction** is `Bounce.compute` with the tracker's lock on the last frame before the cue and the held ball,
+the ball's centre taken a radius above the launch point. `landingError`: horizontal distance between the predicted
+landing (where the predicted bounce returns to its own start height) and the measured one; `landingDistanceError`:
+predicted minus measured landing distance; `apexError`: predicted minus measured apex height; `impactPointError`:
+horizontal distance between the predicted launch and the measured impact (mm).
+
+**The true normal: the CoreMotion-to-ARKit link** (`KitMotionLink`). CoreMotion's reference frame (z up) and ARKit's
+world (y up) are both gravity-aligned: `world = Ry(yaw) · A0 · ref`, A0 taking ref x to world x, ref y to world -z and
+ref z to world y. At each video frame of a shot, the attitude (interpolated to the frame's time) and ARKit's camera pose
+give `world-from-ref = R_world←camera · D^T · R_ref←device^T`, D being the device-from-ARKit-camera axes (ARKit's camera
+x is device -y, its y is device x, z is device z). The yaw is the circular mean; the link is used only with at least 10
+matched frames, a median misfit of the verticals ≤ 2° and an RMS spread of the yaws ≤ 3° (the opposite quaternion
+convention is used when it fits gravity clearly better). The flat-phone shot's `slabNormalInMotionFrame` is carried
+into the world by the link of a video shot with the flat-phone shot's `motionSessionId` and the scored shot's
+`arSessionId`, the nearest in time to its reading A, and compared with the tracker's normal: so the downhill direction
+is scored, not only the tilt's size. Without the ids, a matching video shot or a usable link, the normal error is n/a
+with the reason.
+
+**Aggregates**: `lockRate` is the mean over slab shots, `timeToLock` the median over the shots that locked,
+`neverLocked` a count; tilt and normal errors pool every locked frame of every shot with a true tilt; `cornerRms` is the
+median over shots; `slabSizeError`, `ballDistanceError`, `dropHeightError`, `landingDistanceError` and `apexError` are
+medians of the shots' absolute values; `landingError`, `impactPointError` and `rebound` medians over drops; the slab
+and ball false-positive and detection rates pool their frames.
+
+**Report.** JSON (`KitScoreSet`: one `KitScoreReport` per kit with the kit id ("synthetic" for the synthetic kit), plan,
+build, phone model, iOS version, LiDAR, which settings, the shots, positions and aggregates with every metric's value,
+unit, direction, count and n/a reason, and notes; no paths) and Markdown (the aggregates, a table per position, per slab
+shot and per ball shot, and the n/a reasons). `--compare` matches kits by id and every metric by where it is (aggregate,
+shot or position): better or worse by more than its tolerance (in the metric's direction: lower, higher or closer to
+zero), the same, `changed` for the rebound (a measurement of the scene, not of the app), new or gone. A value that became
+n/a, or a metric with a value that is gone, is a regression.
+
+| Metric | Tolerance | | Metric | Tolerance |
+|---|---|---|---|---|
+| lockRate | 2 points | | ballDetectionRate | 3 points |
+| timeToLock | 0.15 s | | ballFalsePositiveRate, slabFoundRate, slabLockedRate | 1 point |
+| neverLocked | 0 | | ballDistanceError, dropHeightError | 3 mm |
+| tiltErrorMedian, tiltBias | 0.05° | | landingError, landingDistanceError, apexError | 5 mm |
+| tiltErrorP90, normalErrorP90 | 0.1°, 0.2° | | impactPointError | 3 mm |
+| normalErrorMedian | 0.1° | | rebound | 2 points |
+| cornerRms, slabSizeError | 0.5 mm, 1 mm | | | |
+
+**The synthetic kit** (`KitSyntheticKit`): every shot of the plan made through `KitStore` as the app makes it, rendered
+by `SyntheticScene` with known truth. Measurements entered (7 x 7 x 1 in, 1/8 in dish, 35 mm ball); positions level, 5°
+and 10° (the optional third tilt skipped), the slab sliding in its cradle; flat-phone shots from CoreMotion streams of
+the phone laid on the slab on a camera bump and turned around, run through `KitFlatSession`; camera paths still (3-4
+ft, a little sway), half-circle arc and room scan; dim and bright (the picture's brightness x 0.6 and x 1.15); the ball
+on the floor 3 ft and 5 ft away with the slab out of view; in the dish; held 4 in, 1 ft and 2 ft over the slab (the
+heights entered); drops from 1 ft at the centre and near an edge at 60 fps, the ball falling from its release, bouncing
+off the dish along the corner plane's normal at the rebound (0.7) of its speed squared (the app's model, so a perfect
+tracker predicts it) and then on the floor; the negatives (camera turned away; slab without ball). Every video shot has
+a 100 Hz CoreMotion stream consistent with its camera path through a fixed CoreMotion-to-ARKit rotation. To stay fast,
+an ordinary shot has 12 frames at 6 fps (`--frames`) and drops 60 fps only around the bounce; frames are 480x360 (the
+app's processing frame), rendered when scored, or encoded as video.mp4 with `--video` (needs ffmpeg). Its truth
+(`KitSyntheticKit.truth`) checks the scorer in the tests. CI runs it on every change (`bounce-score --synthetic
+--markdown --max-tilt-error 2` in the Linux job, Markdown in the run's summary); the synthetic renders are not real
+footage, and real kits outrank them.
+
+**Locally** (`ios/tools/score-kits.sh [bundle parts or folders of them]`): unzips all of a kit's parts
+(`<kitId>-partNofM.zip`) into one folder outside the repository (default `~/bounce-private/kits`; a folder inside the
+repository is refused), builds the release scorer, scores every kit there and the synthetic kit, saves the JSON as
+`~/bounce-private/scores/<UTC date>-<git short hash>.json`, compares it with the newest earlier one and prints the
+Markdown.
 
 ## Kit API (BounceCore)
 
