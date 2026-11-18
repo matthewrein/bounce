@@ -90,52 +90,73 @@ Then press **Run** in Xcode. If you chose the team in Xcode instead of `Local.xc
 
 ## Using it
 
-- Point the phone at the slab, 2-5 ft away, and move it slowly for a second so ARKit can get its bearings. When the outline
-  turns yellow and the label says **Slab locked**, the slab is pinned. Focus, exposure and white balance lock then too.
+Open the app and point the phone at the slab, from about 2-5 ft away. That is all: there is nothing to set up.
+
+- When the outline turns yellow and the label says **Slab locked**, the slab is pinned. Focus, exposure and white balance
+  lock then too.
 - The yellow outline is the plane through the slab's four top corners. The dashed white line is the launch direction,
-  perpendicular to that plane. The cyan arc is the bounce, with the apex and where it lands.
-- Hold the ball (35 mm) above the slab: its height sets the drop height, shown as "(ball)". Without a ball, the drop height
-  from Settings is used.
-- Look at the slab at an angle, not from straight above: from overhead its tilt hardly shows in the picture, so the app
-  waits (or asks you to view it at more of an angle) rather than lock on a tilt that could be several degrees off.
-- If the outline is on the wrong thing, **tap the slab** on the screen, or press **Reset**. The tap keeps guiding the
-  search until the slab locks.
+  perpendicular to that plane. The cyan arc is the bounce, with the apex and where it lands. The readouts at the bottom
+  give the slab's tilt, the apex height, how far away the ball lands and its time in the air.
+- Hold the ball above the slab: its height sets the drop height, shown as "(ball)", and the label says **Slab locked ·
+  ball in view**. Without a ball, the drop height from Settings is used.
 - If you slide the slab to change its angle, the app notices after about a second and locks onto the new position.
-- **Settings**: the slab's side length (and the other side, if it is not quite square), thickness, dish depth, ball diameter,
-  drop height and rebound.
+- The slab (about 7 in square, 1 in thick, with a 1/8 in dish) and the 35 mm titanium ball are built into the app.
+- Seen from straight above, the slab's tilt hardly shows in the picture, so the app waits for a view at an angle before
+  it locks, rather than lock on a tilt that could be several degrees off.
 
-## Sending results
+**Settings** (the gear at the top right) has the only two things you can change, and you never need to: the **drop
+height** (used when no ball is held over the slab; 3 ft) and the **rebound** (how much of the drop height a straight-up
+bounce would regain; 70%). **Restore defaults** puts both back.
 
-**Diagnostics**: press **Diagnostics** and the app copies a block of text (JSON) to the clipboard. Paste it into your message.
-It shows the build, the lens, what the app found, and its counters.
+## Developer tools
 
-**A recording** lets the exact session be replayed on a computer, so problems can be reproduced:
+At the bottom of Settings, **Developer** opens the tools for working on the app. The app never needs them and never
+opens them by itself.
 
-1. Press **Record**, and move around the slab slowly for 10-20 seconds, with and without the ball. Then press **Stop**.
+- **Capture kit**: records the slab, the ball and a few bounces with the truth about them (see below). Coming next: until
+  a build has its screens, the row says "coming next".
+- **Record session**: records what the app sees and does, so the session can be replayed on a computer (see below).
+- **Copy diagnostics**: copies a block of text (JSON) to the clipboard and shows it. Paste it into your message. It shows
+  the build, the lens, what the app found, and its counters: numbers and settings, no pictures.
+- **Reset tracking**: forgets the slab and looks for it again.
+- **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
+  the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
+  where it lands instead of the corner plane's. Both apply when Settings closes.
+- **Build** shows the build label (e.g. n6), and the line under it the tracker's live state, including its hints, which
+  the main screen never shows.
+
+### Recording a session
+
+1. In **Settings > Developer**, tap **Record session**. Settings closes and a small red pill at the top of the screen
+   shows the time. Aim at the slab for 10-20 seconds, from a few places, with and without the ball. Then tap **Stop** on
+   the pill.
 2. A share sheet opens with a file named like `slab-20261117-153000.bouncerec.zip`. Use AirDrop or Mail, or **Save to
    Files**.
    The recordings also show up in the **Files** app under **On My iPhone > Slab Bounce**.
 3. Send the zip the same private way you sent the slab photos. A recording shows your room, so **don't** attach it to a
    GitHub issue or anything public.
 
-A recording holds about 5 frames a second at 480x360, in black and white with colour detail. It also holds the camera's
-position and lens, the phone's motion, and LiDAR depth where the phone has it. That comes to about **13 MB per 10
-seconds**, or about **25 MB per 10 seconds on a phone with LiDAR**, and the zip is not compressed. So use **AirDrop**,
-**Save to Files** or iCloud Drive; Mail switches to Mail Drop above about 20 MB. Once the zip is made, the app deletes the
-unzipped copy. A recording stops by itself at 1.5 GB, or if the phone runs out of space, and the app tells you why.
+A recording holds every frame's camera position, lens and tracking state with what the app made of it (60 a second),
+the phone's motion, pictures at 480x360 (in black and white with colour detail) about 5-8 times a second, the ball
+finder's close-up of the slab and the space above it 10 times a second while the slab is locked, and LiDAR depth where
+the phone has it. That comes to about **25 MB per 10 seconds** while the app is still looking for the slab and roughly
+**60-120 MB per 10 seconds** once it is locked (most of it the ball finder's close-ups; a little more with LiDAR), and
+the zip is not compressed. So use **AirDrop**, **Save to Files** or iCloud Drive; Mail switches to Mail Drop above about
+20 MB. Once the zip is made, the app deletes the unzipped copy. A recording stops by itself at 1.5 GB (a few minutes),
+or if the phone runs out of space, and the pill (and Settings > Developer) says why.
 
-## Capture kit
+### Capture kit (coming next)
 
 The capture kit records the slab, the ball and a few bounces together with the truth about them: your measurements, and
 the slab's exact tilt, read by laying the phone flat on it. With it, the app can be tested and improved against your own
 room without more help from you. You do it once, and it takes about 10 minutes. (The app's capture kit screens are still
-being built. Until a build has them, this section describes what is coming.)
+being built. Until a build has them, the row says "coming next" and this section describes what is coming.)
 
-**Taking it.** Have a ruler and the ball at hand. Open **Capture kit** in the app and follow the screens. Each one says
-what to do ("Step 4 of 12"), counts down, records by itself and then checks the result. Tap **Next** to go on, **Retry**
-to take a shot again, or **Skip**. You can quit at any time, and the app offers **Resume** later. If it asks whether the
-slab has moved since you last set it up, answer honestly; the app then retakes the slab's tilt first. At the end it lists
-what was captured and what was skipped, and saves the kit as one or more zip files named like
+**Taking it.** Have a ruler and the ball at hand. Open **Settings > Developer > Capture kit** and follow the screens.
+Each one says what to do ("Step 4 of 12"), counts down, records by itself and then checks the result. Tap **Next** to go
+on, **Retry** to take a shot again, or **Skip**. You can quit at any time, and the app offers **Resume** later. If it
+asks whether the slab has moved since you last set it up, answer honestly; the app then retakes the slab's tilt first.
+At the end it lists what was captured and what was skipped, and saves the kit as one or more zip files named like
 `slab-kit-20261117-153000-part1of3.zip`. You can see them in the **Files** app under **On My iPhone > Slab Bounce > Kits**.
 
 **Sending it back.** The kit shows your room, so it goes into a **private** GitHub repository. Never put it in this
@@ -168,7 +189,12 @@ Once Claude confirms it has the kit, the app's finish screen can delete it from 
   tracker and the recording format. Run its tests with `swift test` in `ios/BounceCore`, on a Mac or on Linux. The tests
   include ground truth exported from the web test bed (`web/tests/export_ios.js`) and replays of short synthetic recordings.
 - `BounceApp/` holds the SwiftUI and ARKit app. `ARController.swift` feeds ARKit frames to BounceCore's `SlabTracker`, the
-  same code the replay tests run.
+  same code the replay tests run. The slab and ball the app uses are baked in at one place, `AppSettings` in
+  `AppModel.swift` (BounceCore's `SlabSpec.standard` and `BallSpec()`); the user can only change the drop height and the
+  rebound. The developer tools are in `DeveloperView.swift` (Settings > Developer).
+- Recordings are version 2 of the format in `BounceCore/Sources/BounceCore/Recording.swift`: a line for every frame the
+  tracker processed, with what was done to the tracker and its result on the phone, so a replay can compare frame by
+  frame.
 - To replay one of your recordings: unzip it and run
   `BOUNCE_RECORDING=/path/to/slab-....bouncerec swift test --filter ReplayTests` in `ios/BounceCore`.
 - CI (`.github/workflows/ios.yml`) runs the BounceCore tests on Linux and macOS. It then repeats the owner's steps on a

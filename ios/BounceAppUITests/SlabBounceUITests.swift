@@ -5,8 +5,29 @@ import XCTest
 /// slab rendered from a moving virtual camera, fed through the same tracker, detectors, overlay and readouts as the
 /// camera. The truth of the demo scene is known exactly (BounceCore's DemoScript), so the tests check what the app
 /// shows against it. Each test prints an "E2E-SUMMARY" line that CI copies into its summary.
+///
+/// The main screen is point and go: the status chip, the readouts and a gear ("settings"). Settings holds the drop
+/// height and the rebound; the developer tools (diagnostics, recording, reset, demo, build) are under Settings >
+/// Developer ("developerRow").
 final class SlabBounceUITests: XCTestCase {
+    /// an app whose stored settings a test changed: tearDown puts them back (even after a failure)
+    private var appToRestore: XCUIApplication? = nil
+
     override func setUp() { continueAfterFailure = false }
+
+    override func tearDown() {
+        if let app = appToRestore {
+            appToRestore = nil
+            app.terminate()
+            app.launch()
+            if element(app, "settings").waitForExistence(timeout: 20) {
+                element(app, "settings").tap()
+                if element(app, "restoreDefaults").waitForExistence(timeout: 10) { element(app, "restoreDefaults").tap() }
+                if element(app, "settingsDone").exists { element(app, "settingsDone").tap() }
+            }
+        }
+        super.tearDown()
+    }
 
     // MARK: helpers
 
@@ -17,9 +38,53 @@ final class SlabBounceUITests: XCTestCase {
         return app
     }
 
+    /// The element with this accessibility id, whatever its type.
+    func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
     func label(_ app: XCUIApplication, _ id: String) -> String {
         let e = app.staticTexts[id]
         return e.exists ? e.label : ""
+    }
+
+    /// Wait for the element and tap it.
+    func tap(_ app: XCUIApplication, _ id: String, timeout: Double = 10) {
+        let e = element(app, id)
+        XCTAssertTrue(e.waitForExistence(timeout: timeout), "no \(id) on screen")
+        e.tap()
+    }
+
+    /// Wait until the element has gone (e.g. a sheet finished closing).
+    @discardableResult
+    func waitGone(_ app: XCUIApplication, _ id: String, timeout: Double = 10) -> Bool {
+        waitUntil(timeout) { !self.element(app, id).exists } != nil
+    }
+
+    /// Main screen -> Settings -> Developer.
+    func openDeveloper(_ app: XCUIApplication) {
+        tap(app, "settings")
+        tap(app, "developerRow")
+        XCTAssertTrue(element(app, "developerDone").waitForExistence(timeout: 10), "the Developer screen did not open")
+    }
+
+    /// Developer (or Settings) -> the main screen.
+    func closeSettings(_ app: XCUIApplication) {
+        if element(app, "developerDone").exists { element(app, "developerDone").tap() } else { tap(app, "settingsDone") }
+        waitGone(app, "developerDone")
+        waitGone(app, "settingsDone")
+    }
+
+    /// Settings > Developer > Copy diagnostics: the JSON the sheet shows (the sheet is closed again, Developer stays open).
+    func readDiagnostics(_ app: XCUIApplication, screenshotName: String? = nil) throws -> [String: Any] {
+        tap(app, "diagnostics")
+        let text = app.staticTexts["diagnosticsText"]
+        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        if let n = screenshotName { screenshot(app, n) }
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.label.utf8)) as? [String: Any], "not JSON: \(text.label.prefix(200))")
+        tap(app, "diagnosticsDone")
+        waitGone(app, "diagnosticsText")
+        return json
     }
 
     /// Wait until `ok` holds (checked every 0.2 s); returns the seconds it took, or nil on timeout.
@@ -33,9 +98,10 @@ final class SlabBounceUITests: XCTestCase {
         return nil
     }
 
-    /// The first number in a readout: "8.3°" -> 8.3; "Drop 11.2 in (ball)" -> 11.2 (inches); "2 ft 1 in" -> 25 (inches)
+    /// The first number in a readout: "8.3°" -> 8.3; "Drop 11.2 in (ball)" -> 11.2 (inches); "2 ft 1 in" -> 25 (inches);
+    /// "Rebound: 50%" -> 50
     func number(_ s: String) -> Double? {
-        let parts = s.replacingOccurrences(of: "°", with: " ").split(separator: " ").map(String.init)
+        let parts = s.replacingOccurrences(of: "°", with: " ").replacingOccurrences(of: "%", with: " ").split(separator: " ").map(String.init)
         guard let i = parts.firstIndex(where: { Double($0) != nil }), let v = Double(parts[i]) else { return nil }
         if i + 1 < parts.count, parts[i + 1] == "ft" {
             let inch = i + 2 < parts.count ? Double(parts[i + 2]) ?? 0 : 0
@@ -51,11 +117,11 @@ final class SlabBounceUITests: XCTestCase {
         add(a)
     }
 
-    /// The truth the app should show for a demo script at time t (slab in world, no ball unless given).
-    func truth(_ d: DemoScript, at t: Double) -> (tilt: Double, apexInches: Double, dropInches: Double?) {
+    /// The truth the app should show for a demo script at time t (slab in world, no ball unless given), for a rebound.
+    func truth(_ d: DemoScript, at t: Double, rebound: Double = 0.70) -> (tilt: Double, apexInches: Double, dropInches: Double?) {
         let scene = d.scene(at: t)
         let down = Vec3(0, -1, 0)
-        let r = Bounce.compute(pose: scene.slab, spec: .standard, ball: BallSpec(), down: down, ballCenter: scene.ball,
+        let r = Bounce.compute(pose: scene.slab, spec: .standard, ball: BallSpec(rebound: rebound), down: down, ballCenter: scene.ball,
                                defaultDropHeight: Units.feet(3), floorBelowCenter: scene.slab.center.y)
         return (Units.degrees(scene.slab.tilt(down: down)), Units.toInches(r.path.apexHeight), r.drop.map { Units.toInches($0.dropHeight) })
     }
@@ -64,7 +130,8 @@ final class SlabBounceUITests: XCTestCase {
 
     // MARK: tests
 
-    /// The demo slab is found and locked, and the tilt, apex and drop readouts match the scene's truth.
+    /// The demo slab is found and locked, and the tilt, apex and drop readouts match the scene's truth. The main screen
+    /// is point and go: no record, diagnostics or reset buttons, only the gear.
     func testLocksAndShowsTheRightTilt() {
         let d = DemoScript()
         let app = launch(["demoTilt": "\(d.tilt)"])
@@ -75,12 +142,16 @@ final class SlabBounceUITests: XCTestCase {
         screenshot(app, "locked")
         let tr = truth(d, at: 3)
         let tilt = number(label(app, "tilt")), apex = number(label(app, "apex")), drop = number(label(app, "drop"))
-        summary(String(format: "lock: locked after %.1f s; tilt %@ (truth %.2f); apex %@ in (truth %.1f); drop %@",
+        let developerOnMain = ["record", "recordToggle", "diagnostics", "reset", "demoToggle"].filter { element(app, $0).exists }
+        summary(String(format: "lock: locked after %.1f s; tilt %@ (truth %.2f); apex %@ in (truth %.1f); drop %@; main screen: gear %@, developer controls %@",
                        lockTime ?? -1, tilt.map { String(format: "%.2f", $0) } ?? "-", tr.tilt, apex.map { String(format: "%.1f", $0) } ?? "-",
-                       tr.apexInches, label(app, "drop")))
+                       tr.apexInches, label(app, "drop"), element(app, "settings").exists ? "yes" : "no",
+                       developerOnMain.isEmpty ? "none" : developerOnMain.joined(separator: ",")))
         XCTAssertEqual(tilt ?? -99, tr.tilt, accuracy: 1.0, "tilt readout \(label(app, "tilt"))")
         XCTAssertEqual(apex ?? -99, tr.apexInches, accuracy: max(1.5, tr.apexInches * 0.06), "apex readout \(label(app, "apex"))")
         XCTAssertEqual(drop ?? -99, 36, accuracy: 0.6, "with no ball the drop is the 3 ft setting: \(label(app, "drop"))")
+        XCTAssertTrue(element(app, "settings").exists, "no gear on the main screen")
+        XCTAssertTrue(developerOnMain.isEmpty, "developer controls on the main screen: \(developerOnMain)")
     }
 
     /// A ball held over the slab sets the drop height.
@@ -109,62 +180,100 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertNotNil(t, "never showed the new tilt; tilt \(label(app, "tilt")), status \(label(app, "status"))")
     }
 
-    /// Diagnostics: the sheet shows valid JSON with the build, the lock and the counters.
+    /// Diagnostics (Settings > Developer > Copy diagnostics): the sheet shows valid JSON with the build, the lock and the
+    /// counters; the Developer screen shows the same build.
     func testDiagnostics() throws {
         let app = launch()
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") })
         Thread.sleep(forTimeInterval: 2)
-        app.buttons["diagnostics"].tap()
-        let text = app.staticTexts["diagnosticsText"]
-        XCTAssertTrue(text.waitForExistence(timeout: 10))
-        screenshot(app, "diagnostics")
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.label.utf8)) as? [String: Any], "not JSON: \(text.label.prefix(200))")
+        openDeveloper(app)
+        XCTAssertTrue(app.staticTexts["buildLabel"].waitForExistence(timeout: 10))
+        let buildLabel = label(app, "buildLabel")
+        screenshot(app, "developer")
+        let json = try readDiagnostics(app, screenshotName: "diagnostics")
         let counts = json["counts"] as? [String: Int] ?? [:]
-        summary("diagnostics: build \(json["build"] ?? "?"), state \(json["state"] ?? "?"), tracking \(json["tracking"] ?? "?"), "
-                + "fps \(json["fps"] ?? "?"), ms per frame \(json["msProcess"] ?? "?"), tilt \(json["tiltDegrees"] ?? "?"), "
+        summary("diagnostics: build \(json["build"] ?? "?") (Developer shows \"\(buildLabel)\"), state \(json["state"] ?? "?"), "
+                + "tracking \(json["tracking"] ?? "?"), fps \(json["fps"] ?? "?"), ms per frame \(json["msProcess"] ?? "?"), "
+                + "tilt \(json["tiltDegrees"] ?? "?"), thermal \(json["thermalState"] ?? "?"), "
                 + "counts \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
         XCTAssertEqual(json["state"] as? String, "locked")
-        XCTAssertNotNil(json["build"] as? String)
+        let build = try XCTUnwrap(json["build"] as? String)
+        XCTAssertTrue(buildLabel.contains(build), "the Developer screen shows build \"\(buildLabel)\", diagnostics \(build)")
         XCTAssertGreaterThan(counts["locks"] ?? 0, 0)
-        app.buttons["diagnosticsDone"].tap()
+        closeSettings(app)
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }
 
-    /// Settings: the build label shows, and changing the slab's size makes the app search again and re-lock.
-    func testSettingsChangeRelocks() {
-        let app = launch()
+    /// Settings: changing the rebound from 70% to 50% scales the apex by about 50/70; Restore defaults puts it back.
+    func testReboundChangesTheApex() {
+        let d = DemoScript()
+        let app = launch(["demoTilt": "\(d.tilt)"])
+        appToRestore = app
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") })
-        app.buttons["settings"].tap()
-        XCTAssertTrue(app.staticTexts["buildLabel"].waitForExistence(timeout: 10))
+        Thread.sleep(forTimeInterval: 2)
+        let before = number(label(app, "apex"))
+        tap(app, "settings")
+        XCTAssertTrue(element(app, "reboundValue").waitForExistence(timeout: 10))
+        let startRebound = number(label(app, "reboundValue"))
+        XCTAssertEqual(startRebound ?? -1, 70, accuracy: 0.5, "rebound did not start at 70%: \(label(app, "reboundValue"))")
+        let slider = app.sliders["reboundSlider"]
+        XCTAssertTrue(slider.waitForExistence(timeout: 5))
+        slider.adjust(toNormalizedSliderPosition: 0.5)
+        let rebound = number(label(app, "reboundValue")) ?? 70
         screenshot(app, "settings")
-        let stepper = app.steppers["sideStepper"]
-        if stepper.exists { stepper.buttons.element(boundBy: 1).tap() }   // 7.00 -> 7.05 in
-        app.buttons["settingsDone"].tap()
-        // a different size: searching again, then locked again
-        let relock = waitUntil(30) { label(app, "status").contains("Slab locked") }
-        summary(String(format: "settings: relocked %.1f s after changing the side; status %@", relock ?? -1, label(app, "status")))
-        XCTAssertNotNil(relock)
-        // put it back for the other tests
-        app.buttons["settings"].tap()
-        if app.steppers["sideStepper"].waitForExistence(timeout: 5) { app.steppers["sideStepper"].buttons.element(boundBy: 0).tap() }
-        app.buttons["settingsDone"].tap()
+        tap(app, "settingsDone")
+        waitGone(app, "settingsDone")
+        // the new rebound applies when Settings closes: the apex follows on the next frames
+        let want = (before ?? 0) * rebound / 70
+        let t = waitUntil(15) { (number(label(app, "apex")).map { abs($0 - want) <= max(1.0, want * 0.06) } ?? false) }
+        Thread.sleep(forTimeInterval: 1)
+        let after = number(label(app, "apex"))
+        let tr = truth(d, at: 3, rebound: rebound / 100)
+        let ratio = (after ?? 0) / max(1e-6, before ?? 0)
+        screenshot(app, "rebound changed")
+        // Restore defaults: back to 70%
+        tap(app, "settings")
+        tap(app, "restoreDefaults")
+        let restored = number(label(app, "reboundValue"))
+        tap(app, "settingsDone")
+        waitGone(app, "settingsDone")
+        if restored.map({ abs($0 - 70) < 0.5 }) ?? false { appToRestore = nil }
+        summary(String(format: "settings: rebound 70%% -> %.0f%%: apex %@ -> %@ in (ratio %.3f, expected %.3f; truth %.1f in), shown after %.1f s; "
+                       + "Restore defaults -> %@", rebound, before.map { String(format: "%.1f", $0) } ?? "-",
+                       after.map { String(format: "%.1f", $0) } ?? "-", ratio, rebound / 70, tr.apexInches, t ?? -1,
+                       restored.map { String(format: "%.0f%%", $0) } ?? "?"))
+        XCTAssertLessThan(rebound, 65, "the slider did not move the rebound down: \(rebound)%")
+        XCTAssertNotNil(t, "the apex did not follow the rebound: \(label(app, "apex")), wanted about \(want) in")
+        XCTAssertEqual(ratio, rebound / 70, accuracy: 0.06, "apex \(before ?? -1) -> \(after ?? -1) in at rebound \(rebound)%")
+        XCTAssertEqual(after ?? -99, tr.apexInches, accuracy: max(1.5, tr.apexInches * 0.06), "apex readout \(label(app, "apex"))")
+        XCTAssertEqual(restored ?? -1, 70, accuracy: 0.5, "Restore defaults did not put the rebound back to 70%")
     }
 
-    /// Recording: frames are written while recording, and stopping offers the zip for sharing.
+    /// Recording (Settings > Developer > Record session): Settings closes, the main screen shows the recording pill,
+    /// frames are written, and Stop on the pill offers the zip for sharing.
     func testRecordingProducesAShareableFile() throws {
         let app = launch()
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") })
-        app.buttons["record"].tap()
+        openDeveloper(app)
+        tap(app, "recordToggle")
+        XCTAssertTrue(waitGone(app, "developerDone"), "Settings did not close when the recording started")
+        XCTAssertTrue(element(app, "recordStop").waitForExistence(timeout: 10), "no recording pill on the main screen")
         Thread.sleep(forTimeInterval: 4)
-        app.buttons["diagnostics"].tap()
-        let text = app.staticTexts["diagnosticsText"]
-        XCTAssertTrue(text.waitForExistence(timeout: 10))
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.label.utf8)) as? [String: Any])
-        let frames = (json["counts"] as? [String: Int])?["recordedFrames"] ?? 0
-        app.buttons["diagnosticsDone"].tap()
-        app.buttons["record"].tap() // stop
+        let elapsed = label(app, "recordElapsed")
+        screenshot(app, "recording")
+        // how many frames were written so far: Settings > Developer > Copy diagnostics, then back to the main screen
+        openDeveloper(app)
+        let json = try readDiagnostics(app)
+        let counts = json["counts"] as? [String: Int] ?? [:]
+        let frames = counts["recordedFrames"] ?? 0
+        closeSettings(app)
+        let stop = element(app, "recordStop")
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        stop.tap()
         let shared = waitUntil(20) { app.otherElements["ActivityListView"].exists || app.navigationBars["UIActivityContentView"].exists || app.buttons["Close"].exists }
         screenshot(app, "share sheet")
-        summary(String(format: "recording: %d frames in 4 s; share sheet after %.1f s", frames, shared ?? -1))
+        summary(String(format: "recording: %d frames in 4 s (pill showed %@; pixels dropped %d); share sheet after %.1f s",
+                       frames, elapsed.isEmpty ? "-" : elapsed, counts["recordingPixelsDropped"] ?? 0, shared ?? -1))
         XCTAssertGreaterThan(frames, 5)
         XCTAssertNotNil(shared, "no share sheet after stopping the recording")
     }

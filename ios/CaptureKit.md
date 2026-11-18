@@ -28,7 +28,7 @@ positions"). At the end, the app lists what was captured and what was skipped, t
 
 | Step | Shots (id) | What the owner does | Length |
 |---|---|---|---|
-| 1 Measurements | `s01-measure` (form) | Enter the slab's width, depth and thickness (ruler), the dish depth (optional; the form starts with it empty) and the ball's diameter. The phone model and LiDAR are read automatically. The values also go into the app's Settings. | form |
+| 1 Measurements | `s01-measure` (form) | Enter the slab's width, depth and thickness (ruler), the dish depth (optional; the form starts with it empty) and the ball's diameter. The phone model and LiDAR are read automatically. The values are the kit's truth only: the app keeps its built-in slab and ball. | form |
 | 2 Room scan | `s02-scan` | Walk slowly around the slab, 3-5 ft away, pointing at it, so ARKit settles. | 20 s |
 | 3 True tilt (level) | `s03-flat-level` (flat) | Lay the phone flat in the middle of the slab, screen up, top pointing away; let go. When it beeps, turn it around (top toward you); let go again. Starts **slab position 1, "level"**. | about 12 s |
 | 4 Slab only, level | `s04-level-still`, `s04-level-arc` | Hold still 3-4 ft away, slab in the middle of the screen; then walk a slow half circle around it. | 5 s + 20 s |

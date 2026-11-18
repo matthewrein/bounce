@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// The main screen: point and go. The camera feed with the overlay, the readouts, a passive status chip and a small
+/// gear for Settings. Nothing to set up and nothing to read: the developer tools live in Settings > Developer.
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -7,66 +9,134 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // the camera feed, the overlay and the tap target share one full-screen coordinate space
-            GeometryReader { geo in
-                ZStack {
-                    if model.hud.demo, let bg = model.background {
-                        // the demo's synthetic frame, filling the view as the camera feed does
-                        Image(decorative: bg, scale: 1)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                    } else {
-                        ARFeedView(session: model.controller.session)
+            if model.arUnsupported {
+                unsupported
+            } else {
+                // the camera feed, the overlay and the tap target share one full-screen coordinate space
+                GeometryReader { geo in
+                    ZStack {
+                        if model.hud.demo, let bg = model.background {
+                            // the demo's synthetic frame, filling the view as the camera feed does
+                            Image(decorative: bg, scale: 1)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        } else {
+                            ARFeedView(session: model.controller.session)
+                        }
+                        OverlayView(overlay: model.overlay)
+                        // tapping the slab guides the search (silently: the app never asks for it)
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(SpatialTapGesture().onEnded { v in model.tap(at: v.location) })
                     }
-                    OverlayView(overlay: model.overlay)
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(SpatialTapGesture().onEnded { v in model.tap(at: v.location) })
+                    .onAppear { model.setViewport(geo.size) }
+                    .onChange(of: geo.size) { s in model.setViewport(s) }
                 }
-                .onAppear { model.setViewport(geo.size) }
-                .onChange(of: geo.size) { s in model.setViewport(s) }
+                .ignoresSafeArea()
+                // the controls stay inside the safe area
+                VStack(spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        statusChip
+                        Spacer(minLength: 0)
+                        settingsButton
+                    }
+                    if model.isRecording || model.recordingError != nil {
+                        HStack { recordingPill; Spacer(minLength: 0) }
+                    }
+                    Spacer()
+                    readouts
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .ignoresSafeArea()
-            // the controls stay inside the safe area
-            VStack(spacing: 8) {
-                statusChip
-                Spacer()
-                readouts
-                buttons
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .onAppear { model.start() }
         .onChange(of: scenePhase) { phase in
             if phase == .active { model.start() } else if phase == .background { model.stop() }
         }
-        .sheet(isPresented: $showSettings) { SettingsView { model.settingsChanged() } }
-        .sheet(item: Binding(get: { model.shareURL.map(ShareItem.init) }, set: { model.shareURL = $0?.url })) { item in
+        .sheet(isPresented: $showSettings, onDismiss: { model.settingsChanged() }) {
+            SettingsView(close: { showSettings = false }).environmentObject(model)
+        }
+        // a recording stopped from the main screen (one stopped in Settings > Developer is shared from there)
+        .sheet(item: Binding(get: { showSettings ? nil : model.shareURL.map(ShareItem.init) }, set: { model.shareURL = $0?.url })) { item in
             ShareSheet(url: item.url)
         }
-        .sheet(item: Binding(get: { model.diagnosticsText.map(DiagnosticsItem.init) }, set: { model.diagnosticsText = $0?.text })) { item in
-            DiagnosticsView(text: item.text)
+    }
+
+    /// On a device without ARKit: a plain message (the demo is a developer tool, in Settings > Developer).
+    private var unsupported: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            Text("Slab Bounce needs an iPhone with ARKit.")
+                .font(.headline)
+                .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+                .padding(32)
+                .accessibilityIdentifier("unsupported")
+            VStack {
+                HStack { Spacer(); settingsButton }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
-        .alert(model.recordingError ?? "", isPresented: Binding(get: { model.recordingError != nil }, set: { if !$0 { model.recordingError = nil } })) {
-            Button("OK", role: .cancel) {}
-        }
-        .alert("ARKit is not available on this device", isPresented: Binding(get: { model.arUnsupported }, set: { model.arUnsupported = $0 })) {
-            Button("Show the demo") { UserDefaults.standard.set(true, forKey: "demo"); model.restart() }
-            Button("OK", role: .cancel) {}
-        } message: { Text("The camera tracking needs an iPhone. The demo shows a synthetic slab instead.") }
     }
 
     private var statusChip: some View {
         Text(model.hud.demo ? "Demo: " + model.hud.status : model.hud.status)
             .accessibilityIdentifier("status")
             .font(.subheadline.weight(.semibold))
+            .lineLimit(2)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(model.hud.locked ? Color.green.opacity(0.8) : Color.black.opacity(0.6))
             .foregroundColor(.white)
             .clipShape(Capsule())
+    }
+
+    private var settingsButton: some View {
+        Button { showSettings = true } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(Color.black.opacity(0.55)))
+        }
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("settings")
+    }
+
+    /// While a developer records a session: a small red pill with the elapsed time and Stop. It also carries a recording
+    /// error (there are no alerts on the main screen).
+    private var recordingPill: some View {
+        HStack(spacing: 8) {
+            if model.isRecording {
+                Circle().fill(Color.white).frame(width: 8, height: 8)
+                if let start = model.recordingStartedAt {
+                    TimelineView(.periodic(from: start, by: 1)) { context in
+                        Text(RecordingClock.elapsed(from: start, to: context.date))
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .accessibilityIdentifier("recordElapsed")
+                    }
+                }
+                if let f = model.developer.recordingFailure {
+                    Text("stopped: " + f).font(.caption).lineLimit(2)
+                }
+                Button(model.isStopping ? "Saving" : "Stop") { model.stopRecording() }
+                    .font(.caption.weight(.bold))
+                    .disabled(model.isStopping)
+                    .accessibilityIdentifier("recordStop")
+            } else if let e = model.recordingError {
+                Text(e).font(.caption).lineLimit(3).accessibilityIdentifier("recordError")
+                Button("OK") { model.recordingError = nil }
+                    .font(.caption.weight(.bold))
+                    .accessibilityIdentifier("recordErrorDismiss")
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Capsule().fill(Color.red.opacity(0.85)))
     }
 
     private var readouts: some View {
@@ -77,12 +147,9 @@ struct ContentView: View {
                 readout("Lands", model.hud.landing, id: "lands")
                 readout("Air", model.hud.air, id: "air")
             }
-            HStack {
-                Text("Drop \(model.hud.drop)").accessibilityIdentifier("drop")
-                if let d = model.hud.depth { Text("· \(d)") }
-                if let r = model.hud.recording { Text("· \(r)").foregroundColor(.red) }
-            }
-            .font(.caption).foregroundColor(.white.opacity(0.9))
+            Text("Drop \(model.hud.drop)")
+                .accessibilityIdentifier("drop")
+                .font(.caption).foregroundColor(.white.opacity(0.9))
         }
         .padding(10)
         .background(Color.black.opacity(0.55))
@@ -96,25 +163,13 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity)
     }
+}
 
-    private var buttons: some View {
-        HStack(spacing: 10) {
-            button(model.isRecording ? "Stop" : "Record", model.isRecording ? "stop.circle.fill" : "record.circle", id: "record") { model.toggleRecording() }
-            button("Reset", "arrow.counterclockwise", id: "reset") { model.reset() }
-            button("Diagnostics", "doc.on.doc", id: "diagnostics") { model.copyDiagnostics() }
-            button("Settings", "slider.horizontal.3", id: "settings") { showSettings = true }
-        }
-    }
-
-    private func button(_ title: String, _ icon: String, id: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 2) { Image(systemName: icon).font(.title3); Text(title).font(.caption2) }
-                .frame(maxWidth: .infinity).padding(.vertical, 8)
-        }
-        .accessibilityIdentifier(id)
-        .foregroundColor(.white)
-        .background(Color.black.opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+/// The recording pill's clock: "0:07", "1:02:03".
+enum RecordingClock {
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let s = max(0, Int(now.timeIntervalSince(start)))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 }
 
