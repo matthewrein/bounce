@@ -4,14 +4,15 @@ import Foundation
 import Accelerate
 #endif
 
-/// The app's per-frame work around the tracker that runs BounceCore code (ARController.session(_:didUpdate:) and
-/// handle): the frame pacer on every frame, the video-format watch, the capture-lock gate, the overlay's projections (the
+/// The app's per-frame work around the tracker that runs BounceCore code (ARController.session(_:didUpdate:), process
+/// and handle): the hand-off and its frame numbers on every frame, the video-format watch, the capture-lock gate, the overlay's projections (the
 /// outline, the path's 41 samples, its start, apex, landing and normal tip, the ball), the HUD's strings, the event list,
 /// and the developer line's frame numbers once a second (FramePacer.report). Replicated here: CoreGraphics' display
 /// transform is six numbers, the viewport an iPhone's. Not here: reading the capture device's adjusting flags, the
 /// motion manager, publishing to the main thread (app-only calls with no BounceCore part).
 struct AppGlue {
-    var pacer = FramePacer()
+    /// the delegate's hand-off (its frame numbers: the pacer behind it)
+    let handoff = FrameHandoff<Int>()
     var formatWatch = VideoFormatWatch()
     var gate = CaptureLockGate()
     var framesLineTime = -Double.infinity
@@ -23,10 +24,12 @@ struct AppGlue {
     let ta = 0.0, tb = 1.0, tc = -1.0, td = 0.0, ttx = 1.0, tty = 0.0
     let vpW = 393.0, vpH = 852.0
 
-    /// On arrival: the format watch and the pacer's decision (the frame reaches the handler 30 ms after capture).
-    mutating func arrived(t: Double, width: Int, height: Int) -> FramePacer.Decision {
+    /// On arrival (ARKit's delegate, 30 ms after capture): the format watch and the hand-off (every frame is processed
+    /// in these runs: the previous one was finished first).
+    mutating func arrived(t: Double, width: Int, height: Int) {
         _ = formatWatch.note(width: width, height: height, at: t)
-        return pacer.frameArrived(captureTime: t, now: t + 0.03, nominalInterval: 1.0 / 60)
+        _ = handoff.deliver(0, captureTime: t, now: t + 0.03, nominalInterval: 1.0 / 60)
+        handoff.delegateReturned(entered: t + 0.03, now: t + 0.03 + 0.00002)
     }
 
     @inline(__always) func toView(_ p: Vec3, _ view: CameraView) -> Vec2? {
@@ -67,10 +70,10 @@ struct AppGlue {
         }
         if let c = out.depth { hud.append(String(format: "%d pts %.1f°", c.points, c.angleToImageDegrees)) }
         if t - framesLineTime >= 1 || t < framesLineTime {
-            framesLine = AppGlue.framesLine(pacer.report)
+            framesLine = AppGlue.framesLine(handoff.report)
             framesLineTime = t
         }
-        pacer.frameProcessed(captureTime: t, seconds: processSeconds, output: out)
+        _ = handoff.finished(captureTime: t, seconds: processSeconds, now: t + 0.03 + processSeconds, output: out)
     }
 
     /// ARController.framesLine, verbatim.
@@ -83,7 +86,13 @@ struct AppGlue {
         let rate = String(format: "%.1f", Double(w.framesReceived) / w.seconds)
         let runs = String(format: "%.1f", w.searchesPerSecond + w.rechecksPerSecond)
         let k = w.processingByKind
-        return "frames: \(rate)/s in, \(share(w.framesSkippedLate))% late-skipped, \(share(w.framesLateButIdle))% late from ARKit, "
+        let queued: Int = w.framesQueuedOnDelegate ?? 0
+        let dropped: Int = (w.framesDroppedBusy ?? 0) + w.framesSkippedLate
+        let queuedText: String = queued > 0 ? ", " + share(queued) + "% queued behind it" : ""
+        let delegate: String = "delegate " + p95(w.delegateMs) + " ms p95" + queuedText
+        return "frames: \(rate)/s in, \(share(dropped))% dropped busy, "
+            + "held \(w.maxFramesHeld.map { String($0) } ?? "-"), wait \(ms(w.handoffWaitMs)) ms, \(share(w.framesLateButIdle))% late from ARKit, "
+            + delegate + ", "
             + "\(w.cameraGaps) gaps, \(w.pauses) pauses, delivery \(ms(w.deliveryLatencyMs)) ms, process \(ms(w.processingMs)) ms "
             + "(p50/p95; p95 plain \(p95(k.plain)), ball \(p95(k.ball)), search \(p95(k.search)), re-check \(p95(k.recheck))), "
             + "detector \(runs)/s"

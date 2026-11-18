@@ -34,6 +34,9 @@ final class RecordingFormatTests: XCTestCase {
         s.unconfirmedTimeout = 4; s.poseJumpDistance = 0.3; s.limitedResumeSeconds = 1.5; s.seedTimeout = 5; s.depthSmoothingSeconds = 0.4
         s.depthHoldSeconds = 0.8; s.depthMinInlierFraction = 0.6; s.depthMaxOffsetFraction = 0.03; s.depthMaxAngleDegrees = 7
         s.sideEvidenceCap = 3; s.sideEvidenceDecay = 0.9; s.sideFlipMargin = 0.2; s.sideDecidedEvidence = 2
+        s.maxSweepRegions = 30; s.sweepSkipsFinds = true; s.sweepSameOutlinePixels = 1.2
+        s.idleSearchAfter = 0.8; s.idleSearchInterval = 0.4; s.idleSearchMoveDegrees = 3; s.idleSearchMoveDistance = 0.05
+        s.idleBallAfter = 0.4; s.idleBallInterval = 0.25
         for c in Mirror(reflecting: s).children where c.label != "shapeLimits" {
             let d = Mirror(reflecting: TrackerSettings()).children.first { $0.label == c.label }!
             XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes \(c.label!)")
@@ -107,6 +110,7 @@ final class RecordingFormatTests: XCTestCase {
         out.detections = [DetectedOutline(quad: [Vec2(1, 2), Vec2(3, 4), Vec2(5, 6), Vec2(7, 8)], score: 0.5, sideModes: ["top", "fromCutBottom", "top", "top"]),
                           DetectedOutline(quad: [Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)])]
         out.ballSearched = true; out.ball = [0.1, 0.4, -0.9, 30.5, 12.25, 6]; out.depthFused = true; out.lockUnconfirmed = true
+        out.ballAwaitsConfirmation = true
         f.output = out
         let crop = BallImageCrop(x0: 10, y0: 4, width: 40, height: 30, factor: 2)
         f.ballCrop = crop; f.ballIntrinsics = crop.intrinsics(full: K.scaled(by: 4))

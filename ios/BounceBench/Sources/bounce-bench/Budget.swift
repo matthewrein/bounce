@@ -7,12 +7,12 @@ enum FrameBudget {
     static var interval: Double { 1000 / fps }        // 16.7 ms
     /// half a frame: what the processing queue may take and still leave room for ARKit's delivery and the UI
     static let comfortable = 8.0
-    /// frames held by the processing queue (waiting behind a frame, or running): ARKit logs that the delegate is
-    /// retaining ARFrames at about a dozen and then stops delivering camera frames; over 8 leaves no margin (THREAT),
-    /// over 4 is worth watching
+    /// ARKit's frames held by the app (in the delegate's queue, being processed, or waiting in the hand-off): ARKit logs
+    /// that the delegate is retaining ARFrames at about a dozen and then stops delivering camera frames; over 8 leaves
+    /// no margin (THREAT), over 4 is worth watching
     static let heldThreat = 8, heldWatch = 4
-    /// skipped frames per second (the overlay updates that many fewer times a second): THREAT at 3/s (5% of frames),
-    /// watch at 0.5/s
+    /// frames not processed per second (dropped while processing was busy, or skipped as late: the overlay updates that
+    /// many fewer times a second): THREAT at 3/s (5% of frames), watch at 0.5/s
     static let skippedThreat = 3.0, skippedWatch = 0.5
 
     /// a single frame's time (a stage or a frame kind on the processing queue)
@@ -41,17 +41,28 @@ struct Scenario: Codable {
     /// the detector runs' kinds in the order they came in the app loop (without the ball): the model takes them in turn
     /// (empty: searches find the slab while searching, re-checks follow it while locked)
     var detectionCycle: [FrameKind] = []
+    /// for each run of the cycle, whether the ball finder ran on the same frame in the app loop: the model follows it
+    /// (a run without it defers a ball scan that falls due to the next frame), so the share of re-checks that carry a ball
+    /// scan is the measured one, not one fixed by the two cadences' starting phases (nil: the model's own cadence alone)
+    var detectionBall: [Bool]? = nil
     /// the session recorder keeps the image this often (s; RecordingCadence.imageInterval): a frame with nothing else
     /// converting it pays the conversion (`plainImage` - `plain`); nil: not recording
     var imageInterval: Double? = nil
     /// the capture kit's recorder: its work (ms) on every `kitEvery`-th frame (1: a 60 fps shot, 2: 30 fps), processed
-    /// or skipped as late (the app hands late frames to it too); 0: none
+    /// or not (the app gives every frame to it, on the delegate's queue; with one queue, on the processing queue, late
+    /// frames too); 0: none
     var kitCost: Double = 0
     var kitEvery: Int = 0
-    /// a skipped frame's handling (ms) apart from the kit's work
+    /// the delegate's own work on a frame (ms) apart from the kit's: the hand-off and the notes on every frame (with one
+    /// queue: a skipped frame's handling)
     var skipCost: Double = 0.02
     /// the ball finder runs while locked (not when the lock is out of view: no ball crop)
     var ballScans: Bool = true
+    /// Nothing to find, so the tracker's idle rates apply (the app's `idleSearchAfter` / `idleBallAfter`, from a still
+    /// camera as the bench's): searches that never found a candidate (searching, nothing in view), and ball scans that
+    /// never found a ball. Optional for reports from before them.
+    var idleSearches: Bool? = nil
+    var idleBall: Bool? = nil
 
     func cost(_ k: FrameKind) -> Double {
         if let c = costs[k] { return c }
@@ -73,6 +84,16 @@ struct Scenario: Codable {
     }
 }
 
+/// How ARKit's frames reach the tracker in the model.
+enum Pipeline: String, Codable {
+    /// the app: ARKit's delegate queue does the cheap per-frame work (and the kit's recorder) and hands each frame to
+    /// the processing queue through `FrameHandoff` (at most one processed and one waiting, the latest)
+    case handoff
+    /// before the hand-off: the processing queue was ARKit's delegate queue, every frame waited there in turn and the
+    /// FramePacer skipped the late ones (the kit's work on the processing queue, late frames too)
+    case queue
+}
+
 /// The result of running a scenario through the app's cadence and its frame pacer.
 struct CadenceResult: Codable {
     var scenario: String
@@ -91,60 +112,67 @@ struct CadenceResult: Codable {
     var worstFrameMs: Double
     var worstFrameKind: FrameKind
     var longestGapMs: Double
-    /// the mean wait of processed frames in the queue (ms; how stale the overlay is beyond ARKit's own latency)
+    /// the mean wait of processed frames in the queue, or in the hand-off (ms; how stale the overlay is beyond ARKit's
+    /// own latency)
     var meanQueueWaitMs: Double
-    /// frames the processing queue holds when a frame arrives (those still waiting or running, and the new one): each
-    /// is an ARFrame and its camera buffer ARKit cannot reuse; the most, and the mean
+    /// ARKit's frames the app holds when a frame arrives (the new one, those still in the delegate's queue, the one
+    /// being processed and the one waiting; with one queue: those still waiting or running, and the new one): each is
+    /// an ARFrame and its camera buffer ARKit cannot reuse; the most, and the mean
     var maxFramesHeld: Int
     var meanFramesHeld: Double
+    var pipeline: Pipeline? = nil
+    /// through the hand-off: frames a second that reached the delegate only as its previous call ended (waited in its
+    /// queue: the delegate's own work, the kit's scale, outran the camera), as the app's diagnostics count them
+    var framesQueuedOnDelegate: Double? = nil
 }
 
 enum CadenceSim {
     /// Runs `seconds` of camera time at 60 fps through the app's tracker cadence (searchInterval 0.12 s while searching,
-    /// recheckInterval 0.3 s and ballInterval 0.1 s while locked, minDetectionGap 0.05 s) and the app's FramePacer
-    /// (BounceCore's own, with its default rule): frame i is captured at i/60, reaches the serial processing queue
-    /// `latency` later (ARKit's own delay), waits there while earlier frames are handled, and is then processed (taking
-    /// its kind's cost x `scale`) or skipped as late (taking `skipCost`, and the kit's work if it records). The tracker
-    /// stays in the scenario's state; its detector runs take the scenario's kinds in turn.
-    static func run(_ sc: Scenario, scale: Double = 1, seconds: Double = 30, latency: Double = 0.03) -> CadenceResult {
+    /// recheckInterval 0.3 s and ballInterval 0.1 s while locked, minDetectionGap 0.05 s; with nothing to find, the idle
+    /// rates: searches every idleSearchInterval after idleSearchAfter, ball scans every idleBallInterval after
+    /// idleBallAfter, as the app's tracker does from a still camera) and the app's pipeline: frame i
+    /// is captured at i/60 and reaches ARKit's delegate `latency` later (ARKit's own delay). The tracker stays in the
+    /// scenario's state; its detector runs take the scenario's kinds in turn; a processed frame takes its kind's cost x
+    /// `scale`.
+    ///
+    /// `.handoff` (the app): the delegate's queue spends `skipCost` (and the kit's work, when it records) on every frame
+    /// and hands it to BounceCore's own FrameHandoff: processing takes it at once if idle, else it waits, replacing (and
+    /// dropping) any frame already waiting; when processing ends it takes the waiting frame. `.queue` (before): the
+    /// frame waits in the one serial queue while earlier frames are handled and is then processed or skipped as late by
+    /// BounceCore's FramePacer (taking `skipCost`, and the kit's work if it records).
+    static func run(_ sc: Scenario, scale: Double = 1, seconds: Double = 30, latency: Double = 0.03, pipeline: Pipeline = .handoff) -> CadenceResult {
         let settings = RecordingSettings().trackerSettings
-        var pacer = FramePacer()
         let dt = 1 / FrameBudget.fps
-        var free = -Double.infinity
+        // the idle rates (nothing to find, a still camera): after idleSearchAfter / idleBallAfter of camera time
+        let idleSearchFrom = sc.idleSearches == true && settings.idleSearchAfter > 0 ? settings.idleSearchAfter : Double.infinity
+        let idleBallFrom = sc.idleBall == true && settings.idleBallAfter > 0 ? settings.idleBallAfter : Double.infinity
         var lastCheck = -Double.infinity, lastRun = -Double.infinity, lastBall = -Double.infinity, lastImage = -Double.infinity
         var processed = 0, skipped = 0, searches = 0, rechecks = 0, balls = 0, cycle = 0
         var busy = 0.0, worst = 0.0, worstKind = FrameKind.plain, lastProcessed: Double? = nil, longestGap = 0.0, waits = 0.0
-        // the queue's frames by when their handling ends (FIFO, so in order)
-        var ends: [Double] = [], head = 0, maxHeld = 0, sumHeld = 0
+        var maxHeld = 0, sumHeld = 0, queuedOnDelegate = 0
         let n = Int(seconds * FrameBudget.fps)
         let defaultDetection: FrameKind = sc.state == .searching ? (sc.costs[.searchRefine] != nil ? .searchRefine : .search) : .recheck
-        for i in 0..<n {
-            let c = Double(i) * dt
-            let arrive = c + latency
-            while head < ends.count && ends[head] <= arrive { head += 1 }
-            let held = ends.count - head + 1
-            maxHeld = max(maxHeld, held); sumHeld += held
-            let start = max(arrive, free)
-            let kitMs = sc.kitEvery > 0 && i % sc.kitEvery == 0 ? sc.kitCost : 0
-            if pacer.frameArrived(captureTime: c, now: start, nominalInterval: dt) == .skip {
-                skipped += 1
-                let ms = (sc.skipCost + kitMs) * scale
-                free = start + ms / 1000
-                ends.append(free)
-                busy += ms
-                pacer.skippedFrameHandled(seconds: ms / 1000)
-                continue
-            }
-            // what the tracker runs on this frame (its own rule, `detectionDue` / `ballDue`)
+        func kitMs(_ i: Int) -> Double { sc.kitEvery > 0 && i % sc.kitEvery == 0 ? sc.kitCost : 0 }
+        /// what the tracker runs on the frame captured at c (its own rule, `detectionDue` / `ballDue`), and its cost (ms)
+        func kindAndCost(_ c: Double) -> (FrameKind, Double) {
             var kind = FrameKind.plain
+            let searchInterval = c >= idleSearchFrom ? max(settings.searchInterval, settings.idleSearchInterval) : settings.searchInterval
             let detection = c - lastRun >= settings.minDetectionGap
-                && c - lastCheck >= (sc.state == .searching ? settings.searchInterval : settings.recheckInterval)
+                && c - lastCheck >= (sc.state == .searching ? searchInterval : settings.recheckInterval)
+            var measuredBall: Bool? = nil
             if detection {
                 lastCheck = c; lastRun = c
-                kind = sc.detectionCycle.isEmpty ? defaultDetection : sc.detectionCycle[cycle % sc.detectionCycle.count]
+                if !sc.detectionCycle.isEmpty {
+                    let j = cycle % sc.detectionCycle.count
+                    kind = sc.detectionCycle[j]
+                    if let fl = sc.detectionBall, fl.count == sc.detectionCycle.count { measuredBall = fl[j] }
+                } else {
+                    kind = defaultDetection
+                }
                 cycle += 1
             }
-            if sc.state == .locked && sc.ballScans && c - lastBall >= settings.ballInterval {
+            let ballInterval = c >= idleBallFrom ? max(settings.ballInterval, settings.idleBallInterval) : settings.ballInterval
+            if sc.state == .locked && sc.ballScans && (measuredBall ?? (c - lastBall >= ballInterval)) {
                 lastBall = c
                 kind = kind.withBall
             }
@@ -156,11 +184,10 @@ enum CadenceSim {
                     if kind == .plain { kind = .plainImage } else { extra = sc.cost(.plainImage) - sc.cost(.plain) }
                 }
             }
-            let ms = (sc.cost(kind) + extra + kitMs) * scale
-            free = start + ms / 1000
-            ends.append(free)
-            pacer.frameProcessed(captureTime: c, seconds: ms / 1000, search: kind.isSearch, recheck: kind.isRecheck, ball: kind.isBall)
-            processed += 1; busy += ms; waits += (start - arrive) * 1000
+            return (kind, (sc.cost(kind) + extra) * scale)
+        }
+        func count(_ kind: FrameKind, _ ms: Double, capture c: Double, wait: Double) {
+            processed += 1; busy += ms; waits += wait * 1000
             if kind.isSearch { searches += 1 }
             if kind.isRecheck { rechecks += 1 }
             if kind.isBall { balls += 1 }
@@ -168,13 +195,79 @@ enum CadenceSim {
             if let p = lastProcessed { longestGap = max(longestGap, (c - p) * 1000) }
             lastProcessed = c
         }
+
+        switch pipeline {
+        case .queue:
+            var pacer = FramePacer()
+            var free = -Double.infinity
+            // the queue's frames by when their handling ends (FIFO, so in order)
+            var ends: [Double] = [], head = 0
+            for i in 0..<n {
+                let c = Double(i) * dt
+                let arrive = c + latency
+                while head < ends.count && ends[head] <= arrive { head += 1 }
+                let held = ends.count - head + 1
+                maxHeld = max(maxHeld, held); sumHeld += held
+                let start = max(arrive, free)
+                if pacer.frameArrived(captureTime: c, now: start, nominalInterval: dt) == .skip {
+                    skipped += 1
+                    let ms = sc.skipCost * scale + kitMs(i) * scale
+                    free = start + ms / 1000
+                    ends.append(free)
+                    busy += ms
+                    pacer.skippedFrameHandled(seconds: ms / 1000)
+                    continue
+                }
+                let (kind, cost) = kindAndCost(c)
+                let ms = cost + kitMs(i) * scale
+                free = start + ms / 1000
+                ends.append(free)
+                pacer.frameProcessed(captureTime: c, seconds: ms / 1000, search: kind.isSearch, recheck: kind.isRecheck, ball: kind.isBall)
+                count(kind, ms, capture: c, wait: start - arrive)
+            }
+        case .handoff:
+            let h = FrameHandoff<Int>()
+            // the delegate's queue (serial): when each frame's delegate call ends (in order), and when it is free
+            var deliveryEnds: [Double] = [], dHead = 0, deliveryFree = -Double.infinity
+            // the frame being processed: when it started and ends, its kind and cost
+            var current: (i: Int, end: Double, kind: FrameKind)? = nil
+            func start(_ j: Int, at t: Double) {
+                let c = Double(j) * dt
+                let (kind, ms) = kindAndCost(c)
+                count(kind, ms, capture: c, wait: t - (c + latency))
+                current = (j, t + ms / 1000, kind)
+            }
+            for i in 0..<n {
+                let c = Double(i) * dt
+                let delivered = max(c + latency, deliveryFree)
+                // processing that ends before this frame is handed over takes the frame that waited meanwhile
+                while let cur = current, cur.end <= delivered {
+                    current = nil
+                    let next = h.finished(captureTime: Double(cur.i) * dt, seconds: 0, now: cur.end, search: cur.kind.isSearch,
+                                          recheck: cur.kind.isRecheck, ball: cur.kind.isBall)
+                    if let j = next { start(j, at: cur.end) }
+                }
+                while dHead < deliveryEnds.count && deliveryEnds[dHead] <= c + latency { dHead += 1 }
+                // held when it arrives: itself, the frames still in the delegate's queue ahead of it, and the hand-off's
+                let held = 1 + (deliveryEnds.count - dHead) + h.framesHeld
+                maxHeld = max(maxHeld, held); sumHeld += held
+                if let j = h.deliver(i, captureTime: c, now: delivered, nominalInterval: dt) { start(j, at: delivered) }
+                let ms = (sc.skipCost + kitMs(i)) * scale
+                deliveryFree = delivered + ms / 1000
+                deliveryEnds.append(deliveryFree)
+                h.delegateReturned(entered: delivered, now: deliveryFree)
+            }
+            skipped = h.report.total.framesDroppedBusy ?? 0
+            queuedOnDelegate = h.report.total.framesQueuedOnDelegate ?? 0
+        }
         let secs = Double(n) * dt
         return CadenceResult(scenario: sc.name, state: sc.state, timeScale: scale, framesProcessed: Double(processed) / secs,
                              framesSkipped: Double(skipped) / secs, searches: Double(searches) / secs, rechecks: Double(rechecks) / secs,
                              ballScans: Double(balls) / secs, loadMsPerSecond: busy / secs, loadPercent: busy / secs / 10,
                              worstFrameMs: worst, worstFrameKind: worstKind, longestGapMs: longestGap,
                              meanQueueWaitMs: processed > 0 ? waits / Double(processed) : 0,
-                             maxFramesHeld: maxHeld, meanFramesHeld: Double(sumHeld) / Double(max(1, n)))
+                             maxFramesHeld: maxHeld, meanFramesHeld: Double(sumHeld) / Double(max(1, n)), pipeline: pipeline,
+                             framesQueuedOnDelegate: pipeline == .handoff ? Double(queuedOnDelegate) / secs : nil)
     }
 }
 
@@ -229,9 +322,14 @@ struct BudgetModel: Codable {
     var hostToMac: Double
     var hostToMacBasis: String
     var scenarios: [Scenario]
+    /// the same scenarios with each kind's p95 cost (nil in reports from before it)
+    var p95Scenarios: [Scenario]? = nil
     /// at this host's speed (scaled to the CI Mac), p50 and p95 costs
     var onMac: [CadenceResult]
     var onMacP95: [CadenceResult]
+    /// the same p95 costs through one queue, as before the hand-off (ARKit's delegate queue = the processing queue): what
+    /// the hand-off removed (nil in reports from before it)
+    var onMacP95Queue: [CadenceResult]? = nil
     /// per chip: nominal, thermally throttled, and contended (not a performance core to itself)
     var phones: [PhoneEstimate]
 }
@@ -257,17 +355,23 @@ extension BudgetModel {
             var (c, n) = costs(r)
             var name = "\(r.phase), \(r.scene)"
             var cycle = r.detectionCycle
+            var balls = r.detectionBall.flatMap { $0.count == cycle.count ? $0 : nil }
             switch r.state {
             case .searching:
                 c = c.filter { $0.key.isSearch || $0.key == .plain }
                 if r.phase == "acquiring" { name = "searching/confirming, \(r.scene)" }
+                balls = nil
             case .locked:
                 c = c.filter { !$0.key.isSearch }
+                if let b = balls { balls = zip(cycle, b).filter { $0.0.isRecheck }.map { $0.1 } }
                 cycle = cycle.filter { $0.isRecheck }
             }
             n = n.filter { c[$0.key] != nil }
             var sc = Scenario(name: name, state: r.state, costs: c, counts: n, detectionCycle: cycle)
+            sc.detectionBall = balls
             sc.ballScans = r.kinds.contains { $0.kind.isBall }
+            sc.idleSearches = r.state == .searching && r.phase == "searching" && !r.kinds.contains { $0.kind == .searchRefine }
+            sc.idleBall = r.state == .locked && (r.ballShownFrames.map { $0 == 0 } ?? false)
             if r.recording { sc.imageInterval = RecordingCadence().imageInterval }
             if let kc = percentile95 ? r.kitP95 : r.kitP50 {
                 // a 60 fps shot (every frame to the kit) and a 30 fps one (every other frame)
@@ -291,12 +395,14 @@ extension BudgetModel {
         let s50 = scenarios(from: sessions, percentile95: false), s95 = scenarios(from: sessions, percentile95: true)
         let mac = s50.map { CadenceSim.run($0, scale: hostToMac) }
         let mac95 = s95.map { CadenceSim.run($0, scale: hostToMac) }
+        let mac95q = s95.map { CadenceSim.run($0, scale: hostToMac, pipeline: .queue) }
         let phones = Chip.all.map { ch -> PhoneEstimate in
             let f = hostToMac * ch.timeFactor
             return PhoneEstimate(chip: ch, timeFactor: ch.timeFactor, results: s50.map { CadenceSim.run($0, scale: f) },
                                  throttled: s50.map { CadenceSim.run($0, scale: f * Chip.thermal) },
                                  contended: s50.map { CadenceSim.run($0, scale: f * Chip.contended) })
         }
-        return BudgetModel(hostToMac: hostToMac, hostToMacBasis: basis, scenarios: s50, onMac: mac, onMacP95: mac95, phones: phones)
+        return BudgetModel(hostToMac: hostToMac, hostToMacBasis: basis, scenarios: s50, p95Scenarios: s95, onMac: mac, onMacP95: mac95,
+                           onMacP95Queue: mac95q, phones: phones)
     }
 }

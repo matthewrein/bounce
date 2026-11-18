@@ -63,6 +63,18 @@ public struct SlabFinder {
         /// the sweep's grid of starting points (pixels) and how many regions it may grow per call
         public var sweepStep: Int = 16
         public var maxSweepRegions: Int = 48
+        /// The sweep does not grow a starting point that lies inside an outline it has already found: that region is
+        /// the find again (on a plain floor the slab was found up to 14 times over from its own points, a third of a
+        /// search's cost). Off: every point is grown (the first find of each object is kept either way; on, a later
+        /// clearer reading of the same object no longer replaces it, and the tracker refines the find on the
+        /// full-resolution crop).
+        public var skipSeedsInFinds = false
+        /// Of one starting point's screened regions (one per colour tolerance), one whose outline lies within this many
+        /// pixels (mean corner distance) of an outline already refined from that point without passing is not refined
+        /// again: the refinement starts from the outline, so it would fail the same way (on a cluttered floor small
+        /// things pass the screening at all four tolerances with nearly the same outline, and each refinement costs
+        /// several ms). 0: every screened region is refined until one passes.
+        public var sameOutlinePixels: Double = 0
         /// move the sides to the top face's edges with the box model (off: the web app's plain outline)
         public var useBoxModel: Bool = true
         /// what an outline must satisfy to be the slab. With the box model the corners fit the slab's square within 1.5%
@@ -373,6 +385,8 @@ final class FinderRun {
         var grown = 0
         for s in seeds {
             if grown >= opt.maxSweepRegions { break }
+            // a point inside an outline already found would grow that find again
+            if opt.skipSeedsInFinds, found.contains(where: { FinderRun.inside($0.quad, Vec2(Double(s.x) + 0.5, Double(s.y) + 0.5)) }) { continue }
             // a point inside a region grown before, of that region's colour, would only grow it again. The colour matters:
             // grown from the floor's colour, the floor's core can take in the slab, which grown from its own colour stands
             // apart (this made the sweep's result depend on the order of its starting points, i.e. on image orientation)
@@ -455,29 +469,39 @@ final class FinderRun {
     /// The colour match (squared distance below t2) and the 3-4 chamfer distance of each matching pixel to the nearest
     /// non-matching one (or the search area's edge), in `dist`: a forward sweep, then a backward one.
     func chamfer(t2: Float, roi: ROI) {
-        let D = dist, C = cdist, w = self.w
+        // row pointers, and the neighbouring row's three values carried along in registers (the same minima in the same
+        // order: the same distances; this is the slab search's innermost loop, two passes per region and tolerance)
+        guard let D = dist.baseAddress, let C = cdist.baseAddress else { return }
+        let w = self.w
         let X0 = roi.x0, Y0 = roi.y0, X1 = roi.x1, Y1 = roi.y1
         for x in X0..<X1 { D[Y0 * w + x] = 0; D[(Y1 - 1) * w + x] = 0 }
-        for y in (Y0 + 1)..<(Y1 - 1) {
-            let row = y * w
-            D[row + X0] = 0; D[row + X1 - 1] = 0
-            var left = D[row + X0]
-            for x in (X0 + 1)..<(X1 - 1) {
-                let i = row + x
-                var d: UInt16 = 0
-                if C[i] < t2 { d = min(min(left, D[i - w]) &+ 3, min(D[i - w - 1], D[i - w + 1]) &+ 4) }
-                D[i] = d; left = d
+        var y = Y0 + 1
+        while y < Y1 - 1 {
+            let row = D + y * w, up = row - w, c = C + y * w
+            row[X0] = 0; row[X1 - 1] = 0
+            var left: UInt16 = 0, ul = up[X0], uc = up[X0 + 1]
+            var x = X0 + 1
+            while x < X1 - 1 {
+                let ur = up[x + 1]
+                let d: UInt16 = c[x] < t2 ? min(min(left, uc) &+ 3, min(ul, ur) &+ 4) : 0
+                row[x] = d; left = d; ul = uc; uc = ur
+                x += 1
             }
+            y += 1
         }
-        for y in stride(from: Y1 - 2, through: Y0 + 1, by: -1) {
-            let row = y * w
-            var right = D[row + X1 - 1]
-            for x in stride(from: X1 - 2, through: X0 + 1, by: -1) {
-                let i = row + x
-                var d = D[i]
-                if d != 0 { d = min(d, min(right, D[i + w]) &+ 3, min(D[i + w + 1], D[i + w - 1]) &+ 4); D[i] = d }
-                right = d
+        y = Y1 - 2
+        while y >= Y0 + 1 {
+            let row = D + y * w, dn = row + w
+            var right = row[X1 - 1], dr = dn[X1 - 1], dc = dn[X1 - 2]
+            var x = X1 - 2
+            while x >= X0 + 1 {
+                let dl = dn[x - 1]
+                var d = row[x]
+                if d != 0 { d = min(d, min(right, dc) &+ 3, min(dr, dl) &+ 4); row[x] = d }
+                right = d; dr = dc; dc = dl
+                x -= 1
             }
+            y -= 1
         }
     }
 
@@ -636,6 +660,18 @@ final class FinderRun {
 
     static func cr2(_ o: Vec2, _ a: Vec2, _ b: Vec2) -> Double { (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) }
 
+    /// Whether a point lies inside a convex outline (either way round).
+    static func inside(_ q: [Vec2], _ p: Vec2) -> Bool {
+        guard q.count >= 3 else { return false }
+        var pos = false, neg = false
+        for i in 0..<q.count {
+            let c = cr2(q[i], q[(i + 1) % q.count], p)
+            if c > 0 { pos = true } else if c < 0 { neg = true }
+            if pos && neg { return false }
+        }
+        return true
+    }
+
     static func hull(_ input: [Vec2]) -> [Vec2] {
         let p = input.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
         guard p.count >= 3 else { return p }
@@ -696,7 +732,11 @@ final class FinderRun {
             screened.append((edge, m, r, quad, bf))
         }
         // clearest first; the tighter match first on a tie
+        var failed: [[Vec2]] = []
         for s in screened.enumerated().sorted(by: { $0.element.edge != $1.element.edge ? $0.element.edge > $1.element.edge : $0.offset < $1.offset }).map({ $0.element }) {
+            if opt.sameOutlinePixels > 0,
+               failed.contains(where: { Geometry.bestCorrespondence($0, s.quad).meanDistance <= opt.sameOutlinePixels }) { continue }
+            failed.append(s.quad)
             refined += 1
             let plain = plainRefine(s.quad)
             guard var c = candidate(plain: plain.quad, plainContrast: plain.contrast, source: source) else {

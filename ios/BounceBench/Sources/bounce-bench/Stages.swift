@@ -4,7 +4,7 @@ import Foundation
 /// One timed stage.
 struct StageResult: Codable {
     /// where it runs in the app: on the processing queue (what the app runs per frame), for comparison only (not what the
-    /// app runs), on the session recorder's own queue, or a cut candidate's prototype
+    /// app runs), on the session recorder's own queue, or the code a behaviour-preserving cut replaced
     enum Role: String, Codable { case app, comparison, recorderQueue = "recorder queue", candidate }
     /// convert, crop, slab, ball, lidar, kit, recording, fixtures, candidate
     var group: String
@@ -117,7 +117,7 @@ final class StageBench {
         }
         let img = s.processingImage()   // (cheap next to what follows)
         timeStage("convert", "YCCImage -> ColorFrame (ycc.colorFrame)", input: "480x360", .fast,
-             note: "the app converts it before tracker.process whenever it converted the image, though the tracker reads it only when its detector runs") {
+             note: "the app converts it only when the slab detector will run (SlabTracker.detectorWillRun): the detector is all that reads it") {
             _ in blackHole(img.colorFrame)
         }
         timeStage("convert", "mean luma, every 8th pixel (KitImageStats.meanLuma)", input: "1920x1440 luma, 8 buffers in turn", .fast,
@@ -156,6 +156,14 @@ final class StageBench {
 
     // MARK: the slab finder
 
+    /// The slab finder as the app runs it: SlabFinderDetector with the app's tracker settings applied (the sweep's
+    /// options, `SlabDetecting.apply`).
+    static func appFinder() -> SlabFinder {
+        let det = SlabFinderDetector()
+        det.apply(RecordingSettings().trackerSettings)
+        return det.finder
+    }
+
     func slabFinder() {
         let spec = SlabSpec.standard
         let searchScenes = all.scenes.filter { $0.ballHeight == nil && $0.variant != .hand }
@@ -163,19 +171,26 @@ final class StageBench {
             let cf = s.processingImage().colorFrame
             let pK = s.processing.intrinsics, down = s.downCam
             let truth = s.truthOutline
-            let finder = SlabFinder()
+            let finder = StageBench.appFinder(), ownFinder = SlabFinder()
             func found(_ c: [SlabCandidate]) -> String {
                 guard let t = truth else { return "\(c.count) outline(s) (none is right: no slab in view)" }
                 let best = c.map { outlineDistance($0.quad, t) }.min()
                 return "\(c.count) outline(s), nearest the truth \(best.map { String(format: "%.1f px", $0) } ?? "-")"
             }
-            let coldName = "search, cold, whole view (SlabFinder.find)"
+            let coldName = "search, cold, whole view (SlabFinder.find, the app's sweep options)"
             if wanted("slab", coldName, s.name) {
                 _ = takeSweepRegions()
                 let cold = finder.find(frame: cf, intrinsics: pK, spec: spec, down: down)
                 let grown = takeSweepRegions()
                 timeStage("slab", coldName, input: s.name, .slow, note: found(cold), regions: grown) {
                     _ in blackHole(finder.find(frame: cf, intrinsics: pK, spec: spec, down: down))
+                }
+            }
+            let ownName = "search, cold, whole view, the finder's own sweep (before the app's options)"
+            if wanted("slab", ownName, s.name) {
+                let cold = ownFinder.find(frame: cf, intrinsics: pK, spec: spec, down: down)
+                timeStage("slab", ownName, input: s.name, Budget.slow.with(iterations: 10), role: .comparison, note: "for comparison: " + found(cold)) {
+                    _ in blackHole(ownFinder.find(frame: cf, intrinsics: pK, spec: spec, down: down))
                 }
             }
             guard s.variant == .plain else { continue }
@@ -337,7 +352,7 @@ final class StageBench {
         guard let root = fixtures, let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else {
             log("  (no fixtures folder: the fixture searches are left out)"); return
         }
-        let finder = SlabFinder()
+        let finder = StageBench.appFinder()
         for n in names.sorted() where n.hasPrefix("rec_") {
             guard let r = try? RecordingReader(folder: root.appendingPathComponent(n)), let f = r.frames.first, let img = try? r.image(for: f),
                   let g = f.gravityCamera else { continue }
@@ -346,7 +361,7 @@ final class StageBench {
             _ = takeSweepRegions()
             let found = finder.find(frame: cf, intrinsics: K, spec: spec, down: down)
             let grown = takeSweepRegions()
-            let name = "search, cold, whole view (SlabFinder.find)"
+            let name = "search, cold, whole view (SlabFinder.find, the app's sweep options)"
             guard wanted("fixtures", name, n) else { continue }
             let ts = timeRuns(budget(.slow)) { blackHole(finder.find(frame: cf, intrinsics: K, spec: spec, down: down)) }
             let st = Stats(ts)

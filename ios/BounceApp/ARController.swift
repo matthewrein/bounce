@@ -41,9 +41,35 @@ struct SourceFrame {
     let fillVideo: (CVPixelBuffer) -> Bool
 }
 
-/// Runs the AR session (or the demo) and feeds every frame through BounceCore's tracker on a background queue, then
-/// hands the overlay (already in view points), the readouts and the developer line to the UI. Records a session
+/// One camera frame as ARKit's delegate handed it over, with what the delegate's queue read from it.
+struct DeliveredFrame {
+    let frame: ARFrame
+    /// when the delegate received it (CACurrentMediaTime)
+    let arrival: Double
+    let trackingNormal: Bool
+    let trackingText: String
+    let kitTracking: KitTracking
+}
+
+/// Runs the AR session (or the demo) and feeds the camera's frames through BounceCore's tracker on a background queue,
+/// then hands the overlay (already in view points), the readouts and the developer line to the UI. Records a session
 /// (Settings > Developer) in the recording format's version 2: a line for every frame the tracker processed.
+///
+/// Queues. ARKit delivers frames to the session's delegate on its own serial queue (`deliveryQueue`), which does only
+/// cheap work per frame: the tracking state, relocalisation and video-format notes (on every frame), the pre-flight's
+/// tap, the hand-off to processing (`FrameHandoff`: at most one frame processed and one waiting, the latest; a newer
+/// frame replaces the waiting one, which is released at once), and the capture kit's recorder (fed here, on every
+/// frame, with the latest tracker result, so its video has no gaps while a long slab search runs). The tracker runs on
+/// the processing queue (`queue`), one frame at a time, on the freshest frame there is. So ARKit never has more than two
+/// of its frames held by the app, whatever a search costs (it warns at about a dozen and then stops delivering), unless
+/// the delegate's own work outruns the camera (the kit's scale on a busy phone): then frames wait in the delegate's
+/// queue, which the diagnostics show (`framePacing`: `delegateMs`, `framesQueuedOnDelegate`).
+/// The demo renders its frames on the processing queue and does not use the hand-off (its frame numbers are its own).
+///
+/// State shared between queues is guarded: `lock` (the main thread's requests, the viewport, the motion samples, the
+/// floor planes, the format watch, the demo flag, the processing time the pre-flight reads), `kitLock` (the kit's
+/// recorder, the latest tracker result it is fed with, its counter), and the hand-off's own lock (the slot and the frame
+/// numbers). Everything else belongs to one queue, as marked.
 final class ARController: NSObject, ARSessionDelegate {
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
     static var depthSupported: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
@@ -52,7 +78,13 @@ final class ARController: NSObject, ARSessionDelegate {
     let session = ARSession()
     weak var model: AppModel?
 
+    /// the tracker's queue (everything under "processing-queue state")
     private let queue = DispatchQueue(label: "slabbounce.processing", qos: .userInteractive)
+    /// ARKit's delegate queue: cheap work only (see the class's comment)
+    private let deliveryQueue = DispatchQueue(label: "slabbounce.delivery", qos: .userInteractive)
+    /// at most one camera frame processed and one waiting (the latest), and the frame numbers (diagnostics' framePacing:
+    /// frames delivered, dropped because processing was busy, the most held, the waits; the demo's frames too)
+    private let handoff = FrameHandoff<DeliveredFrame>()
     /// The app's one CMMotionManager (Apple recommends a single one per app): 60 Hz, read by session recordings; while
     /// the capture kit is open, 100 Hz in the xArbitraryZVertical frame with a handler on `motionQueue`.
     private let motion = CMMotionManager()
@@ -65,7 +97,7 @@ final class ARController: NSObject, ARSessionDelegate {
     }()
     private let lock = NSLock()
 
-    // shared with the main thread (guarded by `lock`)
+    // shared between the main thread, the delivery queue, the processing queue and the motion queue (guarded by `lock`)
     private var viewport = CGSize(width: 390, height: 844)
     private var pendingTap: CGPoint? = nil
     private var pendingSettings: AppSettings? = nil
@@ -80,6 +112,28 @@ final class ARController: NSObject, ARSessionDelegate {
     private var preflightTap: PreflightTap? = nil
     /// CoreMotion errors in the current motion run (the first few are logged)
     private var motionErrors = 0
+    /// ARKit's horizontal planes (updated by the anchor callbacks on the delivery queue, read by the processing queue)
+    private var floorYs: [UUID: Double] = [:]
+    /// notices the camera's video format changing between frames (ARKit re-ran with another one), and knows each frame's
+    /// nominal frame rate (the format asked for, once the frames show it): noted on the delivery queue for every frame
+    private var formatWatch = VideoFormatWatch()
+    /// the demo runs: camera frames that still come are not handed over
+    private var demoActive = false
+    /// the processing time per frame (ms, running average) the pre-flight is told with each frame
+    private var processingMs = 0.0
+
+    // shared between the delivery queue (camera) and the processing queue (demo) (guarded by `kitLock`, which is held
+    // while the recorder takes a frame, so it never takes two at once)
+    private let kitLock = NSLock()
+    /// the capture kit's shot recorder, while a kit shot records (it says when it has enough frames)
+    private var kitRecorder: KitRecorder? = nil
+    /// the latest tracker result and the ball's radius, which the kit's frames are recorded with (the screen shows it)
+    private var kitLatest: (output: TrackerOutput, ballRadius: Double)? = nil
+    /// frames the kit recorded while the tracker was busy with an earlier frame (diagnostics' counts)
+    private var kitFramesWhileBusy = 0
+
+    // delivery-queue state
+    private var sawRelocalizing = false
 
     // main thread
     /// the capture kit is open: ARKit runs its 4:3 format with the highest frame rate, CoreMotion at 100 Hz
@@ -92,10 +146,8 @@ final class ARController: NSObject, ARSessionDelegate {
     // processing-queue state
     private var tracker: SlabTracker
     private var settings = AppSettings()
-    private var floorYs: [UUID: Double] = [:]
     private var captureLocked = false
     private var lastTracking = "not started"
-    private var sawRelocalizing = false
     private var lastOutput: TrackerOutput? = nil
     private var lastView: BounceCore.CameraView? = nil
     private var lastBallCrop: BallImageCrop? = nil
@@ -104,17 +156,10 @@ final class ARController: NSObject, ARSessionDelegate {
     private var lastDisplayTransform: CGAffineTransform = .identity
     private var lastLens: CameraIntrinsics? = nil
     private var videoFormat: DiagnosticsReport.VideoFormat? = nil
-    /// skips frames that queued behind slower processing, and counts how frames came and went (diagnostics' framePacing)
-    private var pacer = FramePacer()
-    /// notices the camera's video format changing between frames (ARKit re-ran with another one), and knows each frame's
-    /// nominal frame rate (the format asked for, once the frames show it)
-    private var formatWatch = VideoFormatWatch()
     /// locks focus, exposure and white balance once the slab is locked and the camera has stopped adjusting them
     private var captureGate = CaptureLockGate()
     /// the last full-resolution crop the slab's edges were read from (diagnostics)
     private var lastSlabCrop: SlabImageCrop? = nil
-    /// late frames handed to the capture kit's recorder anyway (diagnostics' counts)
-    private var kitFramesWhileLate = 0
     /// the developer line's frame numbers and when they were worked out (camera clock): once a second is enough
     private var framesLine: String? = nil
     private var framesLineTime = -Double.infinity
@@ -124,10 +169,11 @@ final class ARController: NSObject, ARSessionDelegate {
     private var recorder: SessionRecorder? = nil
     private var recordRequested = false
     private var cadence = RecordingCadence()
-    /// the capture kit's shot recorder, while a kit shot records (it says when it has enough frames)
-    private var kitRecorder: KitRecorder? = nil
 
     // the demo (no camera)
+    /// the demo's frame numbers (diagnostics' framePacing while the demo runs): its own, so a demo tick still queued when
+    /// the camera starts never writes into the camera's (the hand-off's)
+    private var demoPacer = FramePacer()
     private var demoTimer: DispatchSourceTimer? = nil
     private var demoScript: DemoScript? = nil
     private var demoStart = 0.0
@@ -137,21 +183,26 @@ final class ARController: NSObject, ARSessionDelegate {
         tracker = SlabTracker(settings: AppSettings().tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
         super.init()
         session.delegate = self
-        session.delegateQueue = queue
+        session.delegateQueue = deliveryQueue
     }
 
     // MARK: control (main thread)
 
     func start(settings s: AppSettings) {
         let c = makeConfiguration()
+        lock.lock(); demoActive = false; floorYs = [:]; lock.unlock()
         queue.async {
             self.unlockCapture()
             self.resetFramePipeline()
             self.settings = s
             self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
-            self.floorYs = [:]
-            self.sawRelocalizing = false
             self.lastBallCrop = nil
+        }
+        // the delivery side starts afresh before any frame of the new run (ARKit queues those after this block)
+        deliveryQueue.async {
+            self.sawRelocalizing = false
+            self.lock.lock(); self.formatWatch = VideoFormatWatch(); self.lock.unlock()
+            self.handoff.resetPacer()
         }
         noteFormat(c.videoFormat)
         session.run(c, options: [.resetTracking, .removeExistingAnchors])
@@ -202,31 +253,32 @@ final class ARController: NSObject, ARSessionDelegate {
     /// in it; frames captured before are in the previous one (ARFrame.timestamp and CACurrentMediaTime share a clock).
     /// The format watch notes the change on the first frame that shows it (its size, or for a change of the frame rate
     /// alone the frames' spacing), not on the old run's frames ARKit still delivers after the ask; the pacer counts the
-    /// camera's stop while ARKit re-runs as a pause, not as frames it missed. (Queued on the processing queue before
-    /// `session.run`, so it is known before any frame captured after the ask is handled.)
+    /// camera's stop while ARKit re-runs as a pause, not as frames it missed. (Queued on the delivery queue before
+    /// `session.run`, so it is known before any frame captured after the ask is delivered.)
     private func noteFormat(_ vf: ARConfiguration.VideoFormat) {
         let format = DiagnosticsReport.VideoFormat(width: Int(vf.imageResolution.width), height: Int(vf.imageResolution.height),
                                                    framesPerSecond: vf.framesPerSecond)
         let asked = CACurrentMediaTime()
-        queue.async {
-            self.videoFormat = format
+        queue.async { self.videoFormat = format }
+        deliveryQueue.async {
+            self.lock.lock()
             self.formatWatch.expect(VideoFormatWatch.Format(width: format.width, height: format.height,
                                                             framesPerSecond: format.framesPerSecond > 0 ? Double(format.framesPerSecond) : nil),
                                     askedAt: asked)
-            self.pacer.expectPause(at: asked)
+            self.lock.unlock()
+            self.handoff.withPacer { $0.expectPause(at: asked) }
         }
     }
 
-    /// A new camera run or demo (processing queue): the frame numbers, the format watch and the capture lock gate start
-    /// afresh.
+    /// A new camera run or demo (processing queue): the capture lock gate and the processing side's frame numbers start
+    /// afresh, and the kit is fed nothing older than this run's tracker. (The delivery side's format watch and the
+    /// hand-off's frame numbers are reset on the delivery queue by `start`, and by `startDemo` here.)
     private func resetFramePipeline() {
-        pacer = FramePacer()
-        formatWatch = VideoFormatWatch()
         captureGate = CaptureLockGate()
         lastSlabCrop = nil
-        kitFramesWhileLate = 0
         framesLine = nil
         framesLineTime = -.infinity
+        kitLock.lock(); kitLatest = nil; kitFramesWhileBusy = 0; kitLock.unlock()
     }
 
     func stop() {
@@ -234,7 +286,8 @@ final class ARController: NSObject, ARSessionDelegate {
         cameraRunning = false
         motion.stopDeviceMotionUpdates()
         lock.lock(); latestKitMotion = nil; lock.unlock()
-        queue.async { _ = self.captureGate.disarm(reason: "stopped"); self.unlockCapture(); self.kitRecorder = nil }
+        kitLock.lock(); kitRecorder = nil; kitLock.unlock()
+        queue.async { _ = self.captureGate.disarm(reason: "stopped"); self.unlockCapture() }
         stopDemo()
     }
 
@@ -328,8 +381,9 @@ final class ARController: NSObject, ARSessionDelegate {
     }
 
     /// The kit's shot recorder takes frames from the next one on, until it has enough (it detaches itself) or is detached.
-    func attachKitRecorder(_ r: KitRecorder) { queue.async { self.kitRecorder = r } }
-    func detachKitRecorder() { queue.async { self.kitRecorder = nil } }
+    /// (Waits, at most one frame's scale, while the recorder is taking a frame.)
+    func attachKitRecorder(_ r: KitRecorder) { kitLock.lock(); kitRecorder = r; kitLock.unlock() }
+    func detachKitRecorder() { kitLock.lock(); kitRecorder = nil; kitLock.unlock() }
 
     // MARK: the pre-flight (main thread; Settings > Developer > Pre-flight)
 
@@ -355,6 +409,7 @@ final class ARController: NSObject, ARSessionDelegate {
 
     /// Run the synthetic demo scene instead of the camera (no ARKit needed: works in the Simulator).
     func startDemo(script: DemoScript, settings s: AppSettings) {
+        lock.lock(); demoActive = true; lock.unlock()
         session.pause()
         cameraRunning = false
         newRunId(ar: true, motion: false)
@@ -365,9 +420,12 @@ final class ARController: NSObject, ARSessionDelegate {
             self.tracker = SlabTracker(settings: s.tracker, detector: Detectors.slab(), ballLocator: Detectors.ball())
             self.lastBallCrop = nil
             self.videoFormat = nil
+            self.lock.lock(); self.formatWatch = VideoFormatWatch(); self.lock.unlock()
             // the demo's frames come from a timer, which drops ticks while a frame takes longer than its interval: no
-            // camera missed them
-            self.pacer.rule.countsCameraGaps = false
+            // camera missed them (its own pacer: the camera's, in the hand-off, is never touched by the demo)
+            var p = FramePacer()
+            p.rule.countsCameraGaps = false
+            self.demoPacer = p
             self.demoScript = script
             self.demoStart = CACurrentMediaTime()
             self.isDemo = true
@@ -381,6 +439,7 @@ final class ARController: NSObject, ARSessionDelegate {
     }
 
     func stopDemo() {
+        lock.lock(); demoActive = false; lock.unlock()
         queue.async {
             self.demoTimer?.cancel(); self.demoTimer = nil; self.demoScript = nil; self.isDemo = false
         }
@@ -403,12 +462,18 @@ final class ARController: NSObject, ARSessionDelegate {
         lock.lock(); resetRequested = true; lock.unlock()
     }
 
-    // MARK: sources (processing queue)
+    // MARK: sources (the delivery queue: ARKit's delegate)
 
+    /// Every frame ARKit delivers (delivery queue): cheap work only. The tracking state; relocalisation and video-format
+    /// changes, noted on every frame and handed to the processing queue ahead of the frame (so the frame that showed them,
+    /// and every later one, is processed after them); the pre-flight's tap; the hand-off (processing takes the frame now
+    /// if it is idle, else the frame waits in place of any older waiting one, which is dropped); and the capture kit's
+    /// recorder, with the latest tracker result (what the screen still shows), whatever the tracker is doing.
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        // when the frame reached the handler, before anything else (the pacer judges its lateness by it)
+        // when the frame reached the delegate, before anything else (its latency, and its wait in the hand-off)
         let arrival = CACurrentMediaTime()
-        guard !isDemo else { return }
+        lock.lock(); let demo = demoActive, preflight = preflightTap, ms = processingMs, vp = viewport; lock.unlock()
+        guard !demo else { return }
         let camera = frame.camera
         let t = frame.timestamp
         var text = "normal", normal = false, relocalizing = false
@@ -429,44 +494,67 @@ final class ARController: NSObject, ARSessionDelegate {
         if relocalizing { sawRelocalizing = true }
         if normal && sawRelocalizing {
             sawRelocalizing = false
-            tracker.noteWorldDiscontinuity("relocalized")
-            note("relocalized", at: t)
+            queue.async {
+                self.tracker.noteWorldDiscontinuity("relocalized")
+                self.note("relocalized", at: t)
+            }
         }
         // the pre-flight sees every frame ARKit delivers (ahead of any early return), with the app's work per frame
-        if let p = preflightTapNow() { p.frame(frame, tracking: kt, processingMs: msAverage) }
+        preflight?.frame(frame, tracking: kt, processingMs: ms)
 
         // the video format, from the frames themselves (whatever re-ran the session): a change is a world discontinuity,
         // noted on the first frame that shows the new format (its size, or the spacing of frames at the new rate)
         let w = Int(camera.imageResolution.width), h = Int(camera.imageResolution.height)
-        if let ch = formatWatch.note(width: w, height: h, at: t) { formatChanged(ch) }
+        lock.lock()
+        let change = formatWatch.note(width: w, height: h, at: t)
         let fps = formatWatch.current?.framesPerSecond
+        lock.unlock()
+        if let ch = change { queue.async { self.formatChanged(ch) } }
 
-        // Late (it queued behind slower processing, and a newer frame is most likely waiting): skipped before any pixel is
-        // read, and nothing keeps it. While a capture kit shot records, the kit's video matters more than the tracker:
-        // the frame still goes to the kit's recorder (a scale into its video buffer; the recorder takes only the frames its
-        // video's rate needs, and drops what its encoder cannot take), with the last tracker result, which is what the
-        // screen still shows. The pacer is told how long the skipped frame's handling took, so the next frame's wait
-        // behind it is not taken for ARKit's latency (nor for an idle handler, which is never skipped). (A nominal
-        // interval of 0 for an unknown frame rate: the pacer keeps the last one.)
-        guard pacer.frameArrived(captureTime: t, now: arrival, nominalInterval: fps.map { 1 / $0 } ?? 0) == .process else {
-            if let kit = kitRecorder, let out = lastOutput, let pv = lastView {
-                lock.lock(); let vp = viewport; lock.unlock()
-                let sf = sourceFrame(frame, trackingNormal: normal, trackingText: text, kitTracking: kt, viewport: vp)
-                kitFramesWhileLate += 1
-                if !kit.consume(sf, output: out, processingWidth: pv.intrinsics.width, ballRadius: tracker.settings.ball.radius) {
-                    kitRecorder = nil
-                }
+        // the hand-off: processing takes this frame now if it is idle; else it waits (the latest), and a frame that was
+        // waiting is dropped and released here. (A nominal interval of 0 for an unknown frame rate: the pacer keeps the
+        // last one.)
+        let d = DeliveredFrame(frame: frame, arrival: arrival, trackingNormal: normal, trackingText: text, kitTracking: kt)
+        let taken = handoff.deliver(d, captureTime: t, now: arrival, nominalInterval: fps.map { 1 / $0 } ?? 0)
+        if let f = taken { queue.async { self.process(f) } }
+
+        // the capture kit's recorder: every frame (it takes those its video's rate needs, and drops what its encoder
+        // cannot take), scaled into its own buffer here and now, with the last tracker result; nothing of the frame is
+        // kept once this returns
+        kitLock.lock()
+        if let kit = kitRecorder, let latest = kitLatest {
+            let sf = sourceFrame(frame, trackingNormal: normal, trackingText: text, kitTracking: kt, viewport: vp)
+            if taken == nil { kitFramesWhileBusy += 1 }
+            if !kit.consume(sf, output: latest.output, processingWidth: sf.fullView.intrinsics.width / sf.factor, ballRadius: latest.ballRadius) {
+                kitRecorder = nil
             }
-            pacer.skippedFrameHandled(seconds: CACurrentMediaTime() - arrival)
-            return
         }
-        lock.lock(); let vp = viewport; lock.unlock()
-        let sf = sourceFrame(frame, trackingNormal: normal, trackingText: text, kitTracking: kt, viewport: vp)
-        let out = handle(sf, viewport: vp)
-        pacer.frameProcessed(captureTime: t, seconds: CACurrentMediaTime() - arrival, output: out)
+        kitLock.unlock()
+        // this call's own work (a frame that reaches the delegate just as it ends waited behind it: framePacing counts it)
+        handoff.delegateReturned(entered: arrival, now: CACurrentMediaTime())
     }
 
-    /// An ARFrame as a SourceFrame: its pixels are read only through the closures, while the delegate call runs.
+    /// A frame the hand-off gave to processing (processing queue), then the next one that waited meanwhile, if any (in a
+    /// block of its own, so other work queued here runs between frames).
+    private func process(_ d: DeliveredFrame) {
+        let start = CACurrentMediaTime()
+        let t = d.frame.timestamp
+        let next: DeliveredFrame?
+        if isDemo {
+            // the demo started after this frame was handed over: not processed
+            next = handoff.finishedUnprocessed(now: start)
+        } else {
+            lock.lock(); let vp = viewport; lock.unlock()
+            let sf = sourceFrame(d.frame, trackingNormal: d.trackingNormal, trackingText: d.trackingText, kitTracking: d.kitTracking, viewport: vp)
+            let out = handle(sf, viewport: vp)
+            let end = CACurrentMediaTime()
+            next = handoff.finished(captureTime: t, seconds: end - start, now: end, output: out)
+        }
+        if let n = next { queue.async { self.process(n) } }
+    }
+
+    /// An ARFrame as a SourceFrame: its pixels are read only through the closures, while the frame is held (the delegate
+    /// call, or its processing).
     private func sourceFrame(_ frame: ARFrame, trackingNormal normal: Bool, trackingText text: String, kitTracking kt: KitTracking,
                              viewport vp: CGSize) -> SourceFrame {
         let camera = frame.camera
@@ -507,12 +595,15 @@ final class ARController: NSObject, ARSessionDelegate {
 
     private func demoTick() {
         let arrival = CACurrentMediaTime()
-        guard let script = demoScript else { return }
+        // a tick still queued when the demo stopped (stopDemo clears the flag on the main thread before the camera
+        // starts): nothing is rendered or published
+        lock.lock(); let active = demoActive; lock.unlock()
+        guard active, let script = demoScript else { return }
         let t = arrival - demoStart
         // counted like the camera's frames: rendered when handled, so never late (the processing time includes the
         // rendering); ticks the timer dropped while a frame took longer than its interval are not counted as camera gaps
         // (`countsCameraGaps` is off in the demo)
-        guard pacer.frameArrived(captureTime: t, now: t, nominalInterval: ARController.demoFrameInterval) == .process else { return }
+        guard demoPacer.frameArrived(captureTime: t, now: t, nominalInterval: ARController.demoFrameInterval) == .process else { return }
         let scene = script.scene(at: t, spec: AppSettings.slab), view = script.view(at: t)
         let K = view.intrinsics
         let rgb = scene.renderRGB(view: view)
@@ -537,7 +628,14 @@ final class ARController: NSObject, ARSessionDelegate {
             fillVideo: { dst in FrameConversion.fill(dst, from: img) })
         let cg = DemoImage.cgImage(rgb: rgb, width: K.width, height: K.height)
         let out = handle(sf, viewport: vp, background: cg)
-        pacer.frameProcessed(captureTime: t, seconds: CACurrentMediaTime() - arrival, output: out)
+        // the capture kit's recorder (the demo's frames are rendered here, on the processing queue)
+        kitLock.lock()
+        if let kit = kitRecorder, !kit.consume(sf, output: out, processingWidth: K.width, ballRadius: tracker.settings.ball.radius) {
+            kitRecorder = nil
+        }
+        kitLock.unlock()
+        let secs = CACurrentMediaTime() - arrival
+        demoPacer.frameProcessed(captureTime: t, seconds: secs, output: out)
     }
 
     // MARK: processing (processing queue)
@@ -587,7 +685,10 @@ final class ARController: NSObject, ARSessionDelegate {
         let recImg = recorder != nil && cadence.needsImage(at: t, tracker: tracker)
         let needImage = tracker.detectionDue(at: t, tap: tap != nil) || recImg
         let ycc: YCCImage? = needImage ? f.ycc() : nil
-        let colorFrame = ycc?.colorFrame ?? ColorFrame(gray: Plane(width: 2, height: 2))
+        // the colour frame (chroma upsampled) only when the slab detector will run: it is all that reads it (an image
+        // converted for the recording alone is recorded as it is)
+        let detects = tracker.detectorWillRun(at: t, tap: tap != nil, trackingNormal: f.trackingNormal)
+        let colorFrame = (detects ? ycc?.colorFrame : nil) ?? ColorFrame(gray: Plane(width: 2, height: 2))
 
         // LiDAR depth, when the slab is locked (or for the recording)
         var depth: (DepthMap, CameraIntrinsics)? = nil
@@ -617,6 +718,8 @@ final class ARController: NSObject, ARSessionDelegate {
                               slabDetail: slabDetail)
         let out = tracker.process(tf)
         lastOutput = out
+        // what the capture kit's frames are recorded with until the next processed frame
+        kitLock.lock(); kitLatest = (out, tracker.settings.ball.radius); kitLock.unlock()
         if out.ballSearched { lastBallCrop = crop }
         if let d = out.slabDetail { lastSlabCrop = d.crop }
         if !out.events.isEmpty {
@@ -648,32 +751,30 @@ final class ARController: NSObject, ARSessionDelegate {
             rec.append(r.frame, image: r.image, depth: r.depth, ball: r.ball, slab: r.slab)
         }
 
-        // the capture kit's shot recorder (the frame's video picture, its numbers and the live result)
-        if let kit = kitRecorder,
-           !kit.consume(f, output: out, processingWidth: pview.intrinsics.width, ballRadius: tracker.settings.ball.radius) {
-            kitRecorder = nil
-        }
-
         // overlay, projected for the view, the readouts and the developer line
         let ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
         let hud = makeHUD(out)
         // the frame numbers for the developer line, once a second (camera clock; again at once if the clock went back)
         if t - framesLineTime >= 1 || t < framesLineTime {
-            framesLine = ARController.framesLine(pacer.report)
+            framesLine = ARController.framesLine(isDemo ? demoPacer.report : handoff.report)
             framesLineTime = t
         }
         let dev = makeDeveloperStatus(out)
         let dt = (CACurrentMediaTime() - t0) * 1000
         msAverage = msAverage == 0 ? dt : msAverage * 0.95 + dt * 0.05
+        lock.lock(); processingMs = msAverage; lock.unlock()
         frameTimes.append(t)
         if frameTimes.count > 60 { frameTimes.removeFirst() }
         Task { @MainActor [weak model] in model?.publish(overlay: ov, hud: hud, developer: dev, background: background) }
         return out
     }
 
+    // the other delegate calls (delivery queue)
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { updatePlanes(anchors) }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { updatePlanes(anchors) }
-    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) { for a in anchors { floorYs[a.identifier] = nil } }
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        lock.lock(); for a in anchors { floorYs[a.identifier] = nil }; lock.unlock()
+    }
 
     func session(_ session: ARSession, didFailWithError error: Error) {
         let code = (error as NSError).code
@@ -693,7 +794,8 @@ final class ARController: NSObject, ARSessionDelegate {
         preflightTapNow()?.arkit.interrupted()
         // the frames stop: a pause, not frames the camera missed
         let at = CACurrentMediaTime()
-        queue.async { self.note("interrupted"); self.pacer.expectPause(at: at) }
+        handoff.withPacer { $0.expectPause(at: at) }
+        queue.async { self.note("interrupted") }
         // a kit shot being recorded is thrown away (it stays pending)
         Task { @MainActor [weak model] in model?.cameraInterrupted() }
     }
@@ -711,18 +813,19 @@ final class ARController: NSObject, ARSessionDelegate {
     }
 
     private func updatePlanes(_ anchors: [ARAnchor]) {
-        for case let p as ARPlaneAnchor in anchors where p.alignment == .horizontal {
-            floorYs[p.identifier] = Double(p.transform.columns.3.y)
-        }
+        var ys: [(UUID, Double)] = []
+        for case let p as ARPlaneAnchor in anchors where p.alignment == .horizontal { ys.append((p.identifier, Double(p.transform.columns.3.y))) }
+        guard !ys.isEmpty else { return }
+        lock.lock(); for (id, y) in ys { floorYs[id] = y }; lock.unlock()
     }
 
     /// The floor under the slab: the lowest horizontal plane between 1 cm and 60 cm below the slab's centre. (The demo's
-    /// floor is at y = 0.)
+    /// floor is at y = 0.) (Processing queue.)
     private func floorY() -> Double? {
         guard let s = tracker.slab else { return nil }
         if isDemo { return 0 }
-        let cand = floorYs.values.filter { s.center.y - $0 > 0.01 && s.center.y - $0 < 0.6 }
-        return cand.min()
+        lock.lock(); let ys = Array(floorYs.values); lock.unlock()
+        return ys.filter { s.center.y - $0 > 0.01 && s.center.y - $0 < 0.6 }.min()
     }
 
     /// An event for diagnostics, prefixed with the camera clock (words and numbers only: never paths or names): `t`, or
@@ -867,13 +970,19 @@ final class ARController: NSObject, ARSessionDelegate {
         return d
     }
 
-    /// The developer line's frame numbers over the last 10 s of camera time, e.g. "frames: 58.9/s in, 3% late-skipped,
-    /// 1% late from ARKit, 0 gaps, 0 pauses, delivery 21/34 ms, process 6/19 ms (p50/p95; p95 plain 6, ball 9, search 80,
-    /// re-check 25), detector 8.3/s": frames delivered a second; the share skipped because they waited behind slower
-    /// processing, and the share ARKit itself delivered late to an idle handler (processed: not the app's delay); gaps in
-    /// the camera's frames, and pauses (interruptions, re-runs with another format); how long after capture frames
-    /// reached the app; how long processing took, overall and (95th percentile) by what ran: nothing ("plain"), the ball
-    /// finder alone, a slab search, a re-check of the lock; and slab detector runs a second (searches and re-checks).
+    /// The developer line's frame numbers over the last 10 s of camera time, e.g. "frames: 58.9/s in, 40% dropped busy,
+    /// held 2, wait 4/12 ms, 1% late from ARKit, delegate 1 ms p95, 0 gaps, 0 pauses, delivery 21/34 ms, process 6/19 ms
+    /// (p50/p95; p95 plain 6, ball 9, search 80, re-check 25), detector 8.3/s": frames delivered a second; the share
+    /// dropped because processing was busy (a newer frame replaced them in the hand-off; in the demo, skipped because they
+    /// waited behind slower processing); the most camera frames the app held at once in the hand-off (at most 2: the one
+    /// processed and the one waiting; "-" in the demo) and how long the processed frames waited for processing; the share
+    /// ARKit itself delivered late (not the app's delay); the delegate's own work per frame (95th percentile; while the
+    /// capture kit records, its scale too) and, if it outran the camera, the share of frames that waited behind it in the
+    /// delegate's queue ("% queued behind it": held there, not in the hand-off); gaps in the camera's frames, and pauses
+    /// (interruptions, re-runs with another format); how long after capture frames reached the app; how long processing
+    /// took, overall and (95th percentile) by what ran:
+    /// nothing ("plain"), the ball finder alone, a slab search, a re-check of the lock; and slab detector runs a second
+    /// (searches and re-checks).
     static func framesLine(_ r: FramePacingReport) -> String? {
         let w = r.recent
         guard w.framesReceived > 0, w.seconds > 0 else { return nil }
@@ -883,7 +992,13 @@ final class ARController: NSObject, ARSessionDelegate {
         let rate = String(format: "%.1f", Double(w.framesReceived) / w.seconds)
         let runs = String(format: "%.1f", w.searchesPerSecond + w.rechecksPerSecond)
         let k = w.processingByKind
-        return "frames: \(rate)/s in, \(share(w.framesSkippedLate))% late-skipped, \(share(w.framesLateButIdle))% late from ARKit, "
+        let queued: Int = w.framesQueuedOnDelegate ?? 0
+        let dropped: Int = (w.framesDroppedBusy ?? 0) + w.framesSkippedLate
+        let queuedText: String = queued > 0 ? ", " + share(queued) + "% queued behind it" : ""
+        let delegate: String = "delegate " + p95(w.delegateMs) + " ms p95" + queuedText
+        return "frames: \(rate)/s in, \(share(dropped))% dropped busy, "
+            + "held \(w.maxFramesHeld.map { String($0) } ?? "-"), wait \(ms(w.handoffWaitMs)) ms, \(share(w.framesLateButIdle))% late from ARKit, "
+            + delegate + ", "
             + "\(w.cameraGaps) gaps, \(w.pauses) pauses, delivery \(ms(w.deliveryLatencyMs)) ms, process \(ms(w.processingMs)) ms "
             + "(p50/p95; p95 plain \(p95(k.plain)), ball \(p95(k.ball)), search \(p95(k.search)), re-check \(p95(k.recheck))), "
             + "detector \(runs)/s"
@@ -901,7 +1016,8 @@ final class ARController: NSObject, ARSessionDelegate {
                 counts["recordedFrames"] = rec.frameCount
                 counts["recordingPixelsDropped"] = rec.droppedPixels
             }
-            if kitFramesWhileLate > 0 { counts["kitFramesWhileLate"] = kitFramesWhileLate }
+            kitLock.lock(); let kitBusy = kitFramesWhileBusy; kitLock.unlock()
+            if kitBusy > 0 { counts["kitFramesWhileBusy"] = kitBusy }
             var rep = DiagnosticsReport(build: appBuild, device: Device.model, system: "iOS \(UIDevice.current.systemVersion)",
                                         time: ISO8601DateFormatter().string(from: Date()), settings: s.recording,
                                         state: tracker.state.rawValue, tracking: lastTracking, fps: fps, msProcess: msAverage,
@@ -915,10 +1031,12 @@ final class ARController: NSObject, ARSessionDelegate {
             rep.videoFormat = videoFormat
             // how the frames came and went (delivered, processed, skipped as late, missed by the camera, latencies, detector
             // runs), how the last capture lock came about, and video format changes
-            rep.framePacing = pacer.report
+            rep.framePacing = isDemo ? demoPacer.report : handoff.report
             rep.captureLockSettle = captureGate.lastLock
+            lock.lock()
             rep.videoFormatChanges = formatWatch.changes
             rep.videoFormatChange = formatWatch.lastChange
+            lock.unlock()
             rep.thermalState = ARController.thermalState
             rep.frameTime = out != nil ? lastFrameTime : nil
             json = rep.json(pretty: true)

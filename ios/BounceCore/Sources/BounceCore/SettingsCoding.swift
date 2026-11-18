@@ -86,6 +86,9 @@ extension TrackerSettings: Codable {
         .init("lostAfter", \.lostAfter),
         .init("historySize", \.historySize),
         .init("depthNormalWeight", \.depthNormalWeight),
+        .init(optional: "maxSweepRegions", \.maxSweepRegions),
+        .init("sweepSkipsFinds", \.sweepSkipsFinds),
+        .init("sweepSameOutlinePixels", \.sweepSameOutlinePixels),
         .init("ballInterval", \.ballInterval),
         .init("shapeLimits", \.shapeLimits),
         .init("cornerNoisePixels", \.cornerNoisePixels),
@@ -114,6 +117,12 @@ extension TrackerSettings: Codable {
         .init("sideEvidenceDecay", \.sideEvidenceDecay),
         .init("sideFlipMargin", \.sideFlipMargin),
         .init("sideDecidedEvidence", \.sideDecidedEvidence),
+        .init("idleSearchAfter", \.idleSearchAfter),
+        .init("idleSearchInterval", \.idleSearchInterval),
+        .init("idleSearchMoveDegrees", \.idleSearchMoveDegrees),
+        .init("idleSearchMoveDistance", \.idleSearchMoveDistance),
+        .init("idleBallAfter", \.idleBallAfter),
+        .init("idleBallInterval", \.idleBallInterval),
     ]
 
     public init(from decoder: Decoder) throws {

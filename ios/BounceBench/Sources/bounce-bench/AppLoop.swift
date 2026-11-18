@@ -94,6 +94,8 @@ struct FrameSample {
     var encode: Double = 0
     /// the slab search's sweep (regions grown, of at most maxSweepRegions), when the bench is built instrumented
     var regionsGrown: Int? = nil
+    /// the frame's tracker output showed a ball
+    var ballShown = false
 }
 
 struct KindSummary: Codable {
@@ -128,6 +130,9 @@ struct SessionResult: Codable {
     var kinds: [KindSummary]
     /// the detector runs' kinds in order, without the ball (search, search + refine; re-check, missed, whole view)
     var detectionCycle: [FrameKind]
+    /// for each of those runs, whether the ball finder ran on the same frame (as the tracker's own rule had it in this
+    /// run; nil in reports from before it)
+    var detectionBall: [Bool]? = nil
     /// the capture kit recorder ran on every frame: its work per frame (ms, p50 and p95)
     var kitP50: Double?
     var kitP95: Double?
@@ -138,6 +143,8 @@ struct SessionResult: Codable {
     /// regions grown per sweep (instrumented build only): mean, max, sweeps
     var regionsGrownMean: Double? = nil
     var regionsGrownMax: Int? = nil
+    /// frames whose tracker output showed a ball (nil in reports from before it was counted)
+    var ballShownFrames: Int? = nil
 
     func kind(_ k: FrameKind) -> KindSummary? { kinds.first { $0.kind == k } }
 
@@ -161,14 +168,17 @@ struct SessionResult: Codable {
         var r = SessionResult(scene: scene, phase: phase, state: state, seconds: seconds, frames: samples.count, kinds: ks,
                               detectionCycle: samples.filter { $0.kind.isDetection }.map { $0.kind.withoutBall },
                               kitP50: ks2.isEmpty ? nil : Stats(ks2).p50, kitP95: ks2.isEmpty ? nil : Stats(ks2).p95, recording: recording, note: note)
+        r.ballShownFrames = samples.filter(\.ballShown).count
+        r.detectionBall = samples.filter { $0.kind.isDetection }.map { $0.kind.isBall }
         let g = samples.compactMap(\.regionsGrown)
         if !g.isEmpty { r.regionsGrownMean = Double(g.reduce(0, +)) / Double(g.count); r.regionsGrownMax = g.max() }
         return r
     }
 }
 
-/// The time to lock with the frame pacer deciding which frames the tracker sees (slow search frames make the frames
-/// behind them late, and those are skipped), at a given speed relative to the CI Mac.
+/// The time to lock with the app's pipeline deciding which frames the tracker sees (the frames that come while a slow
+/// search runs wait in the hand-off, the latest replacing the others, which are dropped), at a given speed relative to
+/// the CI Mac.
 struct LockTimeResult: Codable {
     var scene: String
     /// time multiplier on this host's (measured) frame times: x1 = the CI Mac (or this host scaled to it)
@@ -179,7 +189,7 @@ struct LockTimeResult: Codable {
     /// camera time to lock (s): median and max over the runs that locked
     var medianSeconds: Double?
     var maxSeconds: Double?
-    /// per run: frames processed and skipped before the lock (means)
+    /// per run: frames processed and dropped before the lock (means)
     var processed: Double
     var skipped: Double
 }
@@ -231,13 +241,15 @@ final class AppLoop {
         let s = source(k), t = Double(k) / 60
         k += 1
         let t0 = nowNs()
-        _ = glue.arrived(t: t, width: s.width, height: s.height)
+        glue.arrived(t: t, width: s.width, height: s.height)
         let recImg = recording.map { $0.needsImage(at: t, tracker: tracker) } ?? false
         let needImage = tracker.detectionDue(at: t, tap: false) || recImg
         let ycc: YCCImage? = needImage ? s.processingImage() : nil
         let tc = nowNs()
-        let cf = ycc?.colorFrame ?? AppLoop.blank
-        let colorMs = ycc != nil ? msSince(tc) : 0
+        // as the app: the colour frame only when the detector will run (an image converted for the recording alone is not)
+        let detects = tracker.detectorWillRun(at: t, tap: false, trackingNormal: true)
+        let cf = (detects ? ycc?.colorFrame : nil) ?? AppLoop.blank
+        let colorMs = ycc != nil && detects ? msSince(tc) : 0
         let convert = msSince(t0)
 
         let t1 = nowNs()
@@ -310,7 +322,7 @@ final class AppLoop {
         if kind == .plain && ycc != nil { kind = .plainImage }
         return (FrameSample(kind: kind, total: total, convert: convert, colorFrame: colorMs, depth: depthMs, ballCrop: ballMs,
                             slabCrop: Double(slabNs) / 1e6, process: processMs - Double(slabNs) / 1e6, glue: glueMs, kit: kitMs,
-                            record: recordMs, encode: encodeMs, regionsGrown: grown), out)
+                            record: recordMs, encode: encodeMs, regionsGrown: grown, ballShown: out.ball != nil), out)
     }
 
     /// Frames until the tracker locks (at most `maxSeconds`); the samples and the camera time it took (nil: no lock).
@@ -325,30 +337,42 @@ final class AppLoop {
         return (out, nil)
     }
 
-    /// The same with the app's frame pacer deciding which frames are processed: frame i is captured at i/60, reaches the
-    /// serial queue 30 ms later, waits while earlier frames are handled (each taking its measured time x `scale`), and is
-    /// skipped if late. The tracker sees only the processed frames (at their own capture times). The time to lock runs
-    /// to the end of the locking frame's handling.
+    /// The same with the app's pipeline deciding which frames are processed: frame i is captured at i/60 and reaches
+    /// ARKit's delegate 30 ms later, which hands it to processing through BounceCore's FrameHandoff (taken at once if
+    /// processing is idle, else it waits, replacing any frame already waiting; when a frame's processing ends, each
+    /// taking its measured time x `scale`, the waiting frame is taken). The tracker sees only the processed frames (at
+    /// their own capture times); the dropped ones are skipped. The time to lock runs to the end of the locking frame's
+    /// handling.
     func acquirePaced(maxSeconds: Double, scale: Double, latency: Double = 0.03) -> (seconds: Double?, processed: Int, skipped: Int) {
-        var pacer = FramePacer()
+        let h = FrameHandoff<Int>()
         let dt = 1.0 / 60, start = k
-        var free = -Double.infinity, processed = 0, skipped = 0
-        while Double(k - start) * dt < maxSeconds {
-            let c = Double(k) * dt
-            let at = max(c + latency, free)
-            if pacer.frameArrived(captureTime: c, now: at, nominalInterval: dt) == .skip {
-                skip(); skipped += 1
-                free = at + 2e-5
-                pacer.skippedFrameHandled(seconds: 2e-5)
-                continue
-            }
+        var processed = 0, skipped = 0
+        var busyUntil: Double? = nil, current = 0, out: TrackerOutput? = nil
+        var i = start
+        /// processes frame j from time t (the frames before it that were never processed are skipped); the lock time if
+        /// it locked
+        func run(_ j: Int, at t: Double) -> Double? {
+            while k < j { skip(); skipped += 1 }
             let (smp, o) = step()
             processed += 1
-            let secs = smp.total * scale / 1000
-            free = at + secs
-            pacer.frameProcessed(captureTime: c, seconds: secs, output: o)
+            let end = t + smp.total * scale / 1000
+            current = j; busyUntil = end; out = o
             // locked when the locking frame's handling ends (ARKit's own delivery delay left out)
-            if o.state == .locked { return (free - latency - Double(start) * dt, processed, skipped) }
+            return o.state == .locked ? end - latency - Double(start) * dt : nil
+        }
+        while Double(i - start) * dt < maxSeconds {
+            let c = Double(i) * dt, arrive = c + latency
+            if let b = busyUntil, b <= arrive, let o = out {
+                busyUntil = nil
+                if let j = h.finished(captureTime: Double(current) * dt, seconds: 0, now: b, output: o), let lt = run(j, at: b) {
+                    return (lt, processed, skipped)
+                }
+                continue
+            }
+            if let j = h.deliver(i, captureTime: c, now: arrive, nominalInterval: dt), let lt = run(j, at: arrive) {
+                return (lt, processed, skipped)
+            }
+            i += 1
         }
         return (nil, processed, skipped)
     }
@@ -395,13 +419,19 @@ func runAppLoops(scenes set: SceneSet, config cfg: LoopConfig, probe: (String) -
     var lockTimes: [LockTimeResult] = []
     let crop = AppReplicas.CropVariant.app
     let L = cfg.lockedSeconds
-    func searching(_ s: BenchScene) {
-        let loop = AppLoop(still: s.ring(), crop: crop)
+    func searching(_ s: BenchScene, moving: Bool = false) {
+        let ring = s.ring()
+        // moving: the camera pans at 10 cm/s (the pose alone moves, the pixels are the same view's), as when the owner
+        // looks for the slab: the tracker's idle back-off (a still camera, 4 cm / 4 deg) never starts
+        let loop = moving ? AppLoop(source: { k in ring[k % ring.count].worldShifted(Vec3(0.10 * Double(k) / 60, 0, 0)) }, crop: crop)
+                          : AppLoop(still: ring, crop: crop)
         _ = loop.run(seconds: 0.5)   // warm-up
         let smp = loop.run(seconds: cfg.quick ? 2 : 10)
-        results.append(SessionResult.summarise(scene: s.name, phase: "searching", state: .searching, seconds: Double(smp.count) / 60, samples: smp,
-                                               note: "\(loop.tracker.state.rawValue) at the end" + (loop.tracker.state == .locked ? " (a false lock on the floor)" : "")))
-        log("  app loop \(s.name), searching: \(smp.count) frames, \(loop.tracker.state.rawValue) at the end")
+        let phase = moving ? "searching, camera moving" : "searching"
+        results.append(SessionResult.summarise(scene: s.name, phase: phase, state: .searching, seconds: Double(smp.count) / 60, samples: smp,
+                                               note: "\(loop.tracker.state.rawValue) at the end" + (loop.tracker.state == .locked ? " (a false lock on the floor)" : "")
+                                                   + (moving ? "; the camera moving 10 cm/s (never backed off)" : "; a still camera")))
+        log("  app loop \(s.name), \(phase): \(smp.count) frames, \(loop.tracker.state.rawValue) at the end")
     }
     /// a loop locked on `s` (rotating among copies of it), or nil
     func lockedLoop(_ s: BenchScene, _ ring: [BenchScene]) -> AppLoop? {
@@ -411,7 +441,7 @@ func runAppLoops(scenes set: SceneSet, config cfg: LoopConfig, probe: (String) -
         return loop
     }
     for s in set.scenes {
-        if s.kind == .nothing { searching(s); probe("app loop, \(s.name)"); continue }
+        if s.kind == .nothing { searching(s); searching(s, moving: true); probe("app loop, \(s.name)"); continue }
         let ring = s.ring()
         // a hand over a corner: locked on the clear view first, then the hand comes in (the same camera)
         if s.variant == .hand {

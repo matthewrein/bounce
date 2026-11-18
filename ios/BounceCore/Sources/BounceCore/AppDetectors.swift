@@ -26,7 +26,17 @@ public final class SlabFinderDetector: SlabDetecting {
     /// the call does not bring its own.
     public var detail: DetailImage?
 
-    public init(finder: SlabFinder = SlabFinder()) { self.finder = finder }
+    /// the finder's own sweep options, before any tracker's settings (`apply`)
+    private let base: SlabFinder.Options
+
+    public init(finder: SlabFinder = SlabFinder()) { self.finder = finder; base = finder.options }
+
+    /// The tracker's settings for the sweep's work (unset ones leave the finder's own).
+    public func apply(_ settings: TrackerSettings) {
+        finder.options.maxSweepRegions = settings.maxSweepRegions ?? base.maxSweepRegions
+        finder.options.skipSeedsInFinds = settings.sweepSkipsFinds || base.skipSeedsInFinds
+        finder.options.sameOutlinePixels = settings.sweepSameOutlinePixels > 0 ? settings.sweepSameOutlinePixels : base.sameOutlinePixels
+    }
 
     public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
         detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near, detail: nil)

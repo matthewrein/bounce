@@ -81,6 +81,18 @@ public struct RecordingSettings: Codable, Equatable {
     /// run (a discontinuity reported frame after frame, taps); a forced run waits at most this long. The scheduled
     /// intervals (0.12 s searching, 0.3 s re-checking) are longer and unaffected.
     public static let appMinDetectionGap = 0.05
+    /// The app's slab sweep skips starting points inside what it already found, and refines one outline per start once
+    /// (`TrackerSettings.sweepSkipsFinds`, `sweepSameOutlinePixels`): the same outlines, a plain floor's search at 2 ft
+    /// in about a quarter of the time. It keeps the finder's own cap on the regions grown (48, `maxSweepRegions` unset):
+    /// on cluttered floors seen from some sides the slab is only reached at region 33-48, and a lower cap (32 was tried)
+    /// then misses it and can lock a slab-sized patch of the floor instead.
+    public static let appSweepSameOutlinePixels = 1.5
+    /// The app backs its searches off after this long (s) of searches from a still camera that found nothing
+    /// (`TrackerSettings.idleSearchAfter`): then every 0.36 s instead of 0.12 until the camera moves, a tap, a candidate.
+    public static let appIdleSearchAfter = 1.0
+    /// The app's ball finder, with no ball shown or about to be, slows to every 0.3 s after this long (s) of scans that
+    /// found none (`TrackerSettings.idleBallAfter`); a followed ball is looked for every 0.1 s as before.
+    public static let appIdleBallAfter = 0.5
 
     /// The tracker settings the app runs with for these settings (AppSettings.tracker should use this, so the app and
     /// a replay of an older recording build them the same way).
@@ -92,6 +104,10 @@ public struct RecordingSettings: Codable, Equatable {
         t.launchRule = launchRule
         t.searchInterval = RecordingSettings.appSearchInterval
         t.minDetectionGap = RecordingSettings.appMinDetectionGap
+        t.sweepSkipsFinds = true
+        t.sweepSameOutlinePixels = RecordingSettings.appSweepSameOutlinePixels
+        t.idleSearchAfter = RecordingSettings.appIdleSearchAfter
+        t.idleBallAfter = RecordingSettings.appIdleBallAfter
         return t
     }
 
@@ -223,33 +239,128 @@ public struct YCCImage: Equatable {
     public var luma: Plane { Plane(bytes: y, width: width, height: height) }
 
     /// Colour frame at this image's size (chroma upsampled), in the detector's units.
+    ///
+    /// The chroma planes are upsampled bilinearly as `Plane.resized` does (`Plane.sample` at each pixel centre), with
+    /// each output column's and row's source index and weight worked out once (the same Double arithmetic `sample`
+    /// does per pixel), then the same Float interpolation and colour-difference scaling as
+    /// `ColorFrame(lumaFull:cbHalf:crHalf:scale:)`: the very same Floats, about a third of the time (it runs on every
+    /// frame the slab detector runs on).
     public var colorFrame: ColorFrame {
-        ColorFrame(lumaFull: luma, cbHalf: Plane(bytes: cb, width: chromaWidth, height: chromaHeight),
-                   crHalf: Plane(bytes: cr, width: chromaWidth, height: chromaHeight), scale: 1)
+        let w = width, h = height, cw = chromaWidth, ch = chromaHeight
+        let sx = Double(cw) / Double(w), sy = Double(ch) / Double(h)
+        // where resized would not sample bilinearly (the same size, or shrinking both ways), or a plane too small to
+        // interpolate across: the general path
+        guard !((cw == w && ch == h) || (sx >= 1 && sy >= 1)), cw >= 2, ch >= 2 else {
+            return ColorFrame(lumaFull: luma, cbHalf: Plane(bytes: cb, width: cw, height: ch),
+                              crHalf: Plane(bytes: cr, width: cw, height: ch), scale: 1)
+        }
+        // per output column (row): the source index and weight Plane.sample takes at the pixel's centre
+        func axis(_ n: Int, _ s: Double, _ size: Int) -> (i: [Int], a: [Float]) {
+            var ii = [Int](repeating: 0, count: n), aa = [Float](repeating: 0, count: n)
+            for x in 0..<n {
+                let f = clamp((Double(x) + 0.5) * s - 0.5, 0, Double(size) - 1.001)
+                let i = Int(f)
+                ii[x] = i; aa[x] = Float(f - Double(i))
+            }
+            return (ii, aa)
+        }
+        let (xi, ax) = axis(w, sx, cw), (yi, ay) = axis(h, sy, ch)
+        func plane(_ src: [UInt8], _ scale: Float) -> Plane {
+            let s = src.map { Float($0) }
+            var d = [Float](repeating: 0, count: w * h)
+            s.withUnsafeBufferPointer { sp in
+                d.withUnsafeMutableBufferPointer { dp in
+                    xi.withUnsafeBufferPointer { xip in
+                        ax.withUnsafeBufferPointer { axp in
+                            for yy in 0..<h {
+                                let r = yi[yy] * cw, b = ay[yy], o = yy * w
+                                for x in 0..<w {
+                                    let j = r + xip[x], a = axp[x]
+                                    let top = sp[j] * (1 - a) + sp[j + 1] * a
+                                    let bot = sp[j + cw] * (1 - a) + sp[j + cw + 1] * a
+                                    dp[o + x] = ((top * (1 - b) + bot * b) - 128) / scale
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Plane(width: w, height: h, data: d)
+        }
+        return ColorFrame(y: luma, cb: plane(cb, 0.564), cr: plane(cr, 0.713))
     }
 
     /// Build from separate luma and interleaved CbCr planes (as a CVPixelBuffer's two planes), downscaling by an integer
-    /// factor k (luma averaged over k x k blocks, chroma over (k/2) x (k/2) blocks of the half-size plane).
+    /// factor k (luma averaged over k x k blocks, chroma over (k/2) x (k/2) blocks of the half-size plane: the integer
+    /// sums divided, truncating). It runs on every frame the slab detector runs on (and every recorded image), so it
+    /// works a row of blocks at a time through row pointers, and for the app's factor 4 sums two luma blocks, or a row
+    /// of four CbCr pairs, from one 8-byte load in 16-bit lanes: the same sums and divisions, so the same bytes.
     public static func fromBiplanar(luma: UnsafeBufferPointer<UInt8>, lumaWidth W: Int, lumaHeight H: Int, lumaBytesPerRow lb: Int,
                                     cbcr: UnsafeBufferPointer<UInt8>, cbcrBytesPerRow cbb: Int, factor k: Int) -> YCCImage {
         let w = W / k, h = H / k, cw = (w + 1) / 2, chh = (h + 1) / 2
         var y = [UInt8](repeating: 0, count: w * h), cb = [UInt8](repeating: 128, count: cw * chh), cr = cb
-        for yy in 0..<h {
-            for xx in 0..<w {
-                var s = 0
-                for dy in 0..<k { let row = (yy * k + dy) * lb + xx * k; for dx in 0..<k { s += Int(luma[row + dx]) } }
-                y[yy * w + xx] = UInt8(s / (k * k))
+        guard w > 0, h > 0, let L = luma.baseAddress, let C = cbcr.baseAddress else { return YCCImage(width: w, height: h, y: y, cb: cb, cr: cr) }
+        precondition(luma.count >= (h * k - 1) * lb + w * k && (H / 2 == 0 || cbcr.count >= (min(H / 2, chh * k) - 1) * cbb + 2 * min(W / 2, cw * k)),
+                     "fromBiplanar: the planes are smaller than their sizes say")
+        let kk = k * k
+        var sums = [Int](repeating: 0, count: w)
+        y.withUnsafeMutableBufferPointer { yo in
+            sums.withUnsafeMutableBufferPointer { s in
+                for yy in 0..<h {
+                    for x in 0..<w { s[x] = 0 }
+                    for dy in 0..<k {
+                        let row = L + (yy * k + dy) * lb
+                        if k == 4 {
+                            // two blocks from one 8-byte load: byte pairs summed in 16-bit lanes, then the lanes paired
+                            let raw = UnsafeRawPointer(row)
+                            var x = 0
+                            while x + 1 < w {
+                                let v = raw.loadUnaligned(fromByteOffset: x * 4, as: UInt64.self).littleEndian
+                                let t = (v & 0x00FF_00FF_00FF_00FF) &+ ((v >> 8) & 0x00FF_00FF_00FF_00FF)
+                                s[x] &+= Int(t & 0xFFFF) &+ Int((t >> 16) & 0xFFFF)
+                                s[x + 1] &+= Int((t >> 32) & 0xFFFF) &+ Int(t >> 48)
+                                x += 2
+                            }
+                            if x < w { let p = row + x * 4; s[x] &+= Int(p[0]) &+ Int(p[1]) &+ Int(p[2]) &+ Int(p[3]) }
+                        } else {
+                            for x in 0..<w { let p = row + x * k; var t = 0; for dx in 0..<k { t &+= Int(p[dx]) }; s[x] &+= t }
+                        }
+                    }
+                    let o = yy * w
+                    for x in 0..<w { yo[o + x] = UInt8(truncatingIfNeeded: s[x] / kk) }
+                }
             }
         }
-        // chroma: output chroma pixel (cx, cy) covers luma pixels [2cx*k, 2cx*k + 2k) -> half-size chroma [cx*k, cx*k + k)
+        // chroma: output chroma pixel (cx, cy) covers luma pixels [2cx*k, 2cx*k + 2k) -> half-size chroma [cx*k, cx*k + k),
+        // clipped to the plane
         let CW = W / 2, CH = H / 2
-        for yy in 0..<chh {
-            for xx in 0..<cw {
-                var sb = 0, sr = 0, n = 0
-                for dy in 0..<k { let r = yy * k + dy; if r >= CH { continue }
-                    for dx in 0..<k { let c = xx * k + dx; if c >= CW { continue }
-                        let j = r * cbb + c * 2; sb += Int(cbcr[j]); sr += Int(cbcr[j + 1]); n += 1 } }
-                if n > 0 { cb[yy * cw + xx] = UInt8(sb / n); cr[yy * cw + xx] = UInt8(sr / n) }
+        cb.withUnsafeMutableBufferPointer { bo in
+            cr.withUnsafeMutableBufferPointer { ro in
+                for yy in 0..<chh {
+                    let r0 = yy * k, r1 = min(CH, r0 + k)
+                    for xx in 0..<cw {
+                        let c0 = xx * k, c1 = min(CW, c0 + k)
+                        guard r1 > r0, c1 > c0 else { continue }
+                        var sb = 0, sr = 0
+                        if k == 4 && c1 - c0 == 4 {
+                            // a row's four CbCr pairs in one 8-byte load: Cb in the even bytes, Cr in the odd ones
+                            var lb: UInt64 = 0, lr: UInt64 = 0
+                            for r in r0..<r1 {
+                                let v = UnsafeRawPointer(C + r * cbb).loadUnaligned(fromByteOffset: 2 * c0, as: UInt64.self).littleEndian
+                                lb &+= v & 0x00FF_00FF_00FF_00FF; lr &+= (v >> 8) & 0x00FF_00FF_00FF_00FF
+                            }
+                            sb = Int(lb & 0xFFFF) &+ Int((lb >> 16) & 0xFFFF) &+ Int((lb >> 32) & 0xFFFF) &+ Int(lb >> 48)
+                            sr = Int(lr & 0xFFFF) &+ Int((lr >> 16) & 0xFFFF) &+ Int((lr >> 32) & 0xFFFF) &+ Int(lr >> 48)
+                        } else {
+                            for r in r0..<r1 {
+                                let p = C + r * cbb
+                                for c in c0..<c1 { sb &+= Int(p[2 * c]); sr &+= Int(p[2 * c + 1]) }
+                            }
+                        }
+                        let n = (r1 - r0) * (c1 - c0)
+                        bo[yy * cw + xx] = UInt8(truncatingIfNeeded: sb / n); ro[yy * cw + xx] = UInt8(truncatingIfNeeded: sr / n)
+                    }
+                }
             }
         }
         return YCCImage(width: w, height: h, y: y, cb: cb, cr: cr)
@@ -283,11 +394,22 @@ public struct DepthMap: Equatable {
     }
 
     public var data: Data {
-        var d = Data([66, 68, 80, 49, UInt8(width & 255), UInt8(width >> 8), UInt8(height & 255), UInt8(height >> 8)])
-        d.reserveCapacity(8 + depth.count * 5)
-        for v in depth { let u = v.bitPattern; d.append(contentsOf: [UInt8(u & 255), UInt8((u >> 8) & 255), UInt8((u >> 16) & 255), UInt8(u >> 24)]) }
-        d.append(contentsOf: confidence)
-        return d
+        // the whole file in a byte array first (appending to Data four bytes at a time is what made this slow)
+        var b = [UInt8](repeating: 0, count: 8 + depth.count * 5)
+        b[0] = 66; b[1] = 68; b[2] = 80; b[3] = 49
+        b[4] = UInt8(width & 255); b[5] = UInt8(width >> 8); b[6] = UInt8(height & 255); b[7] = UInt8(height >> 8)
+        b.withUnsafeMutableBufferPointer { o in
+            depth.withUnsafeBufferPointer { dp in
+                for i in 0..<dp.count {
+                    let u = dp[i].bitPattern, j = 8 + 4 * i
+                    o[j] = UInt8(u & 255); o[j + 1] = UInt8((u >> 8) & 255); o[j + 2] = UInt8((u >> 16) & 255); o[j + 3] = UInt8(u >> 24)
+                }
+            }
+            confidence.withUnsafeBufferPointer { cp in
+                for i in 0..<cp.count { o[8 + 4 * depth.count + i] = cp[i] }
+            }
+        }
+        return Data(b)
     }
 
     @inline(__always) public func at(_ x: Int, _ y: Int) -> (depth: Float, confidence: UInt8) {

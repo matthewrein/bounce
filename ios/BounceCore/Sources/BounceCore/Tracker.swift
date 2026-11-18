@@ -19,6 +19,9 @@ public protocol SlabDetecting {
     /// Drop anything kept from earlier calls in pixels of the processing frame (e.g. SlabFinderDetector's edge memory):
     /// the frame's size changed. Default: nothing kept.
     func forgetPixelMemory()
+    /// The tracker's settings, at the start and whenever they change: the ones for the detector's own work
+    /// (`TrackerSettings.maxSweepRegions`, `sweepSkipsFinds`, `sweepSameOutlinePixels`). Default: none used.
+    func apply(_ settings: TrackerSettings)
 }
 
 extension SlabDetecting {
@@ -29,6 +32,7 @@ extension SlabDetecting {
     public func refine(outline: [Vec2], frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?,
                        detail: DetailImage) -> [DetectedOutline] { [] }
     public func forgetPixelMemory() {}
+    public func apply(_ settings: TrackerSettings) {}
 }
 
 /// One outline a detector found.
@@ -120,10 +124,18 @@ public struct DetectionRecord: Codable, Equatable {
 }
 
 /// Finds the ball above the slab. The real one is BallLocator; tests can plug in others.
+/// (The default: nothing waits for a second scan.)
+extension BallLocating {
+    public var awaitsConfirmation: Bool { false }
+}
+
 public protocol BallLocating: AnyObject {
     /// The ball's centre in camera (CV) axes if a ball is held over the slab. `image`: a luma image (often a
     /// higher-resolution crop around the slab) with its own intrinsics; `slab`: the slab pose in the same camera axes.
     func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)?
+    /// The last scan left something to be confirmed by the next one (half an outline that is reported only once it shows
+    /// up twice in the same place): the tracker scans again at the usual rate, not the idle one (`idleBallAfter`).
+    var awaitsConfirmation: Bool { get }
     func reset()
 }
 
@@ -157,8 +169,24 @@ public struct TrackerSettings: Equatable {
     public var historySize: Int = 15
     /// use LiDAR depth when present: fuse its (smoothed) plane's normal with this weight (0 = only report it)
     public var depthNormalWeight: Double = 0.5
+    /// The slab search's own work (`SlabFinderDetector`): the most regions its sweep grows (nil: the finder's own, 48);
+    /// whether it skips starting points inside an outline it already found (`SlabFinder.Options.skipSeedsInFinds`); and
+    /// how close (pixels, mean corner distance) an outline must be to one that failed refinement from the same start to be skipped
+    /// (`sameOutlinePixels`; 0: none). The defaults are the finder's own, so older recordings, whose settings lack
+    /// them, replay as the phone ran them; the app's are in `RecordingSettings.trackerSettings`.
+    public var maxSweepRegions: Int? = nil
+    public var sweepSkipsFinds = false
+    public var sweepSameOutlinePixels: Double = 0
     /// the ball finder runs at most this often (s)
     public var ballInterval: Double = 0.1
+    /// While no ball is shown and none is about to be (the ball finder follows none and has no half outline waiting
+    /// for its second scan: `BallLocating.awaitsConfirmation`), after this long (s) of scans that found none, the ball
+    /// finder runs only every `idleBallInterval` (its scan of the whole space above the slab costs tens of ms on a
+    /// textured floor), until it finds one, or the lock changes (a new lock, a re-lock, a lost lock, a discontinuity). 0:
+    /// never (the default, so older recordings replay as the phone ran them); the app's is
+    /// `RecordingSettings.appIdleBallAfter`. A followed ball is looked for every `ballInterval` as before.
+    public var idleBallAfter: Double = 0
+    public var idleBallInterval: Double = 0.3
     /// Shape checks for every detection. The tracker's default also refuses fits that cannot pin the normal (views
     /// from nearly straight above): `maxNormalSigmaDegrees` 10 at 1 px corner noise.
     public var shapeLimits: ShapeCheck.Limits = TrackerSettings.defaultShapeLimits
@@ -247,6 +275,21 @@ public struct TrackerSettings: Equatable {
     /// until the evidence reaches this, re-check a locked rectangular slab at the search rate (more detections, sooner
     /// settled); 0 = always at the re-check rate
     public var sideDecidedEvidence: Double = 1
+
+    // Searching with nothing to find (the floor, a cluttered room): a still camera's searches that keep finding nothing
+    // would go on finding nothing, each one costing a slab search (tens to hundreds of ms on a cluttered floor).
+    /// After this long (s) of searches that found no candidate, from a camera that has kept still (and with no tap's
+    /// seed), search only every `idleSearchInterval` until the camera moves, a search finds a candidate, a tap, a reset
+    /// or a world-frame discontinuity, or tracking is limited. 0: never back off (the default, so older recordings,
+    /// whose settings lack it, replay as the phone ran them); the app's is `RecordingSettings.appIdleSearchAfter`.
+    public var idleSearchAfter: Double = 0
+    /// the backed-off interval between searches (s)
+    public var idleSearchInterval: Double = 0.36
+    /// The camera has kept still while its view direction stays within this angle (degrees) and its position within
+    /// `idleSearchMoveDistance` (m) of where it was on the first of those empty searches: a camera that turns or moves
+    /// further sees something else, and searches at the usual rate again from its next frame.
+    public var idleSearchMoveDegrees: Double = 4
+    public var idleSearchMoveDistance: Double = 0.04
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
@@ -358,6 +401,10 @@ public struct TrackerOutput {
     /// the ball finder ran on this frame (`ball` is then its result, nil if it found none; otherwise `ball` is the last
     /// result, kept)
     public var ballSearched: Bool = false
+    /// the ball finder ran on this frame and holds something for its next scan to confirm (`BallLocating
+    /// .awaitsConfirmation`): the idle ball rate does not start (a recording keeps it, so a replay that uses the phone's
+    /// ball result follows the same rate)
+    public var ballAwaitsConfirmation: Bool = false
     /// what the slab detector's run on this frame was for (nil: it did not run; then `detections` is nil too)
     public var detectionKind: TrackerDetectionKind? = nil
     /// the full-resolution crop the tracker got for the slab's edges on this frame (`TrackerFrame.slabDetail`), if any
@@ -380,7 +427,10 @@ public struct TrackerOutput {
 public final class SlabTracker {
     /// Changing the settings is reported with the next frame (`TrackerOutput.controls`).
     public var settings: TrackerSettings {
-        didSet { if settings != oldValue { pendingControls.append(TrackerControl(kind: .settings, settings: settings)) } }
+        didSet {
+            if settings != oldValue { pendingControls.append(TrackerControl(kind: .settings, settings: settings)) }
+            detector.apply(settings)
+        }
     }
     public let detector: SlabDetecting
     public let ballLocator: BallLocating?
@@ -477,6 +527,7 @@ public final class SlabTracker {
     public init(settings: TrackerSettings = TrackerSettings(), detector: SlabDetecting, ballLocator: BallLocating? = nil) {
         self.settings = settings; self.detector = detector; self.ballLocator = ballLocator
         pendingControls = [TrackerControl(kind: .start, settings: settings)]
+        detector.apply(settings)
     }
 
     func bump(_ k: String) {
@@ -492,11 +543,50 @@ public final class SlabTracker {
     public func detectionDue(at t: Double, tap: Bool) -> Bool {
         let since = t - lastDetectionRun
         if since >= 0 && since < settings.minDetectionGap { return false }
-        return tap || t - lastCheck >= (state == .locked && !sidesUndecided ? settings.recheckInterval : settings.searchInterval)
+        let interval = state == .locked && !sidesUndecided ? settings.recheckInterval
+            : state == .searching && searchIdle ? max(settings.searchInterval, settings.idleSearchInterval) : settings.searchInterval
+        return tap || t - lastCheck >= interval
+    }
+
+    /// whether searches are backed off (`TrackerSettings.idleSearchAfter`): set after each frame
+    public private(set) var searchIdle = false
+    /// the first of the latest run of empty searches from a still camera: its time and the camera's position and view
+    /// direction (world)
+    private var emptySearches: (time: Double, position: Vec3, forward: Vec3)?
+
+    /// After a frame (`process`): whether the next searches are backed off. `searched`: the detector searched on this
+    /// frame (not a re-check).
+    private func updateSearchIdle(_ f: TrackerFrame, searched: Bool) {
+        guard settings.idleSearchAfter > 0, state == .searching, seed == nil, f.trackingNormal else {
+            emptySearches = nil; searchIdle = false
+            return
+        }
+        let pos = f.view.position, fwd = f.view.worldFromCamera.applyDirection(Vec3(0, 0, 1))
+        if let e = emptySearches {
+            let turned = Units.degrees(acos(clamp(e.forward.dot(fwd), -1, 1)))
+            if turned > settings.idleSearchMoveDegrees || pos.distance(to: e.position) > settings.idleSearchMoveDistance {
+                // the camera moved on: another view, searched at the usual rate (from this search, if it was one)
+                emptySearches = searched ? (f.timestamp, pos, fwd) : nil
+                searchIdle = false
+                return
+            }
+        } else if searched {
+            emptySearches = (f.timestamp, pos, fwd)
+        }
+        if let e = emptySearches, searched { searchIdle = f.timestamp - e.time >= settings.idleSearchAfter }
     }
 
     /// The same for a frame without a tap.
     public func detectionDue(at t: Double) -> Bool { detectionDue(at: t, tap: false) }
+
+    /// Whether `process` will run the slab detector on the next frame (time t; `tap`: it brings a tap; `trackingNormal`:
+    /// its tracking state is normal), exactly: the detector is all that reads the frame's colour image
+    /// (`TrackerFrame.frame`), so a caller may hand a blank one otherwise (the app converts the colour frame only then).
+    /// (A tap, and a reset still pending from an earlier tap, only ever make a run due sooner, and `detectionDue` with
+    /// `tap` already counts them; `process` then runs the detector only if tracking is normal.)
+    public func detectorWillRun(at t: Double, tap: Bool, trackingNormal: Bool) -> Bool {
+        trackingNormal && detectionDue(at: t, tap: tap)
+    }
 
     /// a rectangular slab whose long side the evidence has not settled yet: re-check at the search rate to gather it
     private var sidesUndecided: Bool {
@@ -505,12 +595,22 @@ public final class SlabTracker {
 
     /// Whether the next frame at time t will run the ball finder (so the caller knows to prepare its image).
     public func ballDue(at t: Double) -> Bool {
-        ballLocator != nil && state == .locked && t - lastBall >= settings.ballInterval
+        ballLocator != nil && state == .locked && t - lastBall >= currentBallInterval
     }
+
+    /// the ball finder's interval now: `ballInterval`, or `idleBallInterval` once its scans have found nothing for
+    /// `idleBallAfter`
+    private var currentBallInterval: Double {
+        guard settings.idleBallAfter > 0, let since = emptyBallScans, lastBall - since >= settings.idleBallAfter else { return settings.ballInterval }
+        return max(settings.ballInterval, settings.idleBallInterval)
+    }
+    /// the first of the latest run of ball scans that found no ball (and left nothing waiting for a second scan)
+    private var emptyBallScans: Double?
 
     /// Forget the slab and search again.
     public func reset() {
         forget()
+        emptySearches = nil; searchIdle = false
         seed = nil; tapResetPending = false; noiseSamples = []
         bump("reset")
         pendingControls.append(TrackerControl(kind: .reset))
@@ -524,6 +624,7 @@ public final class SlabTracker {
     public func noteWorldDiscontinuity(_ reason: String = "world-frame") {
         pendingDiscontinuity = reason
         lastCheck = -.infinity
+        emptySearches = nil; searchIdle = false
         pendingControls.append(TrackerControl(kind: .worldDiscontinuity, reason: reason))
     }
 
@@ -728,6 +829,10 @@ public final class SlabTracker {
             detectionKind = state == .locked ? .recheck : .search
             detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
         }
+        // a tap, a discontinuity (reported, or noticed here) or a candidate searches at the usual rate again; so does a
+        // camera that moved
+        if f.tap != nil || discontinuity != nil { emptySearches = nil; searchIdle = false }
+        updateSearchIdle(f, searched: detectionKind == .search)
 
         // LiDAR: the depth plane, averaged in world space over frames that pass its gates, folded into the image lock
         slab = imageSlab
@@ -767,14 +872,20 @@ public final class SlabTracker {
         out.outline = project(s, f.view)
 
         // the ball
-        if let loc = ballLocator, let img = f.ballImage, let bk = f.ballIntrinsics, f.timestamp - lastBall >= settings.ballInterval {
+        if let loc = ballLocator, let img = f.ballImage, let bk = f.ballIntrinsics, f.timestamp - lastBall >= currentBallInterval {
             lastBall = f.timestamp
             out.ballSearched = true
             let sc = s.transformed(by: f.view.cameraFromWorld)
             if let b = loc.locate(image: img, intrinsics: bk, slab: sc, spec: settings.spec, ball: settings.ball, down: downCam) {
                 ballState = (f.view.toWorld(b.center), b.circle, b.radius); bump("ballFrames"); lastBallSeen = t
             } else { ballState = nil }
+            // nothing shown or about to be: the run of empty scans goes on (or starts)
+            let awaits = loc.awaitsConfirmation
+            out.ballAwaitsConfirmation = awaits
+            if ballState == nil && !awaits { emptyBallScans = emptyBallScans ?? t } else { emptyBallScans = nil }
         }
+        // a new lock, a re-lock or a discontinuity: the ball is looked for at the usual rate again
+        if events.contains(where: { $0 == "locked" || $0 == "relocked" || $0.hasPrefix("lock-unconfirmed") }) { emptyBallScans = nil }
         out.ball = ballState
 
         // the bounce, in world coordinates
@@ -1231,14 +1342,16 @@ public final class SlabTracker {
     }
 
     private func lose(_ events: inout [String]) {
+        emptyBallScans = nil
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
         events.append("lost"); bump("lost")
     }
 
-    /// Everything but the tap's seed.
+    /// Everything but the tap's seed (and the backed-off searches, which `reset`, a tap and a discontinuity end).
     private func forget() {
+        emptyBallScans = nil
         state = .searching; hist = []; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; candidates = []; movers = []
         recent = []; partners = []; implausible = 0
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()

@@ -118,12 +118,13 @@ enum ScenePaint {
 
     /// Paints floor clutter (`dense` false: about 40 objects of every kind; true: a floor of slab-sized tiles, built to
     /// make the slab search grow as many regions as it may) into a render of `view`.
-    static func floor(_ rgb: inout [UInt8], view: CameraView, scene: SyntheticScene, slabInView: Bool, dense: Bool, seed: UInt64) {
+    static func floor(_ rgb: inout [UInt8], view: CameraView, scene: SyntheticScene, slabInView: Bool, dense: Bool, seed: UInt64,
+                      count: Int = 40, keepScale: Double = 1.8) {
         guard let b = visibleFloor(view) else { return }
         var rng = BenchRandom(seed)
         var patches: [Patch] = []
         func uni(_ a: Double, _ c: Double) -> Double { a + (c - a) * rng.uniform() }
-        let s = scene.slab, keep = max(s.halfU, s.halfV) * 1.8 + 0.04
+        let s = scene.slab, keep = max(s.halfU, s.halfV) * keepScale + 0.04
         func clearOfSlab(_ x: Double, _ z: Double, _ r: Double) -> Bool {
             !slabInView || ((x - s.center.x) * (x - s.center.x) + (z - s.center.z) * (z - s.center.z)).squareRoot() > keep + r * 0.6
         }
@@ -133,7 +134,7 @@ enum ScenePaint {
                                  colour: (0, 0, 0), colour2: (0, 0, 0), seed: Int(truncatingIfNeeded: rng.next() & 0xFFFF)))
         } else {
             var tries = 0
-            while patches.count < 40 && tries < 400 {
+            while patches.count < count && tries < 10 * count {
                 tries += 1
                 let kind = rng.uniform()
                 let style: Patch.Style, hu: Double, hv: Double, c1: RGB, c2: RGB
