@@ -352,7 +352,9 @@ web upload commits ("Add files via upload" at the root), then the one command af
 (incomplete, the missing parts named), the rest in a second commit (complete, scored: median tilt error at most 2°),
 a second kit (H.264, no LiDAR) later, the same parts again (renamed `(1)`, in a folder, re-committed), a damaged part
 (reported, the complete copy kept, then repaired) and a repository it cannot fetch (exit 10, what to do); and no
-private path in anything it prints. The full-length run takes 20-40 minutes here; CI runs it with the plan at a quarter of
+private path in anything it prints. The full-length run took 32 minutes on 4 busy cores (the kit: 5,610 video frames,
+108 MB on the phone, 4 parts of 24.0, 24.0, 23.0 and 16.3 MB; writing it took 19 minutes, mostly rendering; scoring it
+about 2); CI runs it with the plan at a quarter of
 its timings and 10,000,000-byte parts, so that kit too comes in several (`--short`), and puts the bundle the real app
 made in the Simulator's end-to-end test (testCaptureKitFlow, the app's own `KitBundle` with Apple's DEFLATE) through
 the one command too (`--app-bundle`). What it cannot
