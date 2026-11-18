@@ -17,7 +17,8 @@ final class PreflightTests: XCTestCase {
 
     func goodMotion() -> PreflightMotionObservation {
         PreflightMotionObservation(available: true, requestedHz: 100, window: 10, samples: 991, firstSample: 0.05, lastSample: 9.95,
-                                   nonAdvancing: 0, maxGap: 0.012, gravityMedian: 1.0, gravityMin: 0.999, gravityMax: 1.001)
+                                   nonAdvancing: 0, maxGap: 0.012, gravityMedian: 1.0, gravityMin: 0.999, gravityMax: 1.001,
+                                   accelMedian: 1.0, accelMin: 0.97, accelMax: 1.04)
     }
 
     func goodRecorder() -> PreflightRecorderObservation {
@@ -46,7 +47,7 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(r.headline, "Ready: 6 pass")
         XCTAssertEqual(r.item(.arkit)?.detail, "Normal after 1.0 s, 60 frames a second.")
         XCTAssertEqual(r.item(.arkit)?.numbers["fps"], 60)
-        XCTAssertEqual(r.item(.motion)?.detail, "100 samples a second, gravity 1.000 g.")
+        XCTAssertEqual(r.item(.motion)?.detail, "100 samples a second, the accelerometer reads 1.000 g.")
         XCTAssertTrue(r.text.hasPrefix("Pre-flight, build 1.0 (n8), iPhone16,1, iOS 18.1, 2026-11-18T07:00:00Z\nReady: 6 pass\nPASS  Camera permission: Allowed.\n"),
                       r.text)
         // the copy is words and numbers: JSON round-trips, with every observation in it
@@ -215,18 +216,27 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(rate(89.9), .warn)
         XCTAssertEqual(rate(50.1), .warn)
         XCTAssertEqual(rate(49.9), .fail)
-        // gravity within 0.05 g passes, within 0.15 warns, else fails
-        func gravity(_ g: Double) -> PreflightStatus {
-            var m = goodMotion(); m.gravityMedian = g
+        // the accelerometer (|gravity + user acceleration|) within 0.05 g of 1 passes, within 0.15 warns, else fails
+        func accel(_ a: Double) -> PreflightStatus {
+            var m = goodMotion(); m.accelMedian = a
             return Preflight.motion(m, simulator: false).status
         }
-        XCTAssertEqual(gravity(1.049), .pass)
-        XCTAssertEqual(gravity(0.951), .pass)
-        XCTAssertEqual(gravity(1.051), .warn)
-        XCTAssertEqual(gravity(0.851), .warn)
-        XCTAssertEqual(gravity(1.151), .fail)
-        XCTAssertEqual(gravity(0.0), .fail)
-        var m = goodMotion(); m.gravityMedian = nil
+        XCTAssertEqual(accel(1.049), .pass)
+        XCTAssertEqual(accel(0.951), .pass)
+        XCTAssertEqual(accel(1.051), .warn)
+        XCTAssertEqual(accel(0.851), .warn)
+        XCTAssertEqual(accel(1.151), .fail)
+        XCTAssertEqual(accel(0.0), .fail)
+        var m = goodMotion(); m.accelMedian = 1.2
+        XCTAssertEqual(Preflight.motion(m, simulator: false).detail, "The accelerometer reads 1.200 g (1 expected).")
+        // gravity is CoreMotion's estimate scaled to 1 g: shown, never judged
+        m = goodMotion(); m.gravityMedian = 0.5
+        XCTAssertEqual(Preflight.motion(m, simulator: false).status, .pass)
+        XCTAssertEqual(Preflight.motion(m, simulator: false).numbers["gravity"], 0.5)
+        m = goodMotion(); m.accelMedian = nil
+        XCTAssertEqual(Preflight.motion(m, simulator: false).detail, "No accelerometer readings.")
+        XCTAssertEqual(Preflight.motion(m, simulator: false).status, .warn)
+        m = goodMotion(); m.gravityMedian = nil; m.accelMedian = nil
         XCTAssertEqual(Preflight.motion(m, simulator: false).status, .fail)
         // time stamps that do not advance fail; a long gap, a late start or an early stop warn
         m = goodMotion(); m.nonAdvancing = 1
@@ -306,7 +316,7 @@ final class PreflightTests: XCTestCase {
     func testRecorder() {
         let good = goodRecorder()
         XCTAssertEqual(Preflight.recorder(good, demo: false).status, .pass)
-        XCTAssertEqual(Preflight.recorder(good, demo: false).detail, "Wrote and read back 60 frames (hevc 1440x1080, 2.00 s, 0.9 MB).")
+        XCTAssertEqual(Preflight.recorder(good, demo: false).detail, "Wrote and read back 60 frames (hevc 1440x1080 at 30 fps, 2.00 s, 0.9 MB).")
         var r = good
         // read-back frames: one off passes, 90% warns, less fails
         r.readBackFrames = 59
@@ -384,9 +394,9 @@ final class PreflightTests: XCTestCase {
     func testTheMotionMeterCountsGapsAndStampsThatDoNotAdvance() {
         let m = PreflightMotionMeter(start: 50, available: true)
         for i in 0..<1000 where i < 400 || i >= 440 {
-            m.sample(time: 50 + Double(i) / 100, gravity: Vec3(0, -0.6, -0.8))
+            m.sample(time: 50 + Double(i) / 100, gravity: Vec3(0, -0.6, -0.8), userAcceleration: Vec3(0, 0, 0))
         }
-        m.sample(time: 50 + 9.99, gravity: Vec3(0, 0, -1)) // the same stamp again
+        m.sample(time: 50 + 9.99, gravity: Vec3(0, 0, -1), userAcceleration: Vec3(0, 0, 0)) // the same stamp again
         let o = m.observation(end: 60)
         XCTAssertEqual(o.samples, 961)
         XCTAssertEqual(o.nonAdvancing, 1)
@@ -403,5 +413,157 @@ final class PreflightTests: XCTestCase {
             for i in 0..<250 { n.sample(time: Double(q * 250 + i) / 100, gravity: Vec3(0, 0, -1)) }
         }
         XCTAssertEqual(n.observation(end: 10).samples, 1000)
+    }
+
+    // MARK: frames that stop, start late or pause
+
+    /// ARKit at 60 frames a second from `from` to `to` (seconds into a 10 s window), with depth on every frame, and the
+    /// meter's verdicts.
+    func meterRun(from: Double, to: Double, skipping gap: ClosedRange<Double>? = nil, latency: Double? = nil, processingMs: Double? = nil)
+        -> (arkit: PreflightItem, lidar: PreflightItem, observed: PreflightARKitObservation) {
+        let start = 500.0
+        let m = PreflightARKitMeter(start: start, supported: true, expectedFps: 60, depthSupported: true)
+        var t = from
+        while t <= to + 1e-9 {
+            if gap.map({ !$0.contains(t) }) ?? true {
+                m.frame(time: start + t, tracking: .normal, hasDepth: true, latency: latency, processingMs: processingMs)
+                if m.wantsDepthSample(time: start + t) {
+                    m.depth(PreflightDepthSample(validShare: 1, confidentShare: 0.8, medianMeters: 1.3), time: start + t)
+                }
+            }
+            t += 1.0 / 60
+        }
+        let (a, l) = m.observations(end: start + 10)
+        return (Preflight.arkit(a, simulator: false), Preflight.lidar(l, arkit: a), a)
+    }
+
+    func testFramesThatStopPartWayFail() {
+        // frames at 60 a second from 0.5 s to 2.5 s, then none: the rate between the first and the last frame is a
+        // perfect 60, which alone passed
+        let r = meterRun(from: 0.5, to: 2.5)
+        XCTAssertEqual(r.observed.fps ?? 0, 60, accuracy: 0.01)
+        XCTAssertEqual(r.arkit.status, .fail, r.arkit.line)
+        XCTAssertEqual(r.arkit.detail, "Frames stopped 7.5 s before the end.")
+        XCTAssertEqual(r.arkit.numbers["missingSeconds"] ?? 0, 8, accuracy: 0.01)
+        XCTAssertEqual(r.lidar.status, .fail, r.lidar.line)
+        XCTAssertEqual(r.lidar.detail, "Depth stopped 7.5 s before the end.")
+        // frames that only start 8 s in
+        let late = meterRun(from: 8, to: 10)
+        XCTAssertEqual(late.arkit.status, .fail)
+        XCTAssertEqual(late.arkit.detail, "Frames started 8.0 s late.")
+        XCTAssertEqual(late.lidar.status, .fail)
+        // stopping 1.6 s early, or a half-second pause, warns; 1.4 s early or a 0.2 s pause passes
+        XCTAssertEqual(meterRun(from: 0, to: 8.4).arkit.detail, "Frames stopped 1.6 s before the end.")
+        XCTAssertEqual(meterRun(from: 0, to: 8.4).arkit.status, .warn)
+        XCTAssertEqual(meterRun(from: 0, to: 8.6).arkit.status, .pass)
+        let paused = meterRun(from: 0, to: 10, skipping: 4.0...4.49)
+        XCTAssertEqual(paused.arkit.status, .warn, paused.arkit.line)
+        XCTAssertTrue(paused.arkit.detail.hasPrefix("A gap of 0.5"), paused.arkit.detail)
+        XCTAssertEqual(paused.lidar.status, .warn, paused.lidar.line)
+        XCTAssertEqual(meterRun(from: 0, to: 10, skipping: 4.0...4.19).arkit.status, .pass)
+        // many short stalls that add up to more than half the window fail
+        var a = goodARKit()
+        a.maxGap = 0.3; a.longGapSeconds = 5.0
+        XCTAssertEqual(Preflight.arkit(a, simulator: false).status, .fail)
+        a.longGapSeconds = 3.0
+        XCTAssertEqual(Preflight.arkit(a, simulator: false).status, .warn)
+    }
+
+    func testTooFewFramesSayWhetherTheAppOrTheCameraIsBehind() {
+        func at(_ fps: Double, latency: Double?, processingMs: Double?) -> PreflightItem {
+            var a = goodARKit()
+            a.lastFrame = 0.5 + Double(a.frames - 1) / fps
+            a.window = max(10, a.lastFrame!)
+            a.latencyMedian = latency
+            a.latencyMax = latency.map { $0 * 2 }
+            a.processingMs = processingMs
+            return Preflight.arkit(a, simulator: false)
+        }
+        let slowApp = at(28, latency: 0.12, processingMs: 21)
+        XCTAssertEqual(slowApp.status, .fail)
+        XCTAssertEqual(slowApp.detail, "Only 28.0 frames a second (expected 60); the app's processing is behind, not the camera "
+                       + "(frames reach it 120 ms after capture, 21 ms of work a frame for a 17 ms frame).")
+        XCTAssertEqual(slowApp.numbers["latencyMedianMs"], 120)
+        XCTAssertEqual(slowApp.numbers["latencyMaxMs"], 240)
+        XCTAssertEqual(slowApp.numbers["processingMs"], 21)
+        let slowCamera = at(28, latency: 0.02, processingMs: 8)
+        XCTAssertTrue(slowCamera.detail.contains("the app keeps up, so the camera or ARKit is the cause"), slowCamera.detail)
+        // late frames alone mean the app is behind; a good run says nothing about it; nothing known, nothing said
+        XCTAssertTrue(at(40, latency: 0.06, processingMs: nil).detail.contains("the app's processing is behind"))
+        XCTAssertEqual(at(60, latency: 0.12, processingMs: 30).status, .pass)
+        XCTAssertEqual(at(60, latency: 0.12, processingMs: 30).detail, "Normal after 1.0 s, 60 frames a second.")
+        XCTAssertEqual(at(40, latency: nil, processingMs: nil).detail, "40.0 frames a second (expected 60).")
+        // the meter: median and largest delay, the app's average work
+        let r = meterRun(from: 0, to: 10, latency: 0.03, processingMs: 9)
+        XCTAssertEqual(r.observed.latencyMedian ?? 0, 0.03, accuracy: 1e-12)
+        XCTAssertEqual(r.observed.processingMs ?? 0, 9, accuracy: 1e-12)
+        XCTAssertEqual(r.arkit.status, .pass)
+    }
+
+    // MARK: the recorder's lost frames and depth
+
+    func testTheRecorderCountsLostFramesAndDepth() {
+        let good = goodRecorder()
+        // fewer frames than the clip's seconds at its rate: 90% passes, half warns, less fails
+        var r = good; r.framesWritten = 54; r.frameLines = 54; r.readBackFrames = 54
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .pass)
+        r.framesWritten = 53; r.frameLines = 53; r.readBackFrames = 53
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .warn)
+        XCTAssertEqual(Preflight.recorder(r, demo: false).detail, "53 of about 60 frames were recorded.")
+        r.framesWritten = 30; r.frameLines = 30; r.readBackFrames = 30
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .warn)
+        r.framesWritten = 29; r.frameLines = 29; r.readBackFrames = 29
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .fail)
+        // half the frames lost to a busy encoder: 30 written and read back over 2 s, which alone passed
+        r = good; r.framesWritten = 30; r.frameLines = 30; r.readBackFrames = 30; r.notAppended = 30
+        let busy = Preflight.recorder(r, demo: false)
+        XCTAssertEqual(busy.status, .warn)
+        XCTAssertEqual(busy.detail, "30 of about 60 frames were recorded; 30 frames dropped (30 encoder not ready).")
+        XCTAssertEqual(busy.numbers["droppedFrames"], 30)
+        XCTAssertEqual(busy.numbers["expectedFrames"], 60)
+        // any frame lost on the way warns, with why
+        r = good; r.poolMisses = 1; r.fillFailures = 2
+        XCTAssertEqual(Preflight.recorder(r, demo: false).detail, "3 frames dropped (1 no buffer, 2 not scaled).")
+        r = good; r.notAppended = 0; r.poolMisses = 0; r.fillFailures = 0
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .pass)
+        // a drop shot's clip: 60 frames a second kept, 120 frames
+        r = good; r.fps = 60; r.highFrameRate = true; r.framesWritten = 120; r.frameLines = 120; r.readBackFrames = 120
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .pass)
+        XCTAssertEqual(Preflight.recorder(r, demo: false).detail, "Wrote and read back 120 frames (hevc 1440x1080 at 60 fps, 2.00 s, 0.9 MB).")
+        // depth asked for (a LiDAR phone) but none written: kit shots would have none
+        r = good; r.depthRequested = true; r.depthFrames = 0
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .fail)
+        XCTAssertEqual(Preflight.recorder(r, demo: false).detail, "No depth was written, so kit shots would have none.")
+        r.depthFrames = 2
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .pass)
+        XCTAssertEqual(Preflight.recorder(r, demo: false).detail, "Wrote and read back 60 frames (hevc 1440x1080 at 30 fps, 2.00 s, 0.9 MB, 2 depth maps).")
+        XCTAssertEqual(Preflight.recorder(r, demo: false).numbers["depthFrames"], 2)
+        // not asked for (no LiDAR, the demo): nothing said
+        r = good; r.depthRequested = false; r.depthFrames = 0
+        XCTAssertEqual(Preflight.recorder(r, demo: false).status, .pass)
+    }
+
+    func testTheMotionMeterReadsTheAccelerometerNotJustGravity() {
+        // gravity from CoreMotion is always 1 g; gravity + user acceleration is what the accelerometer reads
+        let m = PreflightMotionMeter(start: 0, available: true)
+        for i in 0..<1000 {
+            let wobble = i % 2 == 0 ? 0.02 : -0.02
+            m.sample(time: Double(i) / 100, gravity: Vec3(0, -0.6, -0.8), userAcceleration: Vec3(0, -0.6 * wobble, -0.8 * wobble))
+        }
+        let o = m.observation(end: 10)
+        XCTAssertEqual(o.gravityMedian ?? 0, 1, accuracy: 1e-12)
+        XCTAssertEqual(o.accelMedian ?? 0, 1, accuracy: 0.021)
+        XCTAssertEqual(o.accelMin ?? 0, 0.98, accuracy: 1e-9)
+        XCTAssertEqual(o.accelMax ?? 0, 1.02, accuracy: 1e-9)
+        XCTAssertEqual(Preflight.motion(o, simulator: false).status, .pass)
+        // an accelerometer that reads 20% high (or nothing at all, user acceleration cancelling gravity) is caught
+        let high = PreflightMotionMeter(start: 0, available: true)
+        let dead = PreflightMotionMeter(start: 0, available: true)
+        for i in 0..<1000 {
+            high.sample(time: Double(i) / 100, gravity: Vec3(0, 0, -1), userAcceleration: Vec3(0, 0, -0.2))
+            dead.sample(time: Double(i) / 100, gravity: Vec3(0, 0, -1), userAcceleration: Vec3(0, 0, 1))
+        }
+        XCTAssertEqual(Preflight.motion(high.observation(end: 10), simulator: false).detail, "The accelerometer reads 1.200 g (1 expected).")
+        XCTAssertEqual(Preflight.motion(dead.observation(end: 10), simulator: false).status, .fail)
     }
 }

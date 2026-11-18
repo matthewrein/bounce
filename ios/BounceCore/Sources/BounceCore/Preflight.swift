@@ -102,12 +102,22 @@ public struct PreflightARKitObservation: Codable, Equatable {
     public var errorCode: Int?
     /// the session was interrupted this many times
     public var interruptions: Int
+    /// the longest gap between two frames (s), and the gaps longer than `Preflight.maxFrameGap` added up (s)
+    public var maxGap: Double?
+    public var longGapSeconds: Double?
+    /// how late frames reached the app after they were captured (s): median and largest
+    public var latencyMedian: Double?
+    public var latencyMax: Double?
+    /// the app's own work per frame (ms, its running average), averaged over the frames
+    public var processingMs: Double?
 
     public init(supported: Bool, expectedFps: Double?, window: Double, frames: Int = 0, firstFrame: Double? = nil, lastFrame: Double? = nil,
-                changes: [PreflightTrackingChange] = [], errorCode: Int? = nil, interruptions: Int = 0) {
+                changes: [PreflightTrackingChange] = [], errorCode: Int? = nil, interruptions: Int = 0, maxGap: Double? = nil,
+                longGapSeconds: Double? = nil, latencyMedian: Double? = nil, latencyMax: Double? = nil, processingMs: Double? = nil) {
         self.supported = supported; self.expectedFps = expectedFps; self.window = window; self.frames = frames
         self.firstFrame = firstFrame; self.lastFrame = lastFrame; self.changes = changes; self.errorCode = errorCode
-        self.interruptions = interruptions
+        self.interruptions = interruptions; self.maxGap = maxGap; self.longGapSeconds = longGapSeconds
+        self.latencyMedian = latencyMedian; self.latencyMax = latencyMax; self.processingMs = processingMs
     }
 
     /// frames a second between the first and the last frame
@@ -189,9 +199,18 @@ public struct PreflightLiDARObservation: Codable, Equatable {
     public var framesWithDepth: Int
     /// depth maps looked at closely (about one a second)
     public var samples: [PreflightDepthSample]
+    /// the first and the last frame with depth, seconds from the start; the longest gap between two of them (s), and
+    /// those gaps longer than `Preflight.maxFrameGap` added up (s)
+    public var firstDepthFrame: Double?
+    public var lastDepthFrame: Double?
+    public var maxDepthGap: Double?
+    public var longDepthGapSeconds: Double?
 
-    public init(supported: Bool, frames: Int = 0, framesWithDepth: Int = 0, samples: [PreflightDepthSample] = []) {
+    public init(supported: Bool, frames: Int = 0, framesWithDepth: Int = 0, samples: [PreflightDepthSample] = [],
+                firstDepthFrame: Double? = nil, lastDepthFrame: Double? = nil, maxDepthGap: Double? = nil, longDepthGapSeconds: Double? = nil) {
         self.supported = supported; self.frames = frames; self.framesWithDepth = framesWithDepth; self.samples = samples
+        self.firstDepthFrame = firstDepthFrame; self.lastDepthFrame = lastDepthFrame; self.maxDepthGap = maxDepthGap
+        self.longDepthGapSeconds = longDepthGapSeconds
     }
 }
 
@@ -210,16 +229,24 @@ public struct PreflightMotionObservation: Codable, Equatable {
     public var nonAdvancing: Int
     /// the longest gap between two samples (s)
     public var maxGap: Double?
-    /// |gravity| in g: median, smallest, largest
+    /// |gravity| in g: median, smallest, largest. CoreMotion's gravity is its estimate of the direction, scaled to 1 g,
+    /// so this reads 1 whatever the sensor does: information only, never a verdict.
     public var gravityMedian: Double?
     public var gravityMin: Double?
     public var gravityMax: Double?
+    /// |gravity + user acceleration| in g, what the accelerometer itself reads: median, smallest, largest. Held still or
+    /// in a hand its median is 1 g; a sensor that reads wrong (or nothing) shows here.
+    public var accelMedian: Double?
+    public var accelMin: Double?
+    public var accelMax: Double?
 
     public init(available: Bool, requestedHz: Double, window: Double, samples: Int = 0, firstSample: Double? = nil, lastSample: Double? = nil,
-                nonAdvancing: Int = 0, maxGap: Double? = nil, gravityMedian: Double? = nil, gravityMin: Double? = nil, gravityMax: Double? = nil) {
+                nonAdvancing: Int = 0, maxGap: Double? = nil, gravityMedian: Double? = nil, gravityMin: Double? = nil, gravityMax: Double? = nil,
+                accelMedian: Double? = nil, accelMin: Double? = nil, accelMax: Double? = nil) {
         self.available = available; self.requestedHz = requestedHz; self.window = window; self.samples = samples
         self.firstSample = firstSample; self.lastSample = lastSample; self.nonAdvancing = nonAdvancing; self.maxGap = maxGap
         self.gravityMedian = gravityMedian; self.gravityMin = gravityMin; self.gravityMax = gravityMax
+        self.accelMedian = accelMedian; self.accelMin = accelMin; self.accelMax = accelMax
     }
 
     /// samples a second between the first and the last
@@ -360,16 +387,31 @@ public struct PreflightRecorderObservation: Codable, Equatable {
     public var cleanedUp: Bool
     /// running in the Simulator (H.264 is expected there)
     public var simulator: Bool
+    /// recorded as a drop shot records (every camera frame kept, the higher bitrate)
+    public var highFrameRate: Bool?
+    /// frames lost on the way: the encoder was not ready, the pool had no buffer, the picture could not be scaled
+    public var notAppended: Int?
+    public var poolMisses: Int?
+    public var fillFailures: Int?
+    /// LiDAR depth was asked for (as a kit shot asks on a LiDAR phone), and the depth files written
+    public var depthRequested: Bool?
+    public var depthFrames: Int?
 
     public init(ran: Bool, error: String? = nil, requestedSeconds: Double, framesWritten: Int = 0, frameLines: Int = 0, motionLines: Int? = nil,
                 codec: String? = nil, width: Int? = nil, height: Int? = nil, fps: Double? = nil, fileBytes: Int64 = 0,
                 readBackSeconds: Double? = nil, readBackFrames: Int? = nil, readBackWidth: Int? = nil, readBackHeight: Int? = nil,
-                cleanedUp: Bool = true, simulator: Bool = false) {
+                cleanedUp: Bool = true, simulator: Bool = false, highFrameRate: Bool? = nil, notAppended: Int? = nil, poolMisses: Int? = nil,
+                fillFailures: Int? = nil, depthRequested: Bool? = nil, depthFrames: Int? = nil) {
         self.ran = ran; self.error = error; self.requestedSeconds = requestedSeconds; self.framesWritten = framesWritten
         self.frameLines = frameLines; self.motionLines = motionLines; self.codec = codec; self.width = width; self.height = height
         self.fps = fps; self.fileBytes = fileBytes; self.readBackSeconds = readBackSeconds; self.readBackFrames = readBackFrames
         self.readBackWidth = readBackWidth; self.readBackHeight = readBackHeight; self.cleanedUp = cleanedUp; self.simulator = simulator
+        self.highFrameRate = highFrameRate; self.notAppended = notAppended; self.poolMisses = poolMisses; self.fillFailures = fillFailures
+        self.depthRequested = depthRequested; self.depthFrames = depthFrames
     }
+
+    /// frames lost before the file (encoder not ready, no buffer, not scaled)
+    public var droppedFrames: Int { (notAppended ?? 0) + (poolMisses ?? 0) + (fillFailures ?? 0) }
 }
 
 /// Everything the app saw during the pre-flight.
@@ -449,6 +491,18 @@ public enum Preflight {
     public static let maxSecondsToNormal = 5.0
     /// once normal, it should stay normal at least this share of the time (else warn)
     public static let minNormalShare = 0.8
+    /// frames (and depth) should start within this of the start and run to within this of the end (s), else warn: the
+    /// frame rate alone is measured between the first and the last frame, so it cannot see frames that stopped
+    public static let frameEdgeSlack = 1.5
+    /// a gap between two frames (or two depth maps) longer than this warns (s)
+    public static let maxFrameGap = 0.25
+    /// frames missing (a late start, an early stop, and the gaps longer than `maxFrameGap`) for more than this share
+    /// of the window fail
+    public static let maxMissingShare = 0.5
+    /// when the frame rate or the frames' coverage is off, the app's own processing is called behind (rather than the
+    /// camera or ARKit) when its work per frame is longer than a frame, or frames reach it later than this many frames
+    /// after they were captured
+    public static let behindLatencyFrames = 3.0
 
     // LiDAR
     /// at least this share of the frames should carry a depth map (else warn)
@@ -462,10 +516,10 @@ public enum Preflight {
     public static let motionPassShare = 0.9
     /// ... at least this share warns, below it fails
     public static let motionWarnShare = 0.5
-    /// |gravity| should be 1 g within this (pass), ...
-    public static let gravityPassTolerance = 0.05
+    /// the accelerometer's median |gravity + user acceleration| should be 1 g within this (pass), ...
+    public static let accelPassTolerance = 0.05
     /// ... or within this (warn); further off fails
-    public static let gravityWarnTolerance = 0.15
+    public static let accelWarnTolerance = 0.15
     /// a gap between samples longer than this warns (s)
     public static let maxMotionGap = 0.25
     /// samples should run to within this of the end and start within this of the start (s), else warn
@@ -482,6 +536,10 @@ public enum Preflight {
     /// read back warns, less fails
     public static let recorderFrameSlack = 1
     public static let recorderWarnShare = 0.9
+    /// frames written against the clip's seconds x its frame rate: at least this share passes, ...
+    public static let recorderWrittenPassShare = 0.9
+    /// ... at least this share warns, below it fails. (Any frame dropped on the way also warns.)
+    public static let recorderWrittenWarnShare = 0.5
     /// the clip's duration may differ from the one asked for by this many seconds plus two frames (pass); within
     /// half of it warns, further off fails
     public static let recorderDurationSlack = 0.25
@@ -552,14 +610,26 @@ public enum Preflight {
         if let s = o.secondsToNormal { n["secondsToNormal"] = s }
         if let s = o.normalShareAfterFirstNormal { n["normalShare"] = s }
         n["secondsNormal"] = byState[.normal] ?? 0
+        if let g = o.maxGap { n["maxGap"] = g }
+        if let l = o.latencyMedian { n["latencyMedianMs"] = l * 1000 }
+        if let l = o.latencyMax { n["latencyMaxMs"] = l * 1000 }
+        if let p = o.processingMs { n["processingMs"] = p }
         var problems: [String] = [], status = PreflightStatus.pass
         func worse(_ s: PreflightStatus, _ why: String) { if s.rank > status.rank { status = s }; problems.append(why) }
 
+        // frames should come from the start to the end: a stall after the first seconds keeps the rate between the
+        // first and the last frame looking fine
+        let coverage = coverageProblems(what: "frames", first: o.firstFrame, last: o.lastFrame, maxGap: o.maxGap,
+                                        longGapSeconds: o.longGapSeconds, window: o.window)
+        if coverage.missing > 0 { n["missingSeconds"] = coverage.missing }
+        for p in coverage.problems { worse(coverage.status, p) }
         if fps < fpsWarnShare * expected {
             worse(.fail, String(format: "only %.1f frames a second (expected %.0f)", fps, expected))
         } else if fps < fpsPassShare * expected {
             worse(.warn, String(format: "%.1f frames a second (expected %.0f)", fps, expected))
         }
+        // too few frames: say whether the app's own processing fell behind or the frames came late from the camera
+        if !problems.isEmpty, let why = processingWords(o, expectedFps: expected) { problems.append(why) }
         if let s = o.secondsToNormal {
             if s > maxSecondsToNormal { worse(.warn, String(format: "took %.1f s to become normal", s)) }
             if let share = o.normalShareAfterFirstNormal, share < minNormalShare {
@@ -590,14 +660,19 @@ public enum Preflight {
         }
         let share = Double(o.framesWithDepth) / Double(o.frames)
         n["depthFrameShare"] = share
+        if let g = o.maxDepthGap { n["maxDepthGap"] = g }
         var problems: [String] = [], status = PreflightStatus.pass
+        func worse(_ s: PreflightStatus, _ why: String) { if s.rank > status.rank { status = s }; problems.append(why) }
+        // depth should come from the start to the end, like the frames
+        let coverage = coverageProblems(what: "depth", first: o.firstDepthFrame, last: o.lastDepthFrame, maxGap: o.maxDepthGap,
+                                        longGapSeconds: o.longDepthGapSeconds, window: arkit.window)
+        if coverage.missing > 0 { n["missingSeconds"] = coverage.missing }
+        for p in coverage.problems { worse(coverage.status, p) }
         if share < minDepthFrameShare {
-            status = .warn
-            problems.append(String(format: "depth on only %.0f%% of the frames", share * 100))
+            worse(.warn, String(format: "depth on only %.0f%% of the frames", share * 100))
         }
         if o.samples.isEmpty {
-            status = .warn
-            problems.append("no depth map was checked")
+            worse(.warn, "no depth map was checked")
         } else {
             let conf = median(o.samples.map { $0.confidentShare }), valid = median(o.samples.map { $0.validShare })
             n["confidentShare"] = conf
@@ -605,8 +680,7 @@ public enum Preflight {
             let depths = o.samples.compactMap { $0.medianMeters }
             if !depths.isEmpty { n["medianMeters"] = median(depths) }
             if conf < minConfidentShare {
-                status = .warn
-                problems.append(String(format: "only %.0f%% of the depth was sure (aim at the slab or the room from 0.5 to 3 m)", conf * 100))
+                worse(.warn, String(format: "only %.0f%% of the depth was sure (aim at the slab or the room from 0.5 to 3 m)", conf * 100))
             }
         }
         if status == .pass {
@@ -629,9 +703,13 @@ public enum Preflight {
         }
         let rate = o.rate ?? 0
         n["rate"] = rate
+        // gravity is CoreMotion's estimate scaled to 1 g: shown, never judged
         if let g = o.gravityMedian { n["gravity"] = g }
         if let g = o.gravityMin { n["gravityMin"] = g }
         if let g = o.gravityMax { n["gravityMax"] = g }
+        if let a = o.accelMedian { n["accel"] = a }
+        if let a = o.accelMin { n["accelMin"] = a }
+        if let a = o.accelMax { n["accelMax"] = a }
         if let g = o.maxGap { n["maxGap"] = g }
         var problems: [String] = [], status = PreflightStatus.pass
         func worse(_ s: PreflightStatus, _ why: String) { if s.rank > status.rank { status = s }; problems.append(why) }
@@ -641,12 +719,14 @@ public enum Preflight {
             worse(.warn, String(format: "%.0f samples a second (asked for %.0f)", rate, o.requestedHz))
         }
         if o.nonAdvancing > 0 { worse(.fail, "time stamps did not advance \(o.nonAdvancing) time\(o.nonAdvancing == 1 ? "" : "s")") }
-        if let g = o.gravityMedian {
-            let off = abs(g - 1)
-            if off > gravityWarnTolerance { worse(.fail, String(format: "gravity reads %.3f g", g)) }
-            else if off > gravityPassTolerance { worse(.warn, String(format: "gravity reads %.3f g", g)) }
-        } else {
-            worse(.fail, "no gravity readings")
+        if o.gravityMedian == nil { worse(.fail, "no gravity readings") }
+        // the accelerometer itself: |gravity + user acceleration| has a median of 1 g in a hand or on a table
+        if let a = o.accelMedian {
+            let off = abs(a - 1)
+            if off > accelWarnTolerance { worse(.fail, String(format: "the accelerometer reads %.3f g (1 expected)", a)) }
+            else if off > accelPassTolerance { worse(.warn, String(format: "the accelerometer reads %.3f g (1 expected)", a)) }
+        } else if o.gravityMedian != nil {
+            worse(.warn, "no accelerometer readings")
         }
         if let gap = o.maxGap, gap > maxMotionGap { worse(.warn, String(format: "a gap of %.2f s", gap)) }
         if let last = o.lastSample, o.window - last > motionEdgeSlack {
@@ -655,7 +735,7 @@ public enum Preflight {
         if let first = o.firstSample, first > motionEdgeSlack { worse(.warn, String(format: "started %.1f s late", first)) }
         if status == .pass {
             return PreflightItem(check: .motion, status: .pass,
-                                 detail: String(format: "%.0f samples a second, gravity %.3f g.", rate, o.gravityMedian ?? 0), numbers: n)
+                                 detail: String(format: "%.0f samples a second, the accelerometer reads %.3f g.", rate, o.accelMedian ?? 0), numbers: n)
         }
         return PreflightItem(check: .motion, status: status, detail: sentence(problems), numbers: n)
     }
@@ -709,6 +789,31 @@ public enum Preflight {
         }
         var problems: [String] = [], status = PreflightStatus.pass
         func worse(_ s: PreflightStatus, _ why: String) { if s.rank > status.rank { status = s }; problems.append(why) }
+        // as many frames as the clip's seconds at its frame rate, none lost on the way (a phone too hot or too slow for
+        // the encoder shows here, before a kit shot loses frames the same way)
+        if let fps = o.fps, fps > 0, o.requestedSeconds > 0 {
+            let expected = o.requestedSeconds * fps
+            n["expectedFrames"] = expected.rounded()
+            let share = Double(o.framesWritten) / expected
+            if share < recorderWrittenWarnShare {
+                worse(.fail, String(format: "only %d of about %.0f frames were recorded", o.framesWritten, expected))
+            } else if share < recorderWrittenPassShare {
+                worse(.warn, String(format: "%d of about %.0f frames were recorded", o.framesWritten, expected))
+            }
+        }
+        if o.droppedFrames > 0 {
+            n["droppedFrames"] = Double(o.droppedFrames)
+            var why: [String] = []
+            if let k = o.notAppended, k > 0 { why.append("\(k) encoder not ready") }
+            if let k = o.poolMisses, k > 0 { why.append("\(k) no buffer") }
+            if let k = o.fillFailures, k > 0 { why.append("\(k) not scaled") }
+            worse(.warn, "\(o.droppedFrames) frame\(o.droppedFrames == 1 ? "" : "s") dropped (\(why.joined(separator: ", ")))")
+        }
+        // a LiDAR phone's kit shots carry depth: the recorder must write it
+        if o.depthRequested == true {
+            n["depthFrames"] = Double(o.depthFrames ?? 0)
+            if (o.depthFrames ?? 0) == 0 { worse(.fail, "no depth was written, so kit shots would have none") }
+        }
         if abs(back - o.framesWritten) > recorderFrameSlack {
             let share = Double(back) / Double(o.framesWritten)
             worse(share >= recorderWarnShare && back <= o.framesWritten + recorderFrameSlack ? .warn : .fail,
@@ -731,14 +836,52 @@ public enum Preflight {
         if !o.cleanedUp { worse(.warn, "the test clip could not be removed") }
         if status == .pass {
             let size = o.width.flatMap { w in o.height.map { "\(w)x\($0)" } } ?? "?"
+            let rate = o.fps.map { String(format: " at %.0f fps", $0) } ?? ""
+            let depth = o.depthRequested == true ? ", \(o.depthFrames ?? 0) depth maps" : ""
+            let what = "\(o.codec ?? "video") \(size)\(rate)"
             return PreflightItem(check: .recorder, status: .pass,
-                                 detail: String(format: "Wrote and read back %d frames (%@ %@, %.2f s, %.1f MB).", back, o.codec ?? "video", size,
-                                                o.readBackSeconds ?? 0, Double(o.fileBytes) / 1e6), numbers: n)
+                                 detail: "Wrote and read back \(back) frames (\(what), "
+                                    + String(format: "%.2f s, %.1f MB", o.readBackSeconds ?? 0, Double(o.fileBytes) / 1e6) + depth + ").",
+                                 numbers: n)
         }
         return PreflightItem(check: .recorder, status: status, detail: sentence(problems), numbers: n)
     }
 
     // MARK: helpers
+
+    /// Did frames (or depth maps) come from the start of the window to its end? A late start, an early stop and gaps
+    /// longer than `maxFrameGap` are missing time: each one past its slack warns, and more than `maxMissingShare` of the
+    /// window missing fails. Returns the status for the problems found (pass when none), the problems in words, and the
+    /// missing seconds.
+    static func coverageProblems(what: String, first: Double?, last: Double?, maxGap: Double?, longGapSeconds: Double?,
+                                 window: Double) -> (status: PreflightStatus, problems: [String], missing: Double) {
+        guard let a = first, let b = last, window > 0 else { return (.pass, [], 0) }
+        let late = max(0, a), early = max(0, window - b)
+        let missing = late + early + max(0, longGapSeconds ?? 0)
+        var p: [String] = []
+        if early > frameEdgeSlack { p.append("\(what) stopped " + String(format: "%.1f s before the end", early)) }
+        if late > frameEdgeSlack { p.append("\(what) started " + String(format: "%.1f s late", late)) }
+        if let g = maxGap, g > maxFrameGap { p.append(String(format: "a gap of %.2f s between ", g) + what) }
+        let failed = missing > maxMissingShare * window
+        if failed && p.isEmpty { p.append("\(what) missing for " + String(format: "%.1f s of %.0f", missing, window)) }
+        return (failed ? .fail : (p.isEmpty ? .pass : .warn), p, missing)
+    }
+
+    /// When frames are too few: is the app's own processing behind (its work per frame is longer than a frame, or frames
+    /// reach it more than `behindLatencyFrames` frames after capture), or does it keep up (so the camera or ARKit is the
+    /// cause)? nil when neither number is known.
+    static func processingWords(_ o: PreflightARKitObservation, expectedFps: Double) -> String? {
+        let frameMs = 1000 / max(1, expectedFps)
+        let lateMs = o.latencyMedian.map { $0 * 1000 }
+        let work = o.processingMs
+        guard lateMs != nil || work != nil else { return nil }
+        let behind = (work.map { $0 > frameMs } ?? false) || (lateMs.map { $0 > behindLatencyFrames * frameMs } ?? false)
+        var nums: [String] = []
+        if let l = lateMs { nums.append(String(format: "frames reach it %.0f ms after capture", l)) }
+        if let w = work { nums.append(String(format: "%.0f ms of work a frame for a %.0f ms frame", w, frameMs)) }
+        return (behind ? "the app's processing is behind, not the camera (" : "the app keeps up, so the camera or ARKit is the cause (")
+            + nums.joined(separator: ", ") + ")"
+    }
 
     /// "a; b" -> "A; b."
     static func sentence(_ parts: [String]) -> String {
@@ -768,26 +911,48 @@ public final class PreflightARKitMeter: @unchecked Sendable {
     private let depthSupported: Bool
     private var frames = 0, framesWithDepth = 0
     private var first: Double? = nil, last: Double? = nil
+    private var maxGap: Double? = nil, longGaps = 0.0
+    private var firstDepth: Double? = nil, lastDepth: Double? = nil
+    private var maxDepthGap: Double? = nil, longDepthGaps = 0.0
     private var changes: [PreflightTrackingChange] = []
     private var lastSampleTime = -Double.infinity
     private var samples: [PreflightDepthSample] = []
     private var errorCode: Int? = nil
     private var interruptions = 0
+    private var latencies: [Double] = []
+    private var processingSum = 0.0, processingCount = 0
 
     /// `start`: uptime when the pre-flight began.
     public init(start: Double, supported: Bool, expectedFps: Double?, depthSupported: Bool) {
         self.start = start; self.supported = supported; self.expectedFps = expectedFps; self.depthSupported = depthSupported
     }
 
-    /// A frame: its timestamp, its tracking state, whether it carried a depth map.
-    public func frame(time: Double, tracking: KitTracking, hasDepth: Bool) {
+    /// A frame: its timestamp, its tracking state, whether it carried a depth map; how late it reached the app (s, the
+    /// uptime when it arrived minus its timestamp) and the app's own work per frame then (ms), when known.
+    public func frame(time: Double, tracking: KitTracking, hasDepth: Bool, latency: Double? = nil, processingMs: Double? = nil) {
         let t = max(0, time - start)
         lock.lock(); defer { lock.unlock() }
         frames += 1
-        if hasDepth { framesWithDepth += 1 }
         if first == nil { first = t }
-        last = t
+        if let l = last, t > l {
+            let g = t - l
+            maxGap = max(maxGap ?? 0, g)
+            if g > Preflight.maxFrameGap { longGaps += g }
+        }
+        last = max(last ?? t, t)
+        if hasDepth {
+            framesWithDepth += 1
+            if firstDepth == nil { firstDepth = t }
+            if let l = lastDepth, t > l {
+                let g = t - l
+                maxDepthGap = max(maxDepthGap ?? 0, g)
+                if g > Preflight.maxFrameGap { longDepthGaps += g }
+            }
+            lastDepth = max(lastDepth ?? t, t)
+        }
         if changes.last?.state != tracking { changes.append(PreflightTrackingChange(t: t, state: tracking)) }
+        if let l = latency, l.isFinite, latencies.count < 10_000 { latencies.append(max(0, l)) }
+        if let p = processingMs, p.isFinite, p > 0 { processingSum += p; processingCount += 1 }
     }
 
     /// Is a closer look at this frame's depth map due (about one a second)? If so, pass it to `depth`.
@@ -808,9 +973,15 @@ public final class PreflightARKitMeter: @unchecked Sendable {
     /// What was seen until `end` (uptime).
     public func observations(end: Double) -> (arkit: PreflightARKitObservation, lidar: PreflightLiDARObservation) {
         lock.lock(); defer { lock.unlock() }
+        let lat = latencies.sorted()
         let a = PreflightARKitObservation(supported: supported, expectedFps: expectedFps, window: max(0, end - start), frames: frames,
-                                          firstFrame: first, lastFrame: last, changes: changes, errorCode: errorCode, interruptions: interruptions)
-        let l = PreflightLiDARObservation(supported: depthSupported, frames: frames, framesWithDepth: framesWithDepth, samples: samples)
+                                          firstFrame: first, lastFrame: last, changes: changes, errorCode: errorCode, interruptions: interruptions,
+                                          maxGap: maxGap, longGapSeconds: frames > 0 ? longGaps : nil,
+                                          latencyMedian: lat.isEmpty ? nil : Preflight.median(lat), latencyMax: lat.last,
+                                          processingMs: processingCount > 0 ? processingSum / Double(processingCount) : nil)
+        let l = PreflightLiDARObservation(supported: depthSupported, frames: frames, framesWithDepth: framesWithDepth, samples: samples,
+                                          firstDepthFrame: firstDepth, lastDepthFrame: lastDepth, maxDepthGap: maxDepthGap,
+                                          longDepthGapSeconds: framesWithDepth > 0 ? longDepthGaps : nil)
         return (a, l)
     }
 }
@@ -828,13 +999,15 @@ public final class PreflightMotionMeter: @unchecked Sendable {
     private var nonAdvancing = 0
     private var maxGap: Double? = nil
     private var magnitudes: [Double] = []
+    private var accelMagnitudes: [Double] = []
 
     public init(start: Double, available: Bool, requestedHz: Double = PreflightStorageEstimate.motionHz) {
         self.start = start; self.available = available; self.requestedHz = requestedHz
     }
 
-    /// One sample: its timestamp and gravity (in g).
-    public func sample(time: Double, gravity: Vec3) {
+    /// One sample: its timestamp, gravity and user acceleration (in g; CoreMotion's split of what the accelerometer
+    /// reads, so their sum is the accelerometer's reading).
+    public func sample(time: Double, gravity: Vec3, userAcceleration: Vec3? = nil) {
         let t = time - start
         lock.lock(); defer { lock.unlock() }
         count += 1
@@ -846,14 +1019,19 @@ public final class PreflightMotionMeter: @unchecked Sendable {
         last = max(last ?? 0, t)
         let g = gravity.length
         if g.isFinite { magnitudes.append(g) }
+        if let u = userAcceleration {
+            let a = (gravity + u).length
+            if a.isFinite { accelMagnitudes.append(a) }
+        }
     }
 
     /// What was seen until `end` (uptime).
     public func observation(end: Double) -> PreflightMotionObservation {
         lock.lock(); defer { lock.unlock() }
-        let s = magnitudes.sorted()
+        let s = magnitudes.sorted(), a = accelMagnitudes.sorted()
         return PreflightMotionObservation(available: available, requestedHz: requestedHz, window: max(0, end - start), samples: count,
                                           firstSample: first, lastSample: last, nonAdvancing: nonAdvancing, maxGap: maxGap,
-                                          gravityMedian: s.isEmpty ? nil : Preflight.median(s), gravityMin: s.first, gravityMax: s.last)
+                                          gravityMedian: s.isEmpty ? nil : Preflight.median(s), gravityMin: s.first, gravityMax: s.last,
+                                          accelMedian: a.isEmpty ? nil : Preflight.median(a), accelMin: a.first, accelMax: a.last)
     }
 }

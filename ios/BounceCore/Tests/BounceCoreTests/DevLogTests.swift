@@ -95,6 +95,37 @@ final class DevLogTests: XCTestCase {
         XCTAssertEqual(again.lines().count, 1)
     }
 
+    func testARotationThatCannotRenameStartsTheLogOverInsteadOfLooping() throws {
+        // devlog.txt already past half the cap (a relaunch), and it cannot be renamed: rotating used to reopen the same
+        // full file and rotate again, forever (a stack overflow on whichever queue logged first)
+        let cap = 1024
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(String(repeating: "x", count: 599).appending("\n").utf8).write(to: folder.appendingPathComponent(DevLog.currentName))
+        let log = DevLog(folder: folder, maxBytes: cap)
+        var renames = 0
+        log.renameForRotation = { _, _ in renames += 1; throw CocoaError(.fileWriteNoPermission) }
+        log.info("kit", "first line after the relaunch")
+        XCTAssertEqual(renames, 1, "rotated once")
+        XCTAssertEqual(log.failedWrites, 0)
+        var lines = log.lines()
+        XCTAssertEqual(lines.count, 2, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.first?.hasSuffix("WARN log the log could not be rotated, so it started over") ?? false, lines.first ?? "")
+        XCTAssertTrue(lines.last?.hasSuffix("INFO kit first line after the relaunch") ?? false)
+        // it goes on logging, under the cap, never looping
+        for i in 0..<200 { log.info("kit", "line \(i) padding padding padding") }
+        XCTAssertEqual(log.failedWrites, 0)
+        XCTAssertLessThanOrEqual(log.bytes(), cap / 2 + 200)
+        lines = log.lines()
+        XCTAssertTrue(lines.last?.hasSuffix("line 199 padding padding padding") ?? false)
+        XCTAssertGreaterThan(renames, 1)
+        // renaming works again: an ordinary rotation
+        log.renameForRotation = { try FileManager.default.moveItem(at: $0, to: $1) }
+        for i in 200..<400 { log.info("kit", "line \(i) padding padding padding") }
+        XCTAssertTrue(fm.fileExists(atPath: log.previousURL.path))
+        XCTAssertLessThanOrEqual(log.bytes(), cap + 100)
+        XCTAssertTrue(log.lines().last?.hasSuffix("line 399 padding padding padding") ?? false)
+    }
+
     func testAnUnwritableFolderDropsLinesWithoutTrapping() throws {
         try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
         try Data("not a folder".utf8).write(to: folder) // a file where the folder should be

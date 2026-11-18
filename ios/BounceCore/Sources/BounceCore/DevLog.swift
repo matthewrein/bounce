@@ -103,8 +103,26 @@ public final class DevLog: @unchecked Sendable {
         return m
     }
 
+    /// The open devlog.txt (lock held). A full one is rotated once; if it is still full after that (devlog.txt could not
+    /// be renamed), it starts over in place, so the log keeps its cap and this never loops.
     private func openIfNeeded() throws -> FileHandle {
         if let h = handle { return h }
+        let h = try openCurrent()
+        guard size >= maxBytes / 2 else { return h }
+        rotate()
+        let again = try openCurrent()
+        if size >= maxBytes / 2 {
+            try again.truncate(atOffset: 0)
+            size = 0
+            let note = DevLog.line(time: formatter.string(from: clock()), level: .warn, area: "log",
+                                   message: "the log could not be rotated, so it started over")
+            if let d = note.data(using: .utf8) { try again.write(contentsOf: d); size = d.count }
+        }
+        return again
+    }
+
+    /// Open devlog.txt for appending (made if missing) and note its size. (Lock held.)
+    private func openCurrent() throws -> FileHandle {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         if !fm.fileExists(atPath: currentURL.path) {
@@ -113,18 +131,21 @@ public final class DevLog: @unchecked Sendable {
         let h = try FileHandle(forWritingTo: currentURL)
         size = Int(try h.seekToEnd())
         handle = h
-        if size >= maxBytes / 2 { rotate(); return try openIfNeeded() }
         return h
     }
 
-    /// devlog.txt becomes devlog.1.txt (the older one goes); the next line starts a new devlog.txt. (Lock held.)
+    /// How rotation renames devlog.txt to devlog.1.txt (tests make it fail).
+    var renameForRotation: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
+
+    /// devlog.txt becomes devlog.1.txt (the older one goes); the next line starts a new devlog.txt. A rename that fails
+    /// leaves devlog.txt where it is (`openIfNeeded` then starts it over). (Lock held.)
     private func rotate() {
         try? handle?.close()
         handle = nil
         size = 0
         let fm = FileManager.default
         try? fm.removeItem(at: previousURL)
-        try? fm.moveItem(at: currentURL, to: previousURL)
+        try? renameForRotation(currentURL, previousURL)
     }
 
     // MARK: reading

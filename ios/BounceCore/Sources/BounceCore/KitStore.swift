@@ -293,6 +293,21 @@ public final class KitStore {
         return out.sorted { ($0.createdAt, $0.kitId) > ($1.createdAt, $1.kitId) }
     }
 
+    /// Folders under `root` that `list` leaves out because their kit.json cannot be read, with the reason, so the app
+    /// can log why a kit is missing from Resume. Hidden names and plain files are not kits and are not listed.
+    public static func unreadable(root: URL) -> [(name: String, error: Error)] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+        var out: [(name: String, error: Error)] = []
+        for name in names.sorted() where !name.hasPrefix(".") {
+            let f = root.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: f.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            do { _ = try readManifest(f) } catch { out.append((name: name, error: error)) }
+        }
+        return out
+    }
+
     /// The newest kit that is not finished and that this build can open (the app offers Resume for it).
     public static func resumable(root: URL) -> KitListing? { list(root: root).first { !$0.finished && $0.loadable } }
 
@@ -517,6 +532,33 @@ public final class KitStore {
     public func discardAttempt(_ id: String) throws {
         let a = attemptFolder(id)
         if FileManager.default.fileExists(atPath: a.path) { try ops.remove(a) }
+    }
+
+    /// Would committing `m` as a retake of shot `id` lose a better take already on the phone? Then the reason in words
+    /// (the app does not commit it: it throws the attempt away and offers Retry or Keep earlier); nil for a first capture,
+    /// or a retake at least as good. A retake would lose when its flat-phone reading has no usable true tilt while the
+    /// earlier take's slab position has one (committing would clear the true tilt every shot of that position is scored
+    /// against), or when its check is poor while the earlier take's was not.
+    public func retakeLoss(_ id: String, manifest m: KitShotManifest) -> String? {
+        guard let s = plan.shot(id), !s.isForm, let r = record(id), r.status == .captured else { return nil }
+        if s.startsPosition != nil, let earlier = position(forShot: id)?.groundTruth, earlier.isUsable, !(m.flat?.isUsable ?? false) {
+            let why = (m.flat?.reasons.first).map { " (" + KitStore.trimmedReason($0) + ")" } ?? ""
+            let tilt = earlier.tiltDegrees.map { String(format: " of %.2f°", $0) } ?? ""
+            return "the new reading has no usable true tilt\(why), and the earlier one has its true tilt\(tilt)"
+        }
+        if let new = m.quality?.verdict, new == .poor, let old = r.verdict, old < .poor {
+            let check = m.quality?.checks.first(where: { !$0.passed && $0.severity == .poor })
+            let why = check.map { " (" + KitStore.trimmedReason($0.message) + ")" } ?? ""
+            return "the new take's check is poor\(why), and the earlier take's is \(old.rawValue)"
+        }
+        return nil
+    }
+
+    /// A reason inside a sentence: without its final full stop.
+    static func trimmedReason(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        while t.hasSuffix(".") { t.removeLast() }
+        return t
     }
 
     /// Commit the attempt: writes shot.json (with the store's ids, attempt number, position and true tilt filled in),

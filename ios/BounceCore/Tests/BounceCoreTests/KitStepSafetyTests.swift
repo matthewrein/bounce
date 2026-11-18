@@ -360,6 +360,74 @@ final class KitStepSafetyTests: XCTestCase {
         assertClean(store.folder, "after reopening")
     }
 
+    func testARetakeThatComesBackWorseKeepsTheEarlierTake() throws {
+        let store = try kitWithEarlierSteps()
+        let before = try stateOnDisk(store.folder)
+        XCTAssertEqual(before.trueTilts["p1"], 1.0)
+
+        // Retry on the level flat-phone shot, and the phone is bumped: the reading fails. Committing it would clear p1's
+        // true tilt (and delete the reading it came from), so the app asks first and throws the attempt away
+        let failed = KitTrueTilt.failed("The phone moved during reading A.")
+        let flat = try record(store, "s03-flat-level", at: 300, fill: 20, flat: failed, verdict: .poor)
+        XCTAssertEqual(store.retakeLoss("s03-flat-level", manifest: flat),
+                       "the new reading has no usable true tilt (The phone moved during reading A), and the earlier one has its true tilt of 1.00°")
+        try store.discardAttempt("s03-flat-level")
+        XCTAssertEqual(state(store), before)
+        XCTAssertEqual(try stateOnDisk(store.folder), before)
+        assertClean(store.folder, "after a failed flat-phone retake")
+
+        // a video retake whose check is poor while the earlier take's was good (or fair): kept out the same way
+        let scan = try record(store, "s02-scan", at: 310, fill: 21, verdict: .poor)
+        XCTAssertEqual(store.retakeLoss("s02-scan", manifest: scan), "the new take's check is poor (Something), and the earlier take's is good")
+        try store.discardAttempt("s02-scan")
+        let arc = try record(store, "s04-level-arc", at: 320, fill: 22, verdict: .poor)
+        XCTAssertEqual(store.retakeLoss("s04-level-arc", manifest: arc), "the new take's check is poor (Something), and the earlier take's is fair")
+        try store.discardAttempt("s04-level-arc")
+        XCTAssertEqual(try stateOnDisk(store.folder), before)
+
+        // a retake at least as good is committed as before: a fair arc after a fair one, a usable reading
+        let arc2 = try record(store, "s04-level-arc", at: 330, fill: 23, verdict: .fair)
+        XCTAssertNil(store.retakeLoss("s04-level-arc", manifest: arc2))
+        try store.commitShot("s04-level-arc", manifest: arc2, date: at(336))
+        let flat2 = try record(store, "s03-flat-level", at: 340, fill: 24, flat: twoReading(1.1))
+        XCTAssertNil(store.retakeLoss("s03-flat-level", manifest: flat2))
+        try store.commitShot("s03-flat-level", manifest: flat2, date: at(346))
+        XCTAssertEqual(try stateOnDisk(store.folder).trueTilts["p1"], 1.1)
+
+        // a first capture is never held back, poor or not, and a poor retake of a poor take replaces it
+        let still = try record(store, "s05-tilt1-still", at: 350, fill: 25, verdict: .poor)
+        XCTAssertNil(store.retakeLoss("s05-tilt1-still", manifest: still))
+        try store.commitShot("s05-tilt1-still", manifest: still, date: at(356))
+        let still2 = try record(store, "s05-tilt1-still", at: 360, fill: 26, verdict: .poor)
+        XCTAssertNil(store.retakeLoss("s05-tilt1-still", manifest: still2))
+        try store.discardAttempt("s05-tilt1-still")
+
+        // what committing a failed reading anyway does (the loss the check prevents): the position's true tilt is gone
+        let failedAgain = try record(store, "s05-tilt1-flat", at: 370, fill: 27, flat: failed, verdict: .poor)
+        XCTAssertNotNil(store.retakeLoss("s05-tilt1-flat", manifest: failedAgain))
+        try store.commitShot("s05-tilt1-flat", manifest: failedAgain, date: at(376))
+        XCTAssertNil(try stateOnDisk(store.folder).trueTilts["p2"])
+        // once the position has no true tilt, a failed retake loses nothing more
+        let failedThird = try record(store, "s05-tilt1-flat", at: 380, fill: 28, flat: failed, verdict: .poor)
+        XCTAssertNil(store.retakeLoss("s05-tilt1-flat", manifest: failedThird))
+        try store.discardAttempt("s05-tilt1-flat")
+    }
+
+    func testKitFoldersThatCannotBeReadAreNamedForTheLog() throws {
+        let good = try newKit()
+        let broken = root.appendingPathComponent("slab-kit-broken")
+        try fm.createDirectory(at: broken, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: broken.appendingPathComponent(KitStore.manifestFile))
+        try fm.createDirectory(at: root.appendingPathComponent("slab-kit-empty"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("stray.txt"))
+        XCTAssertEqual(KitStore.list(root: root).map { $0.kitId }, [good.kitId])
+        let bad = KitStore.unreadable(root: root)
+        XCTAssertEqual(bad.map { $0.name }, ["slab-kit-broken", "slab-kit-empty"])
+        for b in bad { XCTAssertFalse(DevLog.describe(b.error).contains(root.path), DevLog.describe(b.error)) }
+        XCTAssertEqual(KitStore.unreadable(root: tmp.appendingPathComponent("nowhere")).count, 0)
+    }
+
     func testResumePointsAtTheFirstUnfinishedStep() throws {
         let store = try newKit()
         try store.skipShot("s01-measure", date: at(1))
