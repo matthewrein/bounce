@@ -337,7 +337,10 @@ final class KitDropAnalysisTests: XCTestCase {
         var shot = KitDropShot.standardSet[0]
         let hd = Units.radians(shot.heading)
         shot.releaseSpin = Vec3(cos(hd), 0, sin(hd)) * 30
-        let d = maker.make(shot)
+        // a solid sphere with friction, whose spin turns into sideways speed (the app's tangential share has no spin)
+        var o = KitSyntheticDrops.Options()
+        o.tangential = .rolling(mu: 0.4)
+        let d = KitSyntheticDrops(options: o).make(shot)
         let a = try XCTUnwrap(KitDropAnalysis.analyze(track: KitSyntheticDrops.perfectTrack(d), cue: d.truth.cue, context: context(d)).analysis)
         XCTAssertGreaterThan(abs(a.sideways ?? 0), 3)
         XCTAssertTrue(a.notes.contains { $0.contains("out of the plane of incidence") }, "\(a.notes)")
@@ -535,7 +538,7 @@ final class KitDropAnalysisTests: XCTestCase {
         XCTAssertEqual(b.count, 3, "the one far from the others is left out")
         let num: Double = 0.70 / 1e-4 + 0.72 / 4e-4 + 0.69 / 1e-4, den: Double = 1 / 1e-4 + 1 / 4e-4 + 1 / 1e-4
         XCTAssertEqual(b.rebound, num / den, accuracy: 1e-9)
-        XCTAssertEqual(KitDropAnalysis.bakeLine([drop(0.70, 0.01), drop(0.72, 0.02)]), "rebound to bake into the app: 70% ± 1% (from 2 drops)")
+        XCTAssertEqual(KitDropAnalysis.bakeLine([drop(0.70, 0.01), drop(0.72, 0.02)]), "rebound to bake into the app: 70% ± 1% (from 2 drops), restitution 0.84 ± 0.01")
         XCTAssertEqual(KitDropAnalysis.bakeLine([]), "rebound to bake into the app: none (no bounce measured)")
         // a drop the analysis marked (a rebound over 100%, a hit on the edge, a fall that moves sideways) is left out
         var odd = drop(0.95, 0.01)

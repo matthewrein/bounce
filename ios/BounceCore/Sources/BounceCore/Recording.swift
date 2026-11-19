@@ -62,10 +62,18 @@ public struct RecordingSettings: Codable, Equatable {
     public var dishInches: Double
     public var ballDiameterMm: Double
     public var dropHeightFeet: Double
+    /// the rebound (the share of the drop height a straight-up bounce regains: e², percent); the app's setting until n11.
+    /// With `restitution` set it is that restitution's square, kept for older readers
     public var reboundPercent: Double
     /// launch the ball along the dish's normal where it lands (Settings' "dish bounce"), not the corner plane's; nil in
     /// version 1 recordings (which did not say: the corner plane)
     public var dishBounce: Bool?
+    /// The ball's restitution e, the app's setting from n12 (`BallSpec.restitution`): with it the app bounces the ball
+    /// by the impact rule (`Bounce.LaunchRule.impact`) with this e and `tangential`. nil in every recording made before
+    /// n12: they replay with `reboundPercent` and the launch rule they ran (the corner plane, or `dishBounce`).
+    public var restitution: Double?
+    /// The ball's tangential share k_t under the impact rule (`BallSpec.tangential`; nil: `BallSpec.ownerTangential`).
+    public var tangential: Double?
     /// The slab's side profile (`SlabSpec.faceDrop`, `sideRun`, `edgeRadius` in inches; `nearFeatureAngle` in degrees).
     /// nil means 0: every recording made before the profile existed has none (the old box with vertical cut faces, and
     /// the edge refiner's original rules), so it replays as it ran.
@@ -75,18 +83,27 @@ public struct RecordingSettings: Codable, Equatable {
     public var nearFeatureDegrees: Double?
 
     /// New settings default to the owner's slab and ball (`SlabSpec.ownerSlab`, `BallSpec.ownerBall`: their constants are
-    /// the one place to change them), a 3 ft drop and a 70% rebound.
+    /// the one place to change them), a 3 ft drop, and the owner's restitution (0.8) and tangential share with the impact
+    /// rule (the rebound is then 64%, 0.8²). `restitution: nil` gives the rule of the builds before n12 (the corner plane,
+    /// or `dishBounce`) at `reboundPercent`.
     public init(sideUInches: Double = SlabSpec.ownerFlatTopInches, sideVInches: Double = SlabSpec.ownerFlatTopInches,
                 thicknessInches: Double = SlabSpec.ownerThicknessInches, dishInches: Double = SlabSpec.ownerDishInches,
-                ballDiameterMm: Double = BallSpec.ownerDiameterMm, dropHeightFeet: Double = 3, reboundPercent: Double = 70, dishBounce: Bool? = nil,
+                ballDiameterMm: Double = BallSpec.ownerDiameterMm, dropHeightFeet: Double = 3,
+                reboundPercent: Double = 100 * BallSpec.ownerRestitution * BallSpec.ownerRestitution, dishBounce: Bool? = nil,
                 faceDropInches: Double? = SlabSpec.ownerFaceDropInches, sideRunInches: Double? = SlabSpec.ownerSideRunInches,
-                edgeRadiusInches: Double? = SlabSpec.ownerEdgeRadiusInches, nearFeatureDegrees: Double? = nil) {
+                edgeRadiusInches: Double? = SlabSpec.ownerEdgeRadiusInches, nearFeatureDegrees: Double? = nil,
+                restitution: Double? = BallSpec.ownerRestitution, tangential: Double? = BallSpec.ownerTangential) {
         self.sideUInches = sideUInches; self.sideVInches = sideVInches; self.thicknessInches = thicknessInches; self.dishInches = dishInches
         self.ballDiameterMm = ballDiameterMm; self.dropHeightFeet = dropHeightFeet; self.reboundPercent = reboundPercent
         self.dishBounce = dishBounce
         self.faceDropInches = faceDropInches; self.sideRunInches = sideRunInches; self.edgeRadiusInches = edgeRadiusInches
         self.nearFeatureDegrees = nearFeatureDegrees
+        self.restitution = restitution; self.tangential = tangential
     }
+
+    /// The restitution a rebound saved by a build before n12 stands for: e = sqrt(rebound) (the app's Settings moved
+    /// from the rebound percent to the restitution in n12).
+    public static func restitution(reboundPercent: Double) -> Double { max(0, reboundPercent / 100).squareRoot() }
 
     /// how often the app searches for the slab while it has none (s): the search costs tens of ms on the phone
     public static let appSearchInterval = 0.12
@@ -145,14 +162,19 @@ public struct RecordingSettings: Codable, Equatable {
     /// under a half beyond 1 m.
     public static let appDepthCentreWeight = 0.5
 
-    public var launchRule: Bounce.LaunchRule { dishBounce == true ? .dishNormal : .cornerPlane }
+    /// The launch rule: the old developer experiment when a recording says so, else the impact rule with a restitution
+    /// (n12 on), else the corner plane (every recording before n12).
+    public var launchRule: Bounce.LaunchRule { dishBounce == true ? .dishNormal : restitution != nil ? .impact : .cornerPlane }
 
     public var slab: SlabSpec {
         SlabSpec(sideU: Units.inches(sideUInches), sideV: Units.inches(sideVInches), thickness: Units.inches(thicknessInches), dishDepth: Units.inches(dishInches),
                  faceDrop: Units.inches(faceDropInches ?? 0), sideRun: Units.inches(sideRunInches ?? 0), edgeRadius: Units.inches(edgeRadiusInches ?? 0),
                  nearFeatureAngle: Units.radians(nearFeatureDegrees ?? 0))
     }
-    public var ball: BallSpec { BallSpec(diameter: ballDiameterMm / 1000, rebound: reboundPercent / 100) }
+    public var ball: BallSpec {
+        guard let e = restitution else { return BallSpec(diameter: ballDiameterMm / 1000, rebound: reboundPercent / 100) }
+        return BallSpec(diameter: ballDiameterMm / 1000, restitution: e, tangential: tangential ?? BallSpec.ownerTangential)
+    }
     public var dropHeight: Double { Units.feet(dropHeightFeet) }
 }
 

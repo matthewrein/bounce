@@ -7,7 +7,7 @@ import XCTest
 /// shows against it. Each test prints an "E2E-SUMMARY" line that CI copies into its summary.
 ///
 /// The main screen is point and go: the status chip, the readouts and a gear ("settings"). Settings holds the drop
-/// height and the rebound; the developer tools (capture kit, diagnostics, recording, reset, demo, build) are under
+/// height and the ball's restitution; the developer tools (capture kit, diagnostics, recording, reset, demo, build) are under
 /// Settings > Developer ("developerRow").
 final class SlabBounceUITests: XCTestCase {
     /// an app whose stored settings a test changed: tearDown puts them back (even after a failure)
@@ -99,7 +99,7 @@ final class SlabBounceUITests: XCTestCase {
     }
 
     /// The first number in a readout: "8.3°" -> 8.3; "Drop 11.2 in (ball)" -> 11.2 (inches); "2 ft 1 in" -> 25 (inches);
-    /// "Rebound: 50%" -> 50
+    /// "Restitution: 0.50" -> 0.5
     func number(_ s: String) -> Double? {
         let parts = s.replacingOccurrences(of: "°", with: " ").replacingOccurrences(of: "%", with: " ").split(separator: " ").map(String.init)
         guard let i = parts.firstIndex(where: { Double($0) != nil }), let v = Double(parts[i]) else { return nil }
@@ -144,14 +144,15 @@ final class SlabBounceUITests: XCTestCase {
         add(a)
     }
 
-    /// The truth the app should show for a demo script at time t (slab in world, no ball unless given), for a rebound.
-    func truth(_ d: DemoScript, at t: Double, rebound: Double = 0.70) -> (tilt: Double, apexInches: Double, dropInches: Double?) {
+    /// The truth the app should show for a demo script at time t (slab in world, no ball unless given), for a restitution:
+    /// the app's bounce (the impact rule off the dish, with the owner's ball's tangential share).
+    func truth(_ d: DemoScript, at t: Double, restitution: Double = BallSpec.ownerRestitution) -> (tilt: Double, apexInches: Double, dropInches: Double?) {
         // the app's demo renders the app's slab and ball (BounceCore's owner slab and ball: ARController.demoTick)
         let scene = d.scene(at: t, spec: .ownerSlab, ball: .ownerBall)
         let down = Vec3(0, -1, 0)
-        let r = Bounce.compute(pose: scene.slab, spec: .ownerSlab, ball: BallSpec(diameter: BallSpec.ownerBall.diameter, rebound: rebound),
-                               down: down, ballCenter: scene.ball,
-                               defaultDropHeight: Units.feet(3), floorBelowCenter: scene.slab.center.y)
+        let ball = BallSpec(diameter: BallSpec.ownerBall.diameter, restitution: restitution, tangential: BallSpec.ownerTangential)
+        let r = Bounce.compute(pose: scene.slab, spec: .ownerSlab, ball: ball, down: down, ballCenter: scene.ball,
+                               defaultDropHeight: Units.feet(3), rule: .impact, floorBelowCenter: scene.slab.center.y)
         return (Units.degrees(scene.slab.tilt(down: down)), Units.toInches(r.path.apexHeight), r.drop.map { Units.toInches($0.dropHeight) })
     }
 
@@ -309,8 +310,10 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }
 
-    /// Settings: changing the rebound from 70% to 50% scales the apex by about 50/70; Restore defaults puts it back.
-    func testReboundChangesTheApex() {
+    /// Settings: changing the restitution from 0.80 to about 0.50 changes the apex as the app's bounce says (about
+    /// (0.5/0.8)², a little less on the tilted demo slab, where part of the ball's speed runs along it); Restore defaults
+    /// puts it back.
+    func testRestitutionChangesTheApex() {
         let d = DemoScript()
         let app = launch(["demoTilt": "\(d.tilt)"])
         appToRestore = app
@@ -318,40 +321,41 @@ final class SlabBounceUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
         let before = number(label(app, "apex"))
         tap(app, "settings")
-        XCTAssertTrue(element(app, "reboundValue").waitForExistence(timeout: 10))
-        let startRebound = number(label(app, "reboundValue"))
-        XCTAssertEqual(startRebound ?? -1, 70, accuracy: 0.5, "rebound did not start at 70%: \(label(app, "reboundValue"))")
-        let slider = app.sliders["reboundSlider"]
+        XCTAssertTrue(element(app, "restitutionValue").waitForExistence(timeout: 10))
+        let start = number(label(app, "restitutionValue"))
+        XCTAssertEqual(start ?? -1, 0.80, accuracy: 0.005, "restitution did not start at 0.80: \(label(app, "restitutionValue"))")
+        let slider = app.sliders["restitutionSlider"]
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
         slider.adjust(toNormalizedSliderPosition: 0.5)
-        let rebound = number(label(app, "reboundValue")) ?? 70
+        let e = number(label(app, "restitutionValue")) ?? 0.8
         screenshot(app, "settings")
         tap(app, "settingsDone")
         waitGone(app, "settingsDone")
-        // the new rebound applies when Settings closes: the apex follows on the next frames
-        let want = (before ?? 0) * rebound / 70
+        // the new restitution applies when Settings closes: the apex follows on the next frames, as the truth's ratio
+        let t0 = truth(d, at: 3), tr = truth(d, at: 3, restitution: e)
+        let expected = tr.apexInches / max(1e-6, t0.apexInches)
+        let want = (before ?? 0) * expected
         let t = waitUntil(15) { (number(label(app, "apex")).map { abs($0 - want) <= max(1.0, want * 0.06) } ?? false) }
         Thread.sleep(forTimeInterval: 1)
         let after = number(label(app, "apex"))
-        let tr = truth(d, at: 3, rebound: rebound / 100)
         let ratio = (after ?? 0) / max(1e-6, before ?? 0)
-        screenshot(app, "rebound changed")
-        // Restore defaults: back to 70%
+        screenshot(app, "restitution changed")
+        // Restore defaults: back to 0.80
         tap(app, "settings")
         tap(app, "restoreDefaults")
-        let restored = number(label(app, "reboundValue"))
+        let restored = number(label(app, "restitutionValue"))
         tap(app, "settingsDone")
         waitGone(app, "settingsDone")
-        if restored.map({ abs($0 - 70) < 0.5 }) ?? false { appToRestore = nil }
-        summary(String(format: "settings: rebound 70%% -> %.0f%%: apex %@ -> %@ in (ratio %.3f, expected %.3f; truth %.1f in), shown after %.1f s; "
-                       + "Restore defaults -> %@", rebound, before.map { String(format: "%.1f", $0) } ?? "-",
-                       after.map { String(format: "%.1f", $0) } ?? "-", ratio, rebound / 70, tr.apexInches, t ?? -1,
-                       restored.map { String(format: "%.0f%%", $0) } ?? "?"))
-        XCTAssertLessThan(rebound, 65, "the slider did not move the rebound down: \(rebound)%")
-        XCTAssertNotNil(t, "the apex did not follow the rebound: \(label(app, "apex")), wanted about \(want) in")
-        XCTAssertEqual(ratio, rebound / 70, accuracy: 0.06, "apex \(before ?? -1) -> \(after ?? -1) in at rebound \(rebound)%")
+        if restored.map({ abs($0 - 0.8) < 0.005 }) ?? false { appToRestore = nil }
+        summary(String(format: "settings: restitution 0.80 -> %.2f: apex %@ -> %@ in (ratio %.3f, expected %.3f; truth %.1f in), shown after %.1f s; "
+                       + "Restore defaults -> %@", e, before.map { String(format: "%.1f", $0) } ?? "-",
+                       after.map { String(format: "%.1f", $0) } ?? "-", ratio, expected, tr.apexInches, t ?? -1,
+                       restored.map { String(format: "%.2f", $0) } ?? "?"))
+        XCTAssertLessThan(e, 0.7, "the slider did not move the restitution down: \(e)")
+        XCTAssertNotNil(t, "the apex did not follow the restitution: \(label(app, "apex")), wanted about \(want) in")
+        XCTAssertEqual(ratio, expected, accuracy: 0.06, "apex \(before ?? -1) -> \(after ?? -1) in at restitution \(e)")
         XCTAssertEqual(after ?? -99, tr.apexInches, accuracy: max(1.5, tr.apexInches * 0.06), "apex readout \(label(app, "apex"))")
-        XCTAssertEqual(restored ?? -1, 70, accuracy: 0.5, "Restore defaults did not put the rebound back to 70%")
+        XCTAssertEqual(restored ?? -1, 0.8, accuracy: 0.005, "Restore defaults did not put the restitution back to 0.80")
     }
 
     /// The capture kit (Settings > Developer > Capture kit), at a quarter of its real timings (-kitFast YES) on the demo:

@@ -102,8 +102,8 @@ final class KitDropPhysicsTests: XCTestCase {
         XCTAssertEqual(st.length, vt.length - 0.01 * (1 + e) * -vn, accuracy: 1e-9)
     }
 
-    /// On a tilted slab the physical bounce leans further downhill than the slab's normal (the app's launch): about
-    /// 1.85 x the surface's tilt for a ball that rolls off at a rebound of 0.7. (Dropped over the centre of the 7 in
+    /// On a tilted slab the physical bounce leans further downhill than the slab's normal (the launch of the app's rule
+    /// until n11): about 1.85 x the surface's tilt for a solid ball that rolls off at a rebound of 0.7. (Dropped over the centre of the 7 in
     /// top it touches the dish 3 mm uphill of the middle, where the surface leans 0.14° more than the slab.)
     func testAPhysicalBounceGoesFurtherDownhillThanTheApp() throws {
         let pose = SyntheticScene.slabPose(tilt: 10, heading: 0, yaw: 0, spec: spec)
@@ -128,15 +128,13 @@ final class KitDropPhysicsTests: XCTestCase {
     }
 
     /// The rendered drops' truth, on the owner's 7 in slab by default: the impact where the drop aimed, on the top, the
-    /// local normal's tilt, the true rebound, and the app's prediction from the true slab: with the true rebound it
-    /// still misses (the model). The ball leaves at about lean + atan(5/7 tan(lean) / e) from vertical, lean the local
-    /// normal's tilt; the app launches along the slab's normal. So it goes further than the app says where that is
-    /// clearly more than the slab's tilt, and less far where it is clearly less: downhill of the centre the dish leans
-    /// against the slope (d11, near the downhill edge).
+    /// local normal's tilt, the true rebound, and the app's prediction from the true slab: the drops bounce by the app's
+    /// own impact rule (n12: the restitution about the dish's local normal, the app's tangential share along it), so with
+    /// the true rebound the app lands where the ball does, for every drop let go from rest (d09 was pushed, which the app
+    /// cannot know).
     func testDropTruth() throws {
         let maker = KitSyntheticDrops()
         XCTAssertEqual(maker.options.spec, SlabSpec.standard, "the owner's slab")
-        var shorter = 0
         for shot in KitDropShot.standardSet {
             let d = maker.make(shot)
             let t = d.truth
@@ -151,18 +149,21 @@ final class KitDropPhysicsTests: XCTestCase {
             XCTAssertEqual(d.physics.impact?.surface, .slab, shot.id)
             XCTAssertLessThan(off, maker.dish.rimRadius, "\(shot.id): on the dish, inside its rim")
             let app = try XCTUnwrap(t.trueRebound, shot.id)
-            let lean = Units.degrees(t.localNormal.angle(to: Vec3(0, 1, 0)))
-            let out = lean + Units.degrees(atan(5.0 / 7 * tan(Units.radians(lean)) / shot.rebound.squareRoot()))
-            if out > shot.tilt + 2 { XCTAssertGreaterThan(app.rangeError, 0.01, "\(shot.id): the ball goes further than the app says") }
-            if out < shot.tilt - 1 { XCTAssertLessThan(app.rangeError, 0, "\(shot.id): the ball goes less far than the app says"); shorter += 1 }
+            if shot.releaseVelocity == .zero {
+                XCTAssertLessThan(app.landingError, 0.002, "\(shot.id): the app's impact rule is the rendered bounce")
+                XCTAssertLessThan(app.directionError, 0.1, shot.id)
+            } else {
+                XCTAssertGreaterThan(app.landingError, 0.005, "\(shot.id): pushed at the release")
+            }
             XCTAssertEqual(t.landingLevel, 0.0175)
             XCTAssertGreaterThan(d.frames.count, 40, shot.id)
             XCTAssertTrue(zip(d.frames, d.frames.dropFirst()).allSatisfy { $0.time < $1.time }, shot.id)
-            // the set's balls touch the dish and the floor only (d11's contact is within a ball's radius of the edge, on
-            // the dish): none of them clips the slab's edges or cut faces or the base on the way down
-            XCTAssertFalse(d.physics.contacts.contains { $0.edge || $0.surface == .base }, "\(shot.id): \(d.physics.contacts.map { $0.surface })")
+            // the set's balls come down on the dish (d11's contact is within a ball's radius of the edge, on the dish): none
+            // of them clips the slab's edges or cut faces or the base on the way down (afterwards, with the app's
+            // tangential share, a few come down next on the slab's edge or the base)
+            let first = try XCTUnwrap(d.physics.impact, shot.id)
+            XCTAssertFalse(first.edge || first.surface != .slab, "\(shot.id): \(d.physics.contacts.map { $0.surface })")
         }
-        XCTAssertEqual(shorter, 1, "d11")
     }
 
     /// The set's truth worked out again from first principles, without `KitDish`, the physics' stepping or
@@ -171,8 +172,9 @@ final class KitDropPhysicsTests: XCTestCase {
     /// centre; the ball's centre meets the dish where it comes within the sphere's radius less its own of the sphere's
     /// centre (the free fall from the held ball, its release velocity included, solved by bisection); the contact point
     /// is on the line from the sphere's centre through the ball's, the normal along it; the bounce reverses e = sqrt
-    /// (rebound) of the normal velocity and keeps 5/7 of the tangential one (a solid sphere that rolls off, with the
-    /// friction to do so); the landing is where that arc comes down to the floor plus a radius. Against the app's
+    /// (rebound) of the normal velocity and keeps the app's tangential share of the tangential one
+    /// (`BallSpec.ownerTangential`, the renders' default); the landing is where that arc comes down to the floor plus a
+    /// radius. Against the app's
     /// prediction (its launch point and velocity, from `KitBouncePrediction.app`, the app's own model under test), the
     /// landing error and the range error are the horizontal distances, worked out here.
     func testDropTruthFromFirstPrinciples() throws {
@@ -204,8 +206,7 @@ final class KitDropPhysicsTests: XCTestCase {
             XCTAssertEqual(t.normalTilt, Units.degrees(n.angle(to: pose.normal)), accuracy: 1e-3, id)
             // the bounce
             let vin = v0 - up * (G * lo), vn = vin.dot(n), vt = vin - n * vn, e = shot.rebound.squareRoot()
-            XCTAssertLessThan(vt.length * 2 / 7, 0.4 * (1 + e) * -vn, "\(id): friction enough to roll off")
-            let vout = n * (-e * vn) + vt * (5.0 / 7)
+            let vout = n * (-e * vn) + vt * BallSpec.ownerTangential
             XCTAssertLessThan((t.velocityIn - vin).length, 1e-5, id)
             XCTAssertLessThan((t.velocityOut - vout).length, 1e-5, id)
             // the landing at the floor plus a radius, and the app's prediction against it

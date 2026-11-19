@@ -79,7 +79,10 @@ final class TrackerAppPathTests: XCTestCase {
         XCTAssertLessThan(b.center.distance(to: ballW), 1e-9, "world centre")
         let r = try XCTUnwrap(o.readouts)
         XCTAssertTrue(r.dropFromBall)
-        let d = try XCTUnwrap(Bounce.drop(ballCenter: ballW, pose: o.slab!, spec: .standard, ball: BallSpec(), down: ARKitConvention.worldDown))
+        // (the app's rule since n12, the impact rule: how far the centre falls until the ball first touches the dish)
+        XCTAssertEqual(appSettings().launchRule, .impact)
+        let d = try XCTUnwrap(Bounce.impactDrop(ballCenter: ballW, pose: o.slab!, spec: appSettings().spec, ball: appSettings().ball,
+                                                down: ARKitConvention.worldDown))
         XCTAssertEqual(r.dropHeight, d.dropHeight, accuracy: 1e-9)
         // the finder ran on every frame the app was told it was due, never more often than ballInterval
         XCTAssertEqual(ball.calls.count, dueFrames)

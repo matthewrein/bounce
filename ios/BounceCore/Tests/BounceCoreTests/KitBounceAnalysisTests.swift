@@ -99,11 +99,13 @@ final class KitBounceAnalysisTests: XCTestCase {
         }
     }
 
-    /// Against the app's prediction from the true slab: a perfect track and the app's own model agree; a ball that
-    /// rebounds less than the settings say lands short of the prediction, with a lower apex.
+    /// Against the app's prediction from the true slab: a perfect track and the model it follows agree (the rule the app
+    /// ran until n11, the corner plane at a 70% rebound, which these analytic drops follow); a ball that rebounds less
+    /// than the settings say lands short of the prediction, with a lower apex.
     func testComparesWithTheAppsPrediction() throws {
         let slab = SyntheticScene.slabPose(tilt: 10, heading: 35)
-        let settings = RecordingSettings().trackerSettings
+        let settings = RecordingSettings(reboundPercent: 70, restitution: nil, tangential: nil).trackerSettings
+        XCTAssertEqual(settings.launchRule, .cornerPlane)
         let predict: (Vec3) -> KitBouncePrediction? = { KitBouncePrediction.app(pose: slab, settings: settings, held: $0) }
         let same = drop(noise: 0.0005, slab: slab)
         let a = try XCTUnwrap(KitBounceAnalysis.analyze(track: same.track, cue: same.cue, predict: predict).analysis)

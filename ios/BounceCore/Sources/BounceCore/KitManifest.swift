@@ -90,9 +90,10 @@ public struct KitMeasurements: Codable, Equatable {
     /// `RecordingSettings()`, which the kit does not measure).
     public var slab: SlabSpec { recordingSettings().slab }
 
-    /// The ball in metres, with a rebound (the kit does not measure it).
-    public func ball(rebound: Double = RecordingSettings().reboundPercent / 100) -> BallSpec {
-        BallSpec(diameter: ballDiameterMm / 1000, rebound: rebound)
+    /// The ball in metres, with a rebound (the kit does not measure it; the app's, its restitution squared, by default)
+    /// and the app's tangential share.
+    public func ball(rebound: Double = RecordingSettings().ball.rebound) -> BallSpec {
+        BallSpec(diameter: ballDiameterMm / 1000, rebound: rebound, tangential: RecordingSettings().ball.tangential)
     }
 
     /// The app's settings with these measurements (drop height and rebound kept from `base`; an unmeasured dish too).

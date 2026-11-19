@@ -244,8 +244,11 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(tr.settings.launchRule, .dishNormal)
         XCTAssertEqual(tr.settings.searchInterval, RecordingSettings.appSearchInterval)
         XCTAssertEqual(tr.settings, owner.trackerSettings)
-        // a version 1 session.json (no dishBounce, no tracker) still reads, with the corner-plane rule
+        // a version 1 session.json (no dishBounce, no restitution, no tracker) still reads, with the corner-plane rule; one
+        // with a restitution (n12 on) bounces by the impact rule
         owner.dishBounce = nil
+        XCTAssertEqual(owner.trackerSettings.launchRule, .impact)
+        owner.restitution = nil
         XCTAssertEqual(owner.trackerSettings.launchRule, .cornerPlane)
 
         // the phone's exact settings win

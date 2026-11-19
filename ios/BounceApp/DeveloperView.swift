@@ -7,7 +7,6 @@ import SwiftUI
 struct DeveloperView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage(AppSettings.keys.demo) private var demo = false
-    @AppStorage(AppSettings.keys.dishNormal) private var dishNormal = false
     /// Clear log was tapped: asking first
     @State private var confirmingClearLog = false
     /// closes Settings altogether
@@ -51,11 +50,9 @@ struct DeveloperView: View {
                     .accessibilityIdentifier("reset")
             }
             Section(header: Text("Experiments"),
-                    footer: Text("The demo shows a synthetic slab instead of the camera (also on a Mac's iPhone Simulator). The launch rule sends the ball off along the dish's normal where it lands instead of the corner plane's. Both apply when Settings closes.")) {
+                    footer: Text("The demo shows a synthetic slab instead of the camera (also on a Mac's iPhone Simulator). It applies when Settings closes.")) {
                 Toggle("Demo scene (no camera)", isOn: $demo)
                     .accessibilityIdentifier("demoToggle")
-                Toggle("Launch along the dish's normal", isOn: $dishNormal)
-                    .accessibilityIdentifier("launchRuleToggle")
             }
             Section(header: Text("Live")) {
                 HStack {

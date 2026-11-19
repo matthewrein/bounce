@@ -931,11 +931,13 @@ public struct KitDropAnalysis: Codable, Equatable {
         return (mean, sigma, use.count)
     }
 
-    /// "rebound to bake into the app: 71% ± 1% (from 4 drops)", or why there is none.
+    /// "rebound to bake into the app: 71% ± 1% (from 4 drops), restitution 0.84 ± 0.01" (the app's setting since n12 is
+    /// the restitution, the rebound's square root), or why there is none.
     public static func bakeLine(_ drops: [KitDropAnalysis]) -> String {
         guard let b = reboundToBake(drops) else { return "rebound to bake into the app: none (no bounce measured)" }
-        return String(format: "rebound to bake into the app: %.0f%% ± %.0f%% (from %d drop%@)", b.rebound * 100, max(1, b.sigma * 100), b.count,
-                      b.count == 1 ? "" : "s")
+        let e = max(0, b.rebound).squareRoot(), eSigma = e > 0 ? b.sigma / (2 * e) : 0
+        return String(format: "rebound to bake into the app: %.0f%% ± %.0f%% (from %d drop%@), restitution %.2f ± %.2f", b.rebound * 100,
+                      max(1, b.sigma * 100), b.count, b.count == 1 ? "" : "s", e, max(0.01, eSigma))
     }
 }
 

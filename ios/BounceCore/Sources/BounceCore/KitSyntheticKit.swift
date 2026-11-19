@@ -12,8 +12,10 @@ import Foundation
 ///     bright light (the picture's brightness scaled); the ball on the floor 3 ft and 5 ft away with the slab out of
 ///     view; the ball resting in the dish; the ball held 4 in, 1 ft and 2 ft over the slab (the heights entered); drops
 ///     from 1 ft (centre) and near an edge, with the ball's physical path: free fall from the release, a bounce off the
-///     dish along the corner plane's normal at the rebound (0.7) of its speed squared (the app's own bounce model, so a
-///     perfect tracker predicts it exactly), then bounces on the floor; the negatives (the camera turned away from the
+///     dish by the app's own bounce model (`Bounce.LaunchRule.impact`: the ball touches the measured dish where it first
+///     meets it and leaves with its velocity along the dish's normal there reversed and scaled by the restitution, along
+///     the surface by the tangential share; the owner's ball's, so a perfect tracker predicts it exactly), then bounces
+///     on the floor; the negatives (the camera turned away from the
 ///     slab; the slab without the ball);
 ///   - every video shot's CoreMotion stream (100 Hz) is consistent with its camera path through a fixed
 ///     CoreMotion-to-ARKit rotation (`KitMotionLink`), and all shots share one motion and one ARKit session.
@@ -49,7 +51,9 @@ public final class KitSyntheticKit {
         public var tilts: [Double] = [0, 5, 10, 15]
         /// the slab's downhill direction (degrees from +x toward +z, ARKit's world)
         public var heading = 35.0
-        public var rebound = 0.7
+        /// the drops' bounce off the dish (the app's impact rule): the ball's restitution and tangential share
+        public var restitution = BallSpec.ownerRestitution
+        public var tangential = BallSpec.ownerTangential
         /// the camera bump under the phone lying flat (degrees, phone axes)
         public var bump = Vec2(1.2, -0.8)
         /// CoreMotion's reference heading in ARKit's world (degrees)
@@ -98,6 +102,7 @@ public final class KitSyntheticKit {
         /// where the bounce comes back to the impact height, and its apex above the impact point (m)
         public var landing: Vec3
         public var apexHeight: Double
+        /// the speed's share kept, squared (|v_out|² / |v_in|²: `KitBounceAnalysis`'s rebound)
         public var rebound: Double
     }
 
@@ -394,27 +399,30 @@ public final class KitSyntheticKit {
         return duration
     }
 
-    /// A drop's path: held, let go 0.15 s after the cue, falling onto the dish at (u, v), bouncing off along the corner
-    /// plane's normal with the app's rebound model, then bouncing on the floor (or the slab) with half its vertical speed.
+    /// A drop's path: held, let go 0.15 s after the cue, falling until it touches the dish (over (u, v)), bouncing off by
+    /// the app's impact rule (`Bounce.impactDrop`, `Bounce.impact`: the dish's normal where it touches, the restitution
+    /// and tangential share of `options`), then bouncing on the floor (or the slab) with half its vertical speed.
     func dropTruth(slab: SlabPose, u: Double, v: Double, height h: Double, cue: Double)
         throws -> (truth: DropTruth, position: (Double) -> Vec3, end: Double) {
-        let spec = KitSyntheticKit.spec, ballSpec = BallSpec(diameter: KitSyntheticKit.ball.diameter, rebound: options.rebound), R = ballSpec.radius
+        let spec = KitSyntheticKit.spec
+        let ballSpec = BallSpec(diameter: KitSyntheticKit.ball.diameter, restitution: options.restitution, tangential: options.tangential)
+        let R = ballSpec.radius
         let down = ARKitConvention.worldDown, up = -down, G = Units.gravity, g = down * G
         let surface = slab.point(u: u, v: v) - slab.normal * Dish.at(pose: slab, depth: spec.dishDepth, u: u, v: v).depth
         let held = surface + up * (R + h)
-        guard let dp = Bounce.drop(ballCenter: held, pose: slab, spec: spec, ball: ballSpec, down: down) else {
+        guard let dp = Bounce.impactDrop(ballCenter: held, pose: slab, spec: spec, ball: ballSpec, down: down), let impact = dp.impactCenter else {
             throw KitStoreError.wrongKind("the synthetic drop misses the slab")
         }
         let release = cue + 0.15
         let tFall = (2 * dp.dropHeight / G).squareRoot()
         let impactTime = release + tFall
-        let impact = held + down * dp.dropHeight
         let vin = down * (G * tFall)
-        let vout = slab.normal * ((options.rebound).squareRoot() * vin.length)
+        let vout = Bounce.impact(velocity: vin, normal: dp.dishNormal, restitution: ballSpec.restitution, tangential: ballSpec.tangentialFactor)
         let tl = 2 * vout.dot(up) / G
         let landing = impact + vout.rejecting(up) * tl
         let truth = DropTruth(held: held, cue: cue, release: release, impactTime: impactTime, impactPoint: impact, velocityIn: vin,
-                              velocityOut: vout, landing: landing, apexHeight: pow(vout.dot(up), 2) / (2 * G), rebound: options.rebound)
+                              velocityOut: vout, landing: landing, apexHeight: pow(vout.dot(up), 2) / (2 * G),
+                              rebound: vout.lengthSquared / vin.lengthSquared)
         // the flight after the impact, with bounces on whatever is below (the slab's top inside its outline, else the floor)
         func ground(_ p: Vec3) -> Double {
             let (a, b) = slab.local(p)

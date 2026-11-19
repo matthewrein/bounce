@@ -289,9 +289,12 @@ final class KitScoreRun {
             }
         }
         let s = settings.spec
-        notes.append(String(format: "Slab %.2f x %.2f in, %.2f in thick, %.3f in dish; ball %.1f mm; rebound %.0f%%.",
+        let bounce = settings.launchRule == .impact
+            ? String(format: "restitution %.2f, tangential share %.2f (the impact rule)", settings.ball.restitution, settings.ball.tangentialFactor)
+            : String(format: "rebound %.0f%%", settings.ball.rebound * 100)
+        notes.append(String(format: "Slab %.2f x %.2f in, %.2f in thick, %.3f in dish; ball %.1f mm; %@.",
                             Units.toInches(s.sideU), Units.toInches(s.sideV), Units.toInches(s.thickness), Units.toInches(s.dishDepth),
-                            settings.ball.diameter * 1000, settings.ball.rebound * 100))
+                            settings.ball.diameter * 1000, bounce))
         let probe = options.makeBallLocator()
         hasBallLocator = probe != nil
         appBallMinHeight = (probe as? BallLocator)?.options.minHeight

@@ -7,8 +7,8 @@ import UIKit
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
 let appBuild = "n11"
 
-/// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the rebound
-/// (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
+/// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the ball's
+/// restitution (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
 struct AppSettings: Equatable {
     // MARK: baked in (the one place the app's slab, ball and detector set-up come from)
 
@@ -16,7 +16,7 @@ struct AppSettings: Equatable {
     /// (BounceCore's `SlabSpec.ownerSlab`, the same as `RecordingSettings()`'s, so the kit scorer and replays run what the
     /// app runs; its constants are the one place to change it). The slab finder is tuned for it.
     static let slab = SlabSpec.ownerSlab
-    /// The ball: 30 mm titanium (BounceCore's `BallSpec.ownerBall`; its rebound is replaced by the user's setting).
+    /// The ball: 30 mm titanium (BounceCore's `BallSpec.ownerBall`; its restitution is replaced by the user's setting).
     static let ball = BallSpec.ownerBall
     // The detectors' tuning is BounceCore's (`AppDetectors`, `Detectors.swift`), and the tracker's settings are built from
     // these values by `RecordingSettings.trackerSettings` (see `tracker`), as a replay of a recording builds them.
@@ -24,20 +24,22 @@ struct AppSettings: Equatable {
     // MARK: the user's settings (Settings)
 
     static let defaultDropFeet = 3.0
-    static let defaultReboundPercent = 70.0
+    /// the owner's ball on the slab (BounceCore's `BallSpec.ownerRestitution`: 0.8)
+    static let defaultRestitution = BallSpec.ownerRestitution
     static let dropRange: ClosedRange<Double> = 0.5...10
-    static let reboundRange: ClosedRange<Double> = 0...100
+    static let restitutionRange: ClosedRange<Double> = 0...1
 
     /// used when no ball is held over the slab
     var dropFeet: Double = AppSettings.defaultDropFeet
-    /// the share of the drop height a straight-up bounce would regain
-    var reboundPercent: Double = AppSettings.defaultReboundPercent
-    /// Developer experiment (Settings > Developer): launch along the dish's normal where the ball lands, not the corner
-    /// plane's normal. Off unless a developer turns it on.
-    var dishNormal: Bool = false
+    /// the ball's restitution e: the share of its speed into the slab, along the slab's surface normal, that it keeps
+    /// coming off (a straight-up bounce regains e² of the drop height)
+    var restitution: Double = AppSettings.defaultRestitution
 
-    /// UserDefaults keys. The slab, thickness, dish, ball and "dishBounce" keys of earlier builds are no longer read.
-    static let keys = (drop: "dropFeet", reb: "reboundPercent", dishNormal: "devDishNormalLaunch", demo: "demo")
+    /// UserDefaults keys. The slab, thickness, dish, ball and "dishBounce" keys of earlier builds are no longer read; the
+    /// rebound percent of builds before n12 ("reboundPercent") is read once, as the restitution sqrt(rebound) (`load`),
+    /// and the developer's dish-normal switch of those builds ("devDishNormalLaunch") no longer exists (the bounce now
+    /// always leaves about the dish's own normal where the ball hits).
+    static let keys = (drop: "dropFeet", restitution: "restitution", oldRebound: "reboundPercent", demo: "demo")
 
     static func load(_ d: UserDefaults = .standard) -> AppSettings {
         var s = AppSettings()
@@ -45,21 +47,25 @@ struct AppSettings: Equatable {
             guard let x = d.object(forKey: k) as? Double, x.isFinite else { return nil }
             return x
         }
+        // a rebound saved by a build before n12 becomes the restitution it stands for, once (Settings shows the new key)
+        if number(keys.restitution) == nil, let old = number(keys.oldRebound) {
+            d.set(clamped(RecordingSettings.restitution(reboundPercent: old), restitutionRange), forKey: keys.restitution)
+        }
         if let x = number(keys.drop) { s.dropFeet = clamped(x, dropRange) }
-        if let x = number(keys.reb) { s.reboundPercent = clamped(x, reboundRange) }
-        s.dishNormal = d.bool(forKey: keys.dishNormal)
+        if let x = number(keys.restitution) { s.restitution = clamped(x, restitutionRange) }
         return s
     }
 
     static func clamped(_ x: Double, _ r: ClosedRange<Double>) -> Double { min(max(x, r.lowerBound), r.upperBound) }
 
     /// The settings in a recording's and the diagnostics' terms: BounceCore's defaults (`RecordingSettings()`: the baked
-    /// slab and ball, `slab` and `ball` above, in the owner's units) with the user's drop height and rebound.
+    /// slab and ball, `slab` and `ball` above, in the owner's units, and the impact rule with the ball's tangential share)
+    /// with the user's drop height and restitution (and the rebound it gives, e², for older readers).
     var recording: RecordingSettings {
         var r = RecordingSettings()
         r.dropHeightFeet = dropFeet
-        r.reboundPercent = reboundPercent
-        r.dishBounce = dishNormal
+        r.restitution = restitution
+        r.reboundPercent = 100 * restitution * restitution
         return r
     }
 
@@ -229,7 +235,7 @@ final class AppModel: ObservableObject {
         controller.stop()
     }
 
-    /// Settings closed: apply the drop height, rebound and the developer switches.
+    /// Settings closed: apply the drop height, restitution and the developer switches.
     func settingsChanged() {
         if preflightRunning { preflight.cancel("Settings was closed") }
         settings = AppSettings.load()

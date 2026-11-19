@@ -5,18 +5,47 @@ public struct BallSpec: Equatable, Codable {
     /// diameter (metres); the default (35 mm) is the size first assumed, which tests and old recordings keep; the owner's
     /// ball is `ownerBall`
     public var diameter: Double
-    /// rebound: the share of the drop height the ball would regain bouncing straight up (0.70 = 70%)
+    /// rebound: the share of the drop height the ball would regain bouncing straight up (0.70 = 70%): e², e the
+    /// restitution (`restitution`), which is what the app's setting gives since n12
     public var rebound: Double
-    public init(diameter: Double = 0.035, rebound: Double = 0.70) { self.diameter = diameter; self.rebound = rebound }
+    /// k_t: the share of the velocity along the surface the ball keeps through an impact (friction and spin), used by the
+    /// impact rule (`Bounce.LaunchRule.impact`); nil (every ball written before n12): `ownerTangential`
+    public var tangential: Double?
+    public init(diameter: Double = 0.035, rebound: Double = 0.70, tangential: Double? = nil) {
+        self.diameter = diameter; self.rebound = rebound; self.tangential = tangential
+    }
+    /// A ball by its restitution e (the rebound is e²).
+    public init(diameter: Double, restitution e: Double, tangential: Double? = nil) {
+        self.init(diameter: diameter, rebound: e * e, tangential: tangential)
+    }
     public var radius: Double { diameter / 2 }
+    /// e: the speed along the surface's normal after an impact over before (the square root of the rebound)
+    public var restitution: Double { max(0, rebound).squareRoot() }
+    /// the share of the along-surface velocity kept (`tangential`, else `ownerTangential`)
+    public var tangentialFactor: Double { tangential ?? BallSpec.ownerTangential }
 
     /// The owner's ball, as the app runs it (`AppSettings.ball`, `RecordingSettings()`, the synthetic kits): 30 mm, the
     /// owner's word ("I used a 30mm ball"), and measured on the owner's first kit as 30.1 ± 0.6 mm (its outline fitted
     /// as a cone from the camera on the floor at 3 ft and at 5 ft: 30.10 and 30.12 mm). The app had assumed 35 mm (16%
-    /// too big, which put the held ball 16% too far away and its drop height off by centimetres).
-    public static let ownerBall = BallSpec(diameter: ownerDiameterMm / 1000)
+    /// too big, which put the held ball 16% too far away and its drop height off by centimetres). It bounces with the
+    /// owner's restitution and the tangential share measured on the kits (`ownerRestitution`, `ownerTangential`).
+    public static let ownerBall = BallSpec(diameter: ownerDiameterMm / 1000, restitution: ownerRestitution, tangential: ownerTangential)
     /// the owner's ball's diameter (mm): change it here
     public static let ownerDiameterMm = 30.0
+    /// The owner's ball's restitution on the slab: about 0.8, the owner's word for the titanium lattice ball (a rebound
+    /// height ratio of about 0.64); the app's setting starts here (`RecordingSettings.restitution`). Measured on the two
+    /// kits' drops it is higher: 0.911 ± 0.007 on the five first bounces tracked well (in at 2.6-3.0 m/s), 0.92-0.94 on
+    /// the later, slower ones (each bounce's speed along the dish's normal out over in; the flight times between bounces
+    /// agree), a rebound height ratio of about 0.83: if the owner's 0.8 was the height ratio, this should be 0.9.
+    public static let ownerRestitution = 0.8
+    /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t), measured on the
+    /// owner's two kits (slab-kit-20261118-205900 and slab-kit-20261119-174003: every drop's bounces off the near-level
+    /// slab, tracked frame by frame, each kit's true slab normal fitted with it): 0.57 ± 0.43 (kit 1, 7 bounces) and
+    /// 0.33 ± 0.24 (kit 2, 5 bounces), together 0.39 ± 0.21. With the owner's restitution it gives e (e + k_t) = 0.96,
+    /// which is what a launch along the normal at a rebound of 100% gives on a tilted slab: the owner's finding that the
+    /// old rule at 100% "matched the distance". (A ball that rolls off keeps 5/7 if solid, 0.6 if a thin shell.) The
+    /// least certain number of the bounce: on a 12° slab 0.2 either way moves the landing about 9 cm downhill.
+    public static let ownerTangential = 0.4
 }
 
 /// Where a ball held above the slab would land if let go, and from how high.
@@ -34,6 +63,10 @@ public struct DropPoint: Equatable {
     public var v: Double
     /// whether it lands on the slab (within 5% of its edges)
     public var onSlab: Bool
+    /// The impact rule (`Bounce.impactDrop`): the ball's centre when it first touches the dish and the point it touches
+    /// (`landing` is then that point, `dishNormal` the dish's normal there and `dropHeight` how far the centre fell);
+    /// nil for the older rules, which take the point straight below the centre.
+    public var impactCenter: Vec3? = nil
 }
 
 /// A bounce off the slab: the path the ball takes after it hits.
@@ -68,10 +101,17 @@ public struct BouncePath: Equatable {
 public enum Bounce {
     /// Which way the ball leaves the slab.
     public enum LaunchRule: String, Codable {
-        /// perpendicular to the plane through the four top corners (the app's rule)
+        /// perpendicular to the plane through the four top corners, at the speed of the rebound (the app's rule until
+        /// n11; recordings made with it replay with it)
         case cornerPlane
-        /// perpendicular to the dish where the ball lands (leans toward the middle off-centre)
+        /// perpendicular to the dish where the ball lands (leans toward the middle off-centre; a developer experiment
+        /// until n11)
         case dishNormal
+        /// a real impact (the app's rule from n12, `Bounce.impact`): the falling ball touches the dish (the measured
+        /// spherical cap, `KitDish.sphericalCap`) where it first meets it, and its velocity there is split along the
+        /// dish's local normal, reversed and scaled by the restitution e, and along the surface, scaled by the ball's
+        /// tangential share k_t (`BallSpec.restitution`, `tangentialFactor`)
+        case impact
     }
 
     /// What a ball's image radius means.
@@ -119,6 +159,71 @@ public enum Bounce {
         return DropPoint(ballCenter: B, landing: H, dropHeight: max(0.006, sd + extra - ball.radius), dishNormal: dh.normal, u: u, v: v, onSlab: on)
     }
 
+    /// The dish the impact rule bounces off: the measured shape, a spherical cap `dishDepth` deep at the centre whose rim
+    /// is the circle inscribed in the flat top (`KitDish.sphericalCap`; the top flat outside it). Measured on the owner's
+    /// first kit (its top's height map from many views, inside 88 mm of the centre): the dish curves 0.385 ± 0.013 /m
+    /// (four positions: 0.364, 0.436, 0.370, 0.405), the cap 1/8 in deep over the 180.2 mm top 0.391 /m, the bowl through
+    /// the four corners (`Dish.at`, the older rules') 0.196 /m. So off the centre the dish leans about twice as much as
+    /// the older rules took: 2.2° at 2 in from the middle.
+    public static func impactDish(_ spec: SlabSpec) -> KitDish { KitDish(spec: spec, shape: .sphericalCap) }
+
+    /// Drop a ball straight down (along `down`) until it first touches the dish (`impactDish`): where it touches, its
+    /// centre then, the dish's normal there (from the point toward the centre) and how far the centre fell. Off the
+    /// middle of a dish (or on a tilted slab) the ball touches it to the side of the point straight below its centre, on
+    /// the slope that faces it. nil when the ball is not above the slab's face.
+    public static func impactDrop(ballCenter B: Vec3, pose: SlabPose, spec: SlabSpec, ball: BallSpec, down gIn: Vec3) -> DropPoint? {
+        let g = gIn.normalized, den = g.dot(pose.normal), r = ball.radius
+        guard den < -1e-3 else { return nil }
+        let dish = impactDish(spec)
+        func clearance(_ s: Double) -> Double { dish.contact(center: pose.toSlab(B + g * s), radius: r).clearance }
+        // the centre's fall to the corner plane, then on down past the dish's depth: the ball is in it by then
+        let sPlane = (pose.center - B).dot(pose.normal) / den
+        guard sPlane > -2 * r else { return nil }
+        var s = 0.0
+        if clearance(0) > 0 {
+            var lo = 0.0, hi = max(0, sPlane) + (spec.dishDepth + 2 * r) / -den
+            guard clearance(hi) < 0 else { return nil }
+            // the first touch: the clearance falls along the fall line; bisect it to 0.1 µm
+            for _ in 0..<80 {
+                let m = (lo + hi) / 2
+                if clearance(m) > 0 { lo = m } else { hi = m }
+                if hi - lo < 1e-7 { break }
+            }
+            s = (lo + hi) / 2
+        }
+        // (a ball already touching the dish touches it where it is)
+        let C = B + g * s
+        let k = dish.contact(center: pose.toSlab(C), radius: r)
+        let point = pose.fromSlab(k.point), n = pose.directionFromSlab(k.normal).normalized
+        let on = abs(k.point.x) <= pose.halfU * 1.05 && abs(k.point.y) <= pose.halfV * 1.05
+        return DropPoint(ballCenter: B, landing: point, dropHeight: max(0.006, s), dishNormal: n, u: k.point.x, v: k.point.y,
+                         onSlab: on, impactCenter: C)
+    }
+
+    /// The velocity after an impact: `v` split along the surface's unit normal `n` (pointing out of it) and along the
+    /// surface; the part along the normal reversed and scaled by `restitution`, the part along it by `tangential`.
+    /// Unchanged when the ball is not moving into the surface.
+    public static func impact(velocity v: Vec3, normal nIn: Vec3, restitution e: Double, tangential k: Double) -> Vec3 {
+        let n = nIn.normalized, vn = v.dot(n)
+        guard vn < 0 else { return v }
+        return n * (-e * vn) + (v - n * vn) * k
+    }
+
+    /// A flight from `start` with velocity `velocity`, ending where it has fallen to `endHeight` below the start.
+    public static func path(start: Vec3, velocity: Vec3, down gIn: Vec3, endHeight: Double, maxTime: Double = 4) -> BouncePath {
+        let g = gIn.normalized, G = Units.gravity
+        let speed = velocity.length
+        let dir = speed > 1e-12 ? velocity / speed : -g
+        let vup = -velocity.dot(g)
+        let fall = max(0, endHeight)
+        var T = (vup + (vup * vup + 2 * G * fall).squareRoot()) / G
+        if !T.isFinite || T < 0 { T = 0 }
+        T = min(maxTime, T)
+        let apexT = vup > 0 ? min(T, vup / G) : 0
+        let apexH = vup > 0 ? vup * vup / (2 * G) : 0
+        return BouncePath(start: start, direction: dir, speed: speed, down: g, airTime: T, apexTime: apexT, apexHeight: apexH)
+    }
+
     /// The bounce. The ball falls `dropHeight` onto `start`, leaves along `direction` with the speed that would carry it
     /// `rebound` x `dropHeight` straight up, and the path ends where it has fallen to `endHeight` below the start
     /// (e.g. the floor, or the slab's lowest corner). Port of the web app's update().
@@ -141,6 +246,10 @@ public enum Bounce {
     /// (e.g. down to the floor), else at the height of the slab's lowest top corner.
     public static func compute(pose: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3, ballCenter: Vec3?,
                                defaultDropHeight: Double, rule: LaunchRule = .cornerPlane, floorBelowCenter: Double? = nil) -> (path: BouncePath, drop: DropPoint?) {
+        if rule == .impact {
+            return computeImpact(pose: pose, spec: spec, ball: ball, down: down, ballCenter: ballCenter, defaultDropHeight: defaultDropHeight,
+                                 floorBelowCenter: floorBelowCenter)
+        }
         let g = down.normalized
         var start = pose.center - pose.normal * spec.dishDepth
         var dropH = defaultDropHeight
@@ -160,5 +269,35 @@ public enum Bounce {
         }
         let p = path(start: start, direction: dir, dropHeight: dropH, rebound: ball.rebound, down: g, endHeight: h0 - endLevel)
         return (p, dp)
+    }
+    /// The impact rule's calculation (`LaunchRule.impact`; `compute` with that rule). The ball held over the slab falls
+    /// straight down until it first touches the dish (`impactDrop`), else (no ball over the slab) a ball dropped from the
+    /// default height onto the middle of the dish; it comes in at the speed of its fall, sqrt(2 g h), and leaves with
+    /// `impact` about the dish's normal where it touched, with the ball's restitution and tangential share. The path is
+    /// the ball's lowest point (its centre a radius above it), from the moment it leaves, down to the same end level as
+    /// the older rules (the floor `floorBelowCenter` below the slab's centre when given, else the lowest top corner).
+    static func computeImpact(pose: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3, ballCenter: Vec3?,
+                              defaultDropHeight: Double, floorBelowCenter: Double?) -> (path: BouncePath, drop: DropPoint?) {
+        let g = down.normalized, r = ball.radius
+        let bottom = pose.center - pose.normal * spec.dishDepth
+        // no ball: touching the middle of the dish, where its normal is the slab's
+        var center = bottom + pose.normal * r
+        var normal = pose.normal
+        var fall = defaultDropHeight
+        var dp: DropPoint? = nil
+        if let B = ballCenter, let d = impactDrop(ballCenter: B, pose: pose, spec: spec, ball: ball, down: g), d.onSlab, let c = d.impactCenter {
+            center = c; normal = d.dishNormal; fall = d.dropHeight; dp = d
+        }
+        let vin = g * (2 * Units.gravity * max(0, fall)).squareRoot()
+        let vout = impact(velocity: vin, normal: normal, restitution: ball.restitution, tangential: ball.tangentialFactor)
+        let start = center + g * r
+        let h0 = -(start - pose.center).dot(g)
+        let endLevel: Double
+        if let floor = floorBelowCenter {
+            endLevel = -floor
+        } else {
+            endLevel = pose.topCorners.map { -($0 - pose.center).dot(g) }.min() ?? 0
+        }
+        return (path(start: start, velocity: vout, down: g, endHeight: h0 - endLevel), dp)
     }
 }

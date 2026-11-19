@@ -598,11 +598,16 @@ and the measured one; `impactClearance` (mm). The report has a table of the drop
 brackets, contact point, local tilt, rebound ± sigma, launch angle, and the landing against the app both ways: mm ±
 sigma, range error, direction; the notes say when the ball landed on the slab again and what the arc carried on to the
 app's end level gives, and when a drop is left out of the bake) and the line **rebound to bake into the app: X% ± Y%
-(from N drops)**: the drops' rebounds, those marked to leave out (`bakeExcluded`) and those more than max(10 points,
-3 sigma) off their median left out, weighted by 1 / sigma²
-(`KitDropAnalysis.reboundToBake`; the aggregate `reboundMeasured`). Measured that way the app's own model (what this
-synthetic kit's drops do: out along the corner plane's normal at sqrt(rebound) of the speed in) has e = sqrt(rebound) /
-cos(tilt): a slab tilted 10° reads 72% for the app's 70%.
+(from N drops), restitution e ± sigma**: the drops' rebounds, those marked to leave out (`bakeExcluded`) and those more
+than max(10 points, 3 sigma) off their median left out, weighted by 1 / sigma², and the restitution they stand for, the
+square root, which is the app's setting since n12 (`KitDropAnalysis.reboundToBake`; the aggregate `reboundMeasured`).
+Since n12 the app's own model is a real impact (`Bounce.LaunchRule.impact`): the falling ball touches the dish (the
+measured spherical cap) where it first meets it, and leaves with its velocity along the dish's normal there reversed and
+scaled by the restitution, and along the surface scaled by the ball's tangential share (`BallSpec.ownerTangential`).
+The synthetic kit's drops and the rendered drops (`KitSyntheticDrops`, by default) bounce that way, so the rebound
+measured on them is the restitution squared (0.64 for the app's 0.8). Recordings made before n12 (no restitution in
+their settings) replay with the rule they ran: out along the corner plane's normal at sqrt(rebound) of the speed in,
+which measured this way has e = sqrt(rebound) / cos(tilt).
 
 **The true normal: the CoreMotion-to-ARKit link** (`KitMotionLink`). CoreMotion's reference frame (z up) and ARKit's
 world (y up) are both gravity-aligned: `world = Ry(yaw) · A0 · ref`, A0 taking ref x to world x, ref y to world -z and
