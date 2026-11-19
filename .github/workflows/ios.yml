@@ -256,14 +256,23 @@ jobs:
             -resultBundlePath e2e.xcresult > e2e.log 2>&1
           status=$?
           kill -INT $REC; wait $REC
-          grep -E "E2E-SUMMARY|Test Case '.*' (passed|failed)|error:|\*\* TEST" e2e.log
+          grep -E "E2E-SUMMARY|E2E-DEBUG|Test Case '.*' (passed|failed)|error:|\*\* TEST" e2e.log
           {
             echo "### End-to-end in the Simulator (demo scene)"
             grep -h "E2E-SUMMARY" e2e.log | sed 's/^.*E2E-SUMMARY /- /'
             echo
             grep -E "Test Case '.*' (passed|failed)" e2e.log | sed 's/^/    /'
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ $status -ne 0 ]; then echo "--- last lines of the test log ---"; tail -80 e2e.log; fi
+          if [ $status -ne 0 ]; then
+            # the steps of each failed test's last try (what it queried, tapped and waited for), up to its failure
+            for t in $(grep -E "Test Case '.*' failed" e2e.log | sed -E "s/.* (test[A-Za-z0-9_]+)\]' failed.*/\1/" | sort -u); do
+              echo "--- the steps of $t, its last try (at most 300 lines) ---"
+              awk -v s="$t]' started" -v e1="$t]' passed" -v e2="$t]' failed" \
+                'index($0, s) { buf = ""; on = 1 } on { buf = buf $0 "\n" } on && (index($0, e1) || index($0, e2)) { on = 0; last = buf } END { printf "%s", last }' \
+                e2e.log | tail -300
+            done
+            echo "--- last lines of the test log ---"; tail -80 e2e.log
+          fi
           exit $status
 
       # testCaptureKitFlow made a bundle with the app's own code (KitBundle with Apple's DEFLATE): its parts go to the
