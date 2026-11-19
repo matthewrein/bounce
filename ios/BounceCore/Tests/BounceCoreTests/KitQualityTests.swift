@@ -182,12 +182,14 @@ final class KitQualityTests: XCTestCase {
         XCTAssertEqual(c?.passed, true)
         XCTAssertEqual(c?.severity, .info)
         XCTAssertEqual(c?.value ?? 0, 0.25, accuracy: 1e-9)
-        XCTAssertTrue(c?.message.contains("a slab or ball that isn't there in 25% of frames") ?? false)
+        XCTAssertTrue(c?.message.contains("the app found a slab or ball in 25% of frames") ?? false, c?.message ?? "")
+        XCTAssertTrue(c?.message.contains("kept following after it left the picture, is the real slab") ?? false, c?.message ?? "")
         XCTAssertEqual(r.verdict, .good)
         XCTAssertNil(r.check("slab"))
         // slab-only shots report a ball that is not there
         let s = KitQuality.evaluate(shot: shot("s04-level-still"), stats: stats(100, slab: 1, ball: 0.5), expectedFrames: 100)
         XCTAssertEqual(s.check("falsePositives")?.value ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(s.check("falsePositives")?.message, "For the record: the app saw a ball that isn't there in 50% of frames.")
         XCTAssertEqual(s.verdict, .good)
     }
 

@@ -258,7 +258,7 @@ detector-based checks are worded "if the slab was in view, Next is fine". Verdic
 | `blur` | video shots | median blur ≤ 3 px for still shots, ≤ 6 px for moving ones, otherwise fair; above twice that is poor; over the frames that measured it, and info "not measured" when none did |
 | `slab` | shots expecting the slab | the slab was found (confirming or locked) in at least 50% of frames, otherwise fair |
 | `ball` | shots expecting the ball | the ball was found in at least 30% of frames, otherwise fair |
-| `falsePositives` | shots where the slab or the ball must not be in view (negatives, slab-only, ball-only) | the share of frames where it was found anyway is reported and never fails |
+| `falsePositives` | shots where the slab or the ball must not be in view (negatives, slab-only, ball-only) | the share of frames where it was found anyway is reported and never fails. Where the slab must not be in view the line says only that the app found one: the real slab left in the picture, or one the app keeps following after it left the picture (the live tracker keeps its lock in the world), counts here too |
 | `reading` | flat-phone shots | no reading at all (the phone never lay still), poor |
 | `still` | flat-phone shots | each reading's spread ≤ 0.3°, otherwise poor |
 | `flat` | flat-phone shots | each reading's tilt ≤ 25° (flat, screen up), otherwise poor; checked on a failed result too, so the owner is told which reading went wrong |
@@ -460,8 +460,9 @@ entered, no height entered, no CoreMotion-to-ARKit link, ...).
 | `tiltReading`, `settledTiltReading` | shots of an unmeasured position (`--positions`) | the median tilt read on locked frames, and on the shown frames |
 | `cornerRms` | slab expected | the lock's four world corners on every locked frame (matched to the first locked frame's), RMS distance from each corner's per-axis median (mm) |
 | `slabSizeError` | slab expected, measurements entered | each locked frame's detected outline cast onto the lock's plane; mean of (long side - measured long side) and (short side - measured short side), median over frames (mm). The pose's distance scales with the size the app assumes, so this shows how well the outline fits the measured shape (and the size, once LiDAR is fused) |
-| `slabFoundRate`, `slabLockedRate` | slab must not be in view (ball on the floor, `s12-no-slab`) | share of frames confirming or locked / locked |
-| `ballDetectionRate` | ball expected (not `s08`: the app looks only for a ball 5 cm or more above the slab) | of the frames on which the app's ball finder ran (only while locked, every `ballInterval`), the share that found a ball there; a ball the app holds over from an earlier search (it keeps a missed ball for up to 2 searches) is not a find |
+| `slabFoundRate`, `slabLockedRate` | slab must not be in view (ball on the floor, `s12-no-slab`) | share of frames confirming or locked / locked on anything but the real slab |
+| `slabInViewRate` | the same | share of frames found on the real slab, left in view (the owner's ball shots of both first kits had the ball a few inches from the slab): the find lies on the slab's top as the slab shots of the same ARKit session just before and after locked it (inside its outline, within 26 mm of its plane: half the 52 mm from the owner's top to the floor). A lock is judged by its centre in 3-D; a detection before a lock only by its line of sight (the ray through its middle crosses the top: what that pixel shows, not how far away the candidate is). A lock the app keeps after the slab has left the picture counts too. Those finds are not counted as false; a note names the shots. When no slab shot of the same session locked (another session, or those shots not scored) the finds are not checked, stay false, and a note says so |
+| `ballDetectionRate` | ball expected (not `s08`: the app looks only for a ball 5 cm or more above the slab) | of the frames on which the app's ball finder ran (only while locked, every `ballInterval`), the share that found a ball there; a ball the app holds over from an earlier search (it keeps a missed ball for up to 2 searches) is not a find. A ball shot's searches over the real slab, left in view (`slabInViewRate`), are left out: the app looks only over the slab's top, never at the ball on the floor beside it |
 | `ballFalsePositiveRate` | ball must not be in view | the same share, where there is no ball (a false ball held over counts once, where it was found) |
 | `ballDistanceError` | ball resting on the slab (`s08`) | the tracking finder (below) on every locked frame: the ball's distance from the camera from its size minus the distance along the same ray to where its centre must be resting on the dish where it was found (a radius above the dish's surface along its own normal there, `Dish.at`; on a slab tilted 5-10° the ball cannot stay in the dish's middle, whose slope is at most 2°); frames with the ball not over the slab's top are left out; median (mm) |
 | `dropHeightError` | held ball with an entered height (`s09`) | the app's drop height while it comes from the ball (`Readouts.dropHeight`: the ball's bottom above the dish straight below it), median, minus the entered height (mm). The app asks for the same height: a ruler stood on the slab under the ball (in the dish, not on the corners' plane 1/8 in above it) |
@@ -638,12 +639,14 @@ kit scored with `--measured` against the same kit scored with the app's settings
 alone change its scores), and every metric by where it is (aggregate, shot or position): better or worse by more than
 its tolerance (in the metric's direction: lower, higher or closer to zero), the same, `changed` for the rebound (a
 measurement of the scene, not of the app), new or gone. A value that became n/a, or a metric with a value that is gone,
-is a regression.
+is a regression. Since `slabInViewRate` was added, `slabFoundRate` and `slabLockedRate` leave out finds on the real slab, left in
+view, and a ball shot's `ballDetectionRate` its searches over it: compare a build scored before that with the same kits
+scored again by the new scorer, not with its old score file, or the change shows up as a better app.
 
 | Metric | Tolerance | | Metric | Tolerance |
 |---|---|---|---|---|
 | lockRate | 2 points | | ballDetectionRate | 3 points |
-| timeToLock | 0.15 s | | ballFalsePositiveRate, slabFoundRate, slabLockedRate | 1 point |
+| timeToLock | 0.15 s | | ballFalsePositiveRate, slabFoundRate, slabLockedRate, slabInViewRate | 1 point |
 | neverLocked | 0 | | ballDistanceError, dropHeightError | 3 mm |
 | tiltErrorMedian, tiltBias | 0.05° | | landingError, landingDistanceError, apexError | 5 mm |
 | tiltErrorP90, normalErrorP90 | 0.1°, 0.2° | | impactHeightError | 3 mm |

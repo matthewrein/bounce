@@ -79,6 +79,7 @@ public struct KitMetric: Codable, Equatable {
         "slabSizeError": Kind(title: "Slab size error", unit: .millimetres, direction: .towardZero, tolerance: 1),
         "slabFoundRate": Kind(title: "Slab found where there is none", unit: .share, direction: .lower, tolerance: 0.01),
         "slabLockedRate": Kind(title: "Slab locked where there is none", unit: .share, direction: .lower, tolerance: 0.01),
+        "slabInViewRate": Kind(title: "Slab left in view, found on the real slab (not false)", unit: .share, direction: .info, tolerance: 0.01),
         "ballDetectionRate": Kind(title: "Ball detection rate", unit: .share, direction: .higher, tolerance: 0.03),
         "ballFalsePositiveRate": Kind(title: "Ball found where there is none", unit: .share, direction: .lower, tolerance: 0.01),
         "ballDistanceError": Kind(title: "Ball distance from its size minus from the slab", unit: .millimetres, direction: .towardZero, tolerance: 3),
@@ -397,7 +398,8 @@ extension KitScoreReport {
             for s in slabShots {
                 func v(_ id: String) -> String { s.metric(id).map { $0.formatted } ?? "" }
                 let tilt = s.metric("tiltErrorMedian") == nil ? "" : "\(v("tiltErrorMedian")) / \(v("tiltErrorP90"))"
-                let falseSlab = s.metric("slabFoundRate") == nil ? "" : "\(v("slabFoundRate")) found, \(v("slabLockedRate")) locked"
+                var falseSlab = s.metric("slabFoundRate") == nil ? "" : "\(v("slabFoundRate")) found, \(v("slabLockedRate")) locked"
+                if (s.metric("slabInViewRate")?.value ?? 0) > 0 { falseSlab += " (\(v("slabInViewRate")) on the real slab, left in view)" }
                 var settled = ""
                 if s.metric("settledRate")?.value != nil {
                     settled = v("settledRate") + (s.metric("timeToSettle")?.value != nil ? " from \(v("timeToSettle"))" : "")

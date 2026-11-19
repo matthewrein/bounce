@@ -54,13 +54,17 @@ public enum KitScoreError: Error, Equatable, CustomStringConvertible {
 ///     short side (mm), median over frames. With the slab's size assumed known, the pose's distance scales with it, so
 ///     this measures how well the detected outline fits the measured shape (and, with LiDAR fused, its size).
 ///   - **slabFoundRate / slabLockedRate** (shots where the slab must not be in view: ball-only shots, `s12-no-slab`):
-///     the share of frames on which the tracker was confirming or locked / locked.
+///     the share of frames on which the tracker was confirming or locked / locked on anything but the real slab.
+///     **slabInViewRate**: the share found on the real slab, left in view (its top, where the slab shots of the same ARKit
+///     session just before and after locked it: `markRealSlab`); those finds are not false.
 ///   - **ballDetectionRate** (shots expecting the ball): of the frames on which the app's ball finder ran (only while
 ///     locked, every `ballInterval`), the share that found a ball there. A ball the app holds over from an earlier
 ///     search (`BallObservation.missedUpdates` > 0: it keeps showing a missed ball for a couple of searches) is not a
 ///     find. **ballFalsePositiveRate** (shots where the ball must not be in view): the same share where there is no
 ///     ball. n/a without a ball finder (`AppDetectors.ball()` is nil), when the slab never locked (the app looks for the
-///     ball only on a lock), and for the ball resting on the slab when the app's finder does not look that low.
+///     ball only on a lock), and for the ball resting on the slab when the app's finder does not look that low. A ball
+///     shot's searches over the real slab, left in view (`markRealSlab`), are left out: the app looks for a ball only
+///     over the slab's top, so the ball on the floor beside it is never there to find.
 ///   - **ballDistanceError** (the ball resting on the slab, `s08`): the ball's distance from the camera from its size
 ///     (the tracking finder's centre, every locked frame: `trackingLocator`) minus the distance along the same ray to where its centre must be resting on the dish
 ///     where it was found (a radius above the dish's surface along its own normal there; on a tilted slab the ball
@@ -235,6 +239,14 @@ final class KitScoreRun {
         var settledNormal: Vec3? = nil
         /// on a frame whose re-check refreshed the tilt's honest estimate: its normal (world) and covariance (rad^2)
         var honest: (normal: Vec3, cov: Mat3)? = nil
+        /// this frame's own detection, in any state: the ray (world) through the middle of the square it shows (where
+        /// its outline's diagonals cross), to tell a find on the real slab from a false one (`markRealSlab`)
+        var findRay: (origin: Vec3, direction: Vec3)? = nil
+        /// found (confirming or locked) on the real slab, left in view in a shot that should not show it (`markRealSlab`)
+        var onRealSlab = false
+        /// the find was in the picture: a lock with a top corner in it, or this frame's own detection (nil: nothing was
+        /// found, or a confirming frame without a detection). The tracker keeps a lock after the slab leaves the picture.
+        var inPicture: Bool? = nil
     }
 
     struct ShotRun {
@@ -315,6 +327,7 @@ final class KitScoreRun {
             perShotTilts[sh.spec.id] = tilts
             perShotNormals[sh.spec.id] = normals
         }
+        markRealSlab(&scores, frames: &perShotFrames)
         let positions = scorePositions(scores, tilts: perShotTilts, normals: perShotNormals)
         let aggregates = aggregate(scores, frames: perShotFrames)
         return KitScoreReport(kitId: kitId, planId: m.planId, build: m.build, deviceModel: m.device.modelIdentifier,
@@ -390,6 +403,11 @@ final class KitScoreRun {
             let refreshes = tracker.honestRefreshes
             let out = tracker.process(pf.tracker)
             var r = FrameResult(t: f.time, state: out.state)
+            if let q = out.measurement, q.count == 4, let mid = SlabBoxView.intersect((q[0], q[2]), (q[1], q[3])) {
+                let ray = pf.tracker.view.ray(through: mid)
+                r.findRay = (ray.origin, ray.direction)
+                r.inPicture = true
+            }
             if out.state == .locked, let s = out.slab {
                 lastLock = s
                 if let c = cue, f.time < c { run.lockBeforeCue = s }
@@ -399,6 +417,8 @@ final class KitScoreRun {
                 r.normal = s.normal
                 if tracker.honestRefreshes != refreshes, let n = tracker.settledNormal, let C = tracker.settledCovariance { r.honest = (n, C) }
                 r.corners = s.topCorners
+                let v = pf.tracker.view
+                r.inPicture = s.topCorners.contains { v.project(world: $0).map { v.intrinsics.contains($0) } ?? false }
                 if let q = out.measurement, q.count == 4 {
                     let plane = Plane3(point: s.center, normal: s.normal), v = pf.tracker.view
                     let P = q.compactMap { px -> Vec3? in let ray = v.ray(through: px); return plane.intersect(origin: ray.origin, direction: ray.direction) }
@@ -504,9 +524,8 @@ final class KitScoreRun {
             metrics.append(firstLock.map { KitMetric(id: "timeToLock", value: $0.t - t0) } ?? .na("timeToLock", neverLocked))
         }
         if expect.slab == .forbidden {
-            let n = Double(max(1, res.count))
-            metrics.append(KitMetric(id: "slabFoundRate", value: Double(res.filter { $0.state != .searching }.count) / n, count: res.count))
-            metrics.append(KitMetric(id: "slabLockedRate", value: Double(locked.count) / n, count: res.count))
+            // finds on the real slab, left in view, are told apart once every shot has run (`markRealSlab`)
+            metrics += KitScoreRun.falseSlabMetrics(res)
         }
 
         // tilt, against the flat-phone true tilt
@@ -611,7 +630,7 @@ final class KitScoreRun {
         let searched = res.filter { $0.ballSearched }
         func ballReason() -> String? {
             if !hasBallLocator { return "no ball finder in this build" }
-            if locked.isEmpty { return expect.slab == .forbidden ? "the app looks for the ball only on a lock, and the slab is not in view"
+            if locked.isEmpty { return expect.slab == .forbidden ? KitScoreRun.noLockSlabForbidden
                                                                  : "the app looks for the ball only on a lock, and the slab never locked" }
             if searched.isEmpty { return "the ball finder never ran" }
             return nil
@@ -895,12 +914,14 @@ final class KitScoreRun {
         let forb = ok.filter { $0.metric("slabFoundRate") != nil }.flatMap { frames[$0.shotId] ?? [] }
         if forb.isEmpty {
             out.append(.na("slabFoundRate", "no shot without the slab was scored")); out.append(.na("slabLockedRate", "no shot without the slab was scored"))
+            out.append(.na("slabInViewRate", "no shot without the slab was scored"))
         } else {
-            out.append(KitMetric(id: "slabFoundRate", value: Double(forb.filter { $0.state != .searching }.count) / Double(forb.count), count: forb.count))
-            out.append(KitMetric(id: "slabLockedRate", value: Double(forb.filter { $0.state == .locked }.count) / Double(forb.count), count: forb.count))
+            out += KitScoreRun.falseSlabMetrics(forb)
         }
         func pooledBall(_ id: String, _ shotsWith: [KitShotScore]) -> KitMetric {
-            let runs = shotsWith.filter { $0.metric(id)?.value != nil }.flatMap { (frames[$0.shotId] ?? []).filter { $0.ballSearched } }
+            // a search over the real slab, left in view, cannot see the ball on the floor beside it (`markRealSlab`)
+            let runs = shotsWith.filter { $0.metric(id)?.value != nil }.flatMap { (frames[$0.shotId] ?? []).filter {
+                $0.ballSearched && !(id == "ballDetectionRate" && $0.onRealSlab) } }
             guard !runs.isEmpty else { return .na(id, reason(id, hasBallLocator ? "the ball finder never ran" : "no ball finder in this build")) }
             return KitMetric(id: id, value: Double(runs.filter { $0.ballFound }.count) / Double(runs.count), count: runs.count)
         }
@@ -936,5 +957,152 @@ extension KitScorer {
         let t = truth.normalized, e = t - n * n.dot(t)
         let m2 = e.dot(HonestTilt.information(C, n) * e)
         return m2.isFinite && m2 >= 0 ? m2.squareRoot() : nil
+    }
+}
+
+// MARK: the slab left in view
+
+extension KitScoreRun {
+    /// Where a slab shot had the slab: its lock nearest the per-axis median of its locked frames' centres (world), the
+    /// ARKit session (one world) it ran in, and when (uptime, s).
+    struct SlabPlace {
+        var shotId: String
+        var session: String
+        var start: Double
+        var end: Double
+        var pose: SlabPose
+    }
+
+    /// The false-slab metrics of a slab-forbidden shot's frames (or of such shots' frames pooled): the share of frames
+    /// confirming or locked on anything but the real slab, the share locked on it, and the share found on the real slab
+    /// (left in view, `markRealSlab`: not a false slab).
+    static func falseSlabMetrics(_ res: [FrameResult]) -> [KitMetric] {
+        let n = Double(max(1, res.count))
+        let found = res.filter { $0.state != .searching }, wrong = found.filter { !$0.onRealSlab }
+        return [KitMetric(id: "slabFoundRate", value: Double(wrong.count) / n, count: res.count),
+                KitMetric(id: "slabLockedRate", value: Double(wrong.filter { $0.state == .locked }.count) / n, count: res.count),
+                KitMetric(id: "slabInViewRate", value: Double(found.count - wrong.count) / n, count: res.count)]
+    }
+
+    /// The slab shots' places (`SlabPlace`): every video shot that may show the slab and locked it.
+    func slabPlaces(_ frames: [String: [FrameResult]]) -> [SlabPlace] {
+        shots.compactMap { sh -> SlabPlace? in
+            guard sh.spec.isVideo, sh.spec.expect.slab != .forbidden, let a = sh.manifest?.arSessionId,
+                  let start = sh.frames.first?.time, let end = sh.frames.last?.time else { return nil }
+            let poses = (frames[sh.spec.id] ?? []).compactMap { $0.corners.flatMap { SlabPose.fromCorners($0) } }
+            guard !poses.isEmpty else { return nil }
+            let m = Vec3(KitStats.median(poses.map { $0.center.x }), KitStats.median(poses.map { $0.center.y }),
+                         KitStats.median(poses.map { $0.center.z }))
+            guard let p = poses.min(by: { $0.center.distance(to: m) < $1.center.distance(to: m) }) else { return nil }
+            return SlabPlace(shotId: sh.spec.id, session: a, start: start, end: end, pose: p)
+        }
+    }
+
+    /// Where the slab was around a shot: the places of the slab shots of the same ARKit session that ran last before it
+    /// and first after it (the slab may have been moved further off in time).
+    func neighbours(of sh: Shot, in all: [SlabPlace]) -> [SlabPlace] {
+        guard let a = sh.manifest?.arSessionId, let start = sh.frames.first?.time, let end = sh.frames.last?.time else { return [] }
+        let same = all.filter { $0.session == a && $0.shotId != sh.spec.id }
+        let before = same.filter { $0.end <= start }.max { $0.end < $1.end }
+        let after = same.filter { $0.start >= end }.min { $0.start < $1.start }
+        return [before, after].compactMap { $0 }
+    }
+
+    /// How far from the top's plane a find on the real slab may lie (m): half the 52 mm the owner's top stands above
+    /// the floor when level, so a find on the floor beside or under the slab fails by a wide margin, and twice the
+    /// largest offset measured for the real slab's locks in both of the owner's first kits (12 mm; their centres lay
+    /// 6-17 mm from the slab shots' locks). Not the slab's thickness: that is what the owner enters (0.2-4 in), and it
+    /// has nothing to do with how far off a lock may be.
+    static let realSlabHeightTolerance = 0.026
+
+    /// The ball finder's n/a reason for a slab-forbidden shot that never locked (`scoreShot`); `markRealSlab` words it
+    /// again when the shot found the real slab, left in view.
+    static let noLockSlabForbidden = "the app looks for the ball only on a lock, and the slab is not in view"
+
+    /// A shot that should not show the slab can still show it: in both of the owner's first kits the ball lay on the floor
+    /// a few inches from the slab in the ball shots (s07), and a slab carried away can stay at the picture's edge. A find
+    /// there is not a false slab when it lies on the real slab's top, as the slab shots of the same ARKit session just
+    /// before and just after it locked it (`neighbours`). A locked frame is judged by its lock's centre (in 3-D), any
+    /// other frame with a detection by the ray through that outline's middle cast onto the top (by its line of sight only:
+    /// what that pixel shows, not how far away the candidate is), and a confirming frame without one keeps the previous
+    /// frame's answer (the candidate it confirms is the same). On the top means inside its outline, in its plane, and
+    /// within `realSlabHeightTolerance` of that plane: a lock on the floor (the owner's top stands 52 mm above it) or
+    /// anywhere else does not pass, nor does a lock in a world ARKit has since moved (a relocalised session: it matches
+    /// neither neighbour, so it stays false). A lock the tracker keeps after the slab has left the picture is still on the
+    /// real slab, and the note says so. The forbidden shots' false-slab metrics are then worked out again, with a note
+    /// for each shot that found the real slab, and for each shot with finds that could not be checked (no slab shot of
+    /// its session locked: they stay false). A ball shot's searches over the real slab are taken out of its
+    /// ballDetectionRate (the app looks for a ball only over the slab's top, not one on the floor beside it).
+    func markRealSlab(_ scores: inout [KitShotScore], frames: inout [String: [FrameResult]]) {
+        let all = slabPlaces(frames), tolerance = KitScoreRun.realSlabHeightTolerance
+        func onTop(_ p: Vec3, _ s: SlabPose) -> Bool {
+            let (u, v) = s.local(p)
+            return abs(u) <= s.halfU && abs(v) <= s.halfV && abs(s.height(of: p)) <= tolerance
+        }
+        for i in scores.indices where scores[i].metric("slabFoundRate") != nil {
+            let id = scores[i].shotId
+            guard let sh = shot(id), var res = frames[id], !res.isEmpty else { continue }
+            let near = neighbours(of: sh, in: all)
+            guard !near.isEmpty else {
+                let found = res.filter { $0.state != .searching }.count
+                if found > 0 {
+                    notes.append("\(id): not checked for the real slab left in view (no slab shot of its ARKit session was scored "
+                                 + "and locked just before or after it): its finds (\(found) of \(res.count) frames) count as a false slab.")
+                }
+                continue
+            }
+            var last = false, lastPicture = true, seen: Set<String> = [], gaps: [Double] = [], shown = 0
+            for k in res.indices {
+                guard res[k].state != .searching else { last = false; continue }
+                var on: Bool? = nil
+                if let c = res[k].corners, c.count == 4 {
+                    let m = (c[0] + c[1] + c[2] + c[3]) / 4
+                    let hit = near.first { onTop(m, $0.pose) }
+                    if let p = hit { seen.insert(p.shotId); gaps.append(m.distance(to: p.pose.center)) }
+                    on = hit != nil
+                } else if let ray = res[k].findRay {
+                    let hit = near.first { p in
+                        Plane3(point: p.pose.center, normal: p.pose.normal).intersect(origin: ray.origin, direction: ray.direction)
+                            .map { onTop($0, p.pose) } ?? false
+                    }
+                    if let p = hit { seen.insert(p.shotId) }
+                    on = hit != nil
+                }
+                res[k].onRealSlab = on ?? last
+                last = res[k].onRealSlab
+                lastPicture = res[k].inPicture ?? lastPicture
+                if res[k].onRealSlab && lastPicture { shown += 1 }
+            }
+            frames[id] = res
+            let revised = KitScoreRun.falseSlabMetrics(res)
+            scores[i].metrics = scores[i].metrics.map { m in revised.first { $0.id == m.id } ?? m }
+            let k = res.filter { $0.onRealSlab }.count
+            guard k > 0 else { continue }
+            var s = shown == k ? "\(id): the slab was in view: \(k) of \(res.count) frames found it on the real slab, where "
+                               : "\(id): \(k) of \(res.count) frames found the real slab (in the picture on \(shown); on the rest the app "
+                                 + "kept its lock after the slab left the picture), where "
+            s += seen.sorted().joined(separator: " and ") + " locked it"
+            if !gaps.isEmpty { s += String(format: " (the lock %.0f mm from there)", KitStats.median(gaps) * 1000) }
+            notes.append(s + "; they are not counted as a false slab.")
+
+            // the ball finder over the real slab, left in view
+            if !res.contains(where: { $0.state == .locked }) {
+                for j in scores[i].metrics.indices where scores[i].metrics[j].value == nil && scores[i].metrics[j].note == KitScoreRun.noLockSlabForbidden {
+                    scores[i].metrics[j] = .na(scores[i].metrics[j].id, "the app looks for the ball only on a lock, and it never locked here "
+                                               + "(it was confirming the real slab, left in view, on \(k) frames)")
+                }
+            }
+            if sh.spec.expect.ball == .required, let j = scores[i].metrics.firstIndex(where: { $0.id == "ballDetectionRate" }),
+               scores[i].metrics[j].value != nil {
+                let searched = res.filter { $0.ballSearched }, rest = searched.filter { !$0.onRealSlab }
+                if rest.count < searched.count {
+                    let above = appBallMinHeight.map { $0 > 0.01 ? String(format: " (%.0f cm or more above it)", $0 * 100) : "" } ?? ""
+                    scores[i].metrics[j] = rest.isEmpty
+                        ? .na("ballDetectionRate", "the slab was in view and the app locked it: it looks for a ball only over the slab's top"
+                              + above + ", not one on the floor beside it")
+                        : KitMetric(id: "ballDetectionRate", value: Double(rest.filter { $0.ballFound }.count) / Double(rest.count), count: rest.count)
+                }
+            }
+        }
     }
 }
