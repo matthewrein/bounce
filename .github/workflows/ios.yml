@@ -242,8 +242,9 @@ jobs:
       # The app's demo (a synthetic slab, as ARKit has no camera in the Simulator) driven by XCUITest: it must lock,
       # show the right tilt / apex / drop, re-lock after the slab is slid, copy diagnostics, record and share.
       - name: End-to-end UI tests in the Simulator (demo scene)
-        # Blocking: a failing end-to-end test fails the run. A test that fails is run once more (a slow shared
-        # Simulator can miss a time limit); its first failure still shows in the log and the summary below.
+        # Blocking: a failing end-to-end test fails the run, unless it is listed in ios/BounceAppUITests/known-flaky.txt
+        # (then a warning). A test that fails is run once more (a slow shared Simulator can miss a time limit); its
+        # first failure still shows in the log and the summary below.
         # (about 22 minutes on a typical runner; a slow shared one has taken over 30, so the limit leaves room)
         if: matrix.xcode == 'default'
         timeout-minutes: 50
@@ -263,6 +264,26 @@ jobs:
             echo
             grep -E "Test Case '.*' (passed|failed)" e2e.log | sed 's/^/    /'
           } >> "$GITHUB_STEP_SUMMARY"
+          # A failing test listed in ios/BounceAppUITests/known-flaky.txt does not hold the build (the owner's rule: a flaky
+          # Simulator test must not hold a phone build when the build and core-test jobs pass); it shows as a warning and
+          # in the summary. Anything else (another failing test, a crash, a build error) still fails the job.
+          blocking=$status
+          if [ $status -ne 0 ] && grep -q '\*\* TEST FAILED \*\*' e2e.log \
+             && ! grep -q 'Restarting after unexpected exit, crash, or test timeout' e2e.log; then
+            # xcodebuild's own list of the tests that failed every try: "<tab>SlabBounceUITests.testPreflight()"
+            failed=$(sed -n '/^Failing tests:/,/^$/p' e2e.log | grep -oE '[.]test[A-Za-z0-9_]+[(]' | tr -d '.(' | sort -u)
+            listed=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' ios/BounceAppUITests/known-flaky.txt | grep -v '^$')
+            unlisted=""
+            # a listed test whose failure mentions a crash still blocks: that is the app, not the test
+            for t in $failed; do
+              if ! echo "$listed" | grep -qx "$t" || grep -E "error: .*[ .]$t[]( ]" e2e.log | grep -qi crash; then unlisted="$unlisted $t"; fi
+            done
+            if [ -n "$failed" ] && [ -z "$unlisted" ]; then
+              blocking=0
+              for t in $failed; do echo "::warning title=Known flaky UI test::$t failed; it is listed in ios/BounceAppUITests/known-flaky.txt, so the build is not held"; done
+              { echo; echo "**Not holding the build:** $(echo $failed) failed, listed as known flaky (ios/BounceAppUITests/known-flaky.txt); the test is to be fixed."; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
           if [ $status -ne 0 ]; then
             # the steps of each failed test's last try (what it queried, tapped and waited for), up to its failure
             for t in $(grep -E "Test Case '.*' failed" e2e.log | sed -E "s/.* (test[A-Za-z0-9_]+)\]' failed.*/\1/" | sort -u); do
@@ -273,7 +294,7 @@ jobs:
             done
             echo "--- last lines of the test log ---"; tail -80 e2e.log
           fi
-          exit $status
+          exit $blocking
 
       # testCaptureKitFlow made a bundle with the app's own code (KitBundle with Apple's DEFLATE): its parts go to the
       # app-bundle-linux job, which puts them through the hand-off. A synthetic demo kit, but never committed all the same.
