@@ -32,8 +32,9 @@ final class DemoSlabCropTests: XCTestCase {
         var runs = [Run(), Run()]
         var t = 0.0
         while t < seconds {
-            // the app's demo renders the app's slab (ARController: `script.scene(at:spec: AppSettings.slab)`)
-            let view = d.view(at: t), scene = d.scene(at: t, spec: settings.spec)
+            // the app's demo renders the app's slab and ball (ARController: `script.scene(at:spec:ball:)` with
+            // `AppSettings.slab`, `.ball`)
+            let view = d.view(at: t), scene = d.scene(at: t, spec: settings.spec, ball: settings.ball)
             let K = view.intrinsics
             let img = SyntheticScene.ycc(rgb: scene.renderRGB(view: view), width: K.width, height: K.height)
             let truth = Units.degrees(scene.slab.tilt(down: Vec3(0, -1, 0)))
@@ -63,7 +64,7 @@ final class DemoSlabCropTests: XCTestCase {
                     runs[i].lockedFrames += 1
                     if r.dropFromBall {
                         runs[i].ballFrames += 1
-                        let dt = Bounce.compute(pose: scene.slab, spec: .standard, ball: BallSpec(), down: Vec3(0, -1, 0), ballCenter: scene.ball,
+                        let dt = Bounce.compute(pose: scene.slab, spec: settings.spec, ball: settings.ball, down: Vec3(0, -1, 0), ballCenter: scene.ball,
                                                 defaultDropHeight: 0.9144).drop?.dropHeight ?? .nan
                         runs[i].dropErrors.append(abs(r.dropHeight - dt))
                     }

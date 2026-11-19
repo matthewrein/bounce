@@ -530,6 +530,26 @@ final class RecordingFormatTests: XCTestCase {
         // a tracker's settings with the profile keep it (`SlabSpec`'s own coding)
         let t = try JSONDecoder().decode(TrackerSettings.self, from: JSONEncoder().encode(s.trackerSettings))
         XCTAssertEqual(t.spec, SlabSpec.ownerSlab)
+        // the owner's slab and ball, one constant each: the kit's 180.2 mm flat top, 1 in, 1/8 in dish; the 30 mm ball
+        XCTAssertEqual(SlabSpec.ownerSlab.sideU, 0.1802, accuracy: 1e-12)
+        XCTAssertEqual(SlabSpec.ownerSlab.sideV, 0.1802, accuracy: 1e-12)
+        XCTAssertEqual(SlabSpec.ownerSlab.thickness, 0.0254, accuracy: 1e-12)
+        XCTAssertEqual(SlabSpec.ownerSlab.dishDepth, 0.003175, accuracy: 1e-12)
+        XCTAssertEqual(s.ball, BallSpec.ownerBall)
+        XCTAssertEqual(s.ball.diameter, 0.030, accuracy: 1e-12)
+        XCTAssertEqual(s.trackerSettings.ball, BallSpec.ownerBall)
+        XCTAssertEqual(KitMeasurements(settings: s).recordingSettings().slab, SlabSpec.ownerSlab)
+        // tests and old recordings keep the first assumptions
+        XCTAssertEqual(BallSpec().diameter, 0.035)
+        XCTAssertEqual(TrackerSettings().ball, BallSpec())
+        XCTAssertEqual(TrackerSettings().spec, SlabSpec.standard)
+        // a detection's one-edge shifts are written only when there are any, so a detection without them writes what it did
+        let plain = DetectedOutline(quad: [Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)], sideSigmas: [0.3, 0.3, 0.3, 0.3])
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(plain), as: UTF8.self).contains("sideShifts"))
+        var shifted = plain
+        shifted.sideShifts = [0, 2.5, 0, -1]
+        XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(shifted)).sideShifts, [0, 2.5, 0, -1])
+        XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(plain)).sideShifts, [])
     }
 
     /// A diagnostics file from the phone written before the profile existed (BOUNCE_DIAGNOSTICS: a path, e.g. the owner's

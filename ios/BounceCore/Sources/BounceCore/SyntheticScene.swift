@@ -321,6 +321,11 @@ public struct DemoScript: Equatable {
     public var slideAt: Double = 8
     public var distance: Double = 0.85
     public var elevation: Double = 48
+    /// move the camera to this elevation (degrees) over `elevationRamp` seconds from `elevationAt` (nil: never): a phone
+    /// held steeply over the slab, then lowered
+    public var elevationTo: Double? = nil
+    public var elevationAt: Double = 5
+    public var elevationRamp: Double = 1.5
     public var width = 360
     public var height = 480
     public var verticalFov = 62.0
@@ -330,7 +335,8 @@ public struct DemoScript: Equatable {
 
     public func tiltAt(_ t: Double) -> Double { (slideTo != nil && t >= slideAt) ? slideTo! : tilt }
 
-    public func scene(at t: Double, spec: SlabSpec = .standard) -> SyntheticScene {
+    /// The scene at time t, with this slab and ball (the app's demo renders the app's own: `AppSettings.slab`, `.ball`).
+    public func scene(at t: Double, spec: SlabSpec = .standard, ball: BallSpec = BallSpec()) -> SyntheticScene {
         let tilt = tiltAt(t)
         // sliding the slab in its cradle moves its centre: about 0.27 in per degree (owner's numbers: 3 in for 10 deg)
         let shift = Units.inches(0.27 * tilt)
@@ -338,12 +344,20 @@ public struct DemoScript: Equatable {
         let pose = SyntheticScene.slabPose(x: -shift * cos(hd), z: -shift * sin(hd), tilt: tilt, heading: heading, spec: spec)
         var s = SyntheticScene(spec: spec, slab: pose)
         s.supersample = 1
+        s.ballRadius = ball.radius
         if ballHeight > 0 { s.ball = pose.center + Vec3(0.012, ballHeight, -0.01) }
         return s
     }
 
+    /// the camera's mean elevation at time t (degrees)
+    public func meanElevation(at t: Double) -> Double {
+        guard let to = elevationTo else { return elevation }
+        let f = clamp((t - elevationAt) / max(elevationRamp, 1e-6), 0, 1)
+        return elevation + (to - elevation) * f
+    }
+
     public func view(at t: Double) -> CameraView {
-        let az = Units.radians(20 * sin(t * 2 * .pi / 14)), el = Units.radians(elevation + 4 * sin(t * 2 * .pi / 9))
+        let az = Units.radians(20 * sin(t * 2 * .pi / 14)), el = Units.radians(meanElevation(at: t) + 4 * sin(t * 2 * .pi / 9))
         let pos = Vec3(sin(az) * cos(el), sin(el), cos(az) * cos(el)) * distance + Vec3(0.01 * sin(t * 3.1), 0.008 * sin(t * 2.3), 0)
         return SyntheticScene.camera(at: pos, lookingAt: Vec3(0, 0.05, 0), intrinsics: intrinsics, roll: 1.5 * sin(t * 0.7))
     }

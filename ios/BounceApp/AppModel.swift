@@ -12,12 +12,12 @@ let appBuild = "n11"
 struct AppSettings: Equatable {
     // MARK: baked in (the one place the app's slab, ball and detector set-up come from)
 
-    /// The slab: about 7 in square, 1 in thick, with a 1/8 in dish and its sloped, rounded sides (BounceCore's
-    /// `SlabSpec.ownerSlab`, the same as `RecordingSettings()`'s, so the kit scorer and replays run what the app runs).
-    /// The slab finder is tuned for it.
+    /// The slab: a 180.2 mm (7.09 in) square flat top, 1 in thick, with a 1/8 in dish and its sloped, rounded sides
+    /// (BounceCore's `SlabSpec.ownerSlab`, the same as `RecordingSettings()`'s, so the kit scorer and replays run what the
+    /// app runs; its constants are the one place to change it). The slab finder is tuned for it.
     static let slab = SlabSpec.ownerSlab
-    /// The ball: 35 mm titanium (BounceCore's `BallSpec()`; its rebound is replaced by the user's setting).
-    static let ball = BallSpec()
+    /// The ball: 30 mm titanium (BounceCore's `BallSpec.ownerBall`; its rebound is replaced by the user's setting).
+    static let ball = BallSpec.ownerBall
     // The detectors' tuning is BounceCore's (`AppDetectors`, `Detectors.swift`), and the tracker's settings are built from
     // these values by `RecordingSettings.trackerSettings` (see `tracker`), as a replay of a recording builds them.
 
@@ -53,15 +53,14 @@ struct AppSettings: Equatable {
 
     static func clamped(_ x: Double, _ r: ClosedRange<Double>) -> Double { min(max(x, r.lowerBound), r.upperBound) }
 
-    /// The settings in a recording's and the diagnostics' terms (the baked slab and ball in the owner's units).
+    /// The settings in a recording's and the diagnostics' terms: BounceCore's defaults (`RecordingSettings()`: the baked
+    /// slab and ball, `slab` and `ball` above, in the owner's units) with the user's drop height and rebound.
     var recording: RecordingSettings {
-        let s = AppSettings.slab
-        return RecordingSettings(sideUInches: Units.toInches(s.sideU), sideVInches: Units.toInches(s.sideV),
-                                 thicknessInches: Units.toInches(s.thickness), dishInches: Units.toInches(s.dishDepth),
-                                 ballDiameterMm: AppSettings.ball.diameter * 1000, dropHeightFeet: dropFeet,
-                                 reboundPercent: reboundPercent, dishBounce: dishNormal,
-                                 faceDropInches: Units.toInches(s.faceDrop), sideRunInches: Units.toInches(s.sideRun),
-                                 edgeRadiusInches: Units.toInches(s.edgeRadius), nearFeatureDegrees: Units.degrees(s.nearFeatureAngle))
+        var r = RecordingSettings()
+        r.dropHeightFeet = dropFeet
+        r.reboundPercent = reboundPercent
+        r.dishBounce = dishNormal
+        return r
     }
 
     /// The tracker's settings, built exactly as a replay of a recording builds them (`RecordingSettings.trackerSettings`).
@@ -171,6 +170,7 @@ final class AppModel: ObservableObject {
 
     /// The demo scene runs instead of the camera when turned on in Settings > Developer, or by launch arguments (UI tests):
     /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3] [-demoSlideTo 3 -demoSlideAt 8]
+    /// [-demoElevation 72 -demoElevationTo 48 -demoElevationAt 8] (the camera held steeply, then lowered)
     nonisolated static func demoScriptRequested(_ d: UserDefaults = .standard) -> Bool { d.bool(forKey: AppSettings.keys.demo) }
 
     nonisolated static func demoScript(_ d: UserDefaults = .standard) -> DemoScript? {
@@ -182,6 +182,9 @@ final class AppModel: ObservableObject {
         if let x = num("demoBall") { s.ballHeight = x }
         if let x = num("demoSlideTo") { s.slideTo = x }
         if let x = num("demoSlideAt") { s.slideAt = x }
+        if let x = num("demoElevation") { s.elevation = x }
+        if let x = num("demoElevationTo") { s.elevationTo = x }
+        if let x = num("demoElevationAt") { s.elevationAt = x }
         return s
     }
 

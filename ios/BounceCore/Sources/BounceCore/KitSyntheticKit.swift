@@ -3,7 +3,8 @@ import Foundation
 /// A complete capture kit with known truth, rendered with `SyntheticScene`, for scoring the scorer itself and for CI
 /// (CaptureKit.md, "Scoring"). Every shot of the standard plan is made as the app would make it, through `KitStore`
 /// (kit.json, shot.json, frames.jsonl, motion.jsonl):
-///   - measurements: the true slab (7 x 7 in, 1 in thick, 1/8 in dish) and ball (35 mm), entered;
+///   - the slab and ball are the app's (`SlabSpec.ownerSlab`, `BallSpec.ownerBall`: a 180.2 mm flat top, 1 in thick, 1/8 in
+///     dish, sloped sides; a 30 mm ball), so the scorer scores what ships; measurements: those, entered;
 ///   - slab positions level, 5° and 10° (15° for the optional third tilt, skipped unless asked), the slab sliding in
 ///     its cradle; each starts with a flat-phone shot: a CoreMotion stream of the phone laid on the slab (on a camera
 ///     bump), turned around and laid down again, run through `KitFlatSession` as on the phone;
@@ -151,7 +152,7 @@ public final class KitSyntheticKit {
     /// The slab of a plan position, sliding in its cradle (about 0.27 in per degree, as `DemoScript`).
     func slab(tilt: Double) -> SlabPose {
         let shift = Units.inches(0.27 * tilt), hd = Units.radians(options.heading)
-        return SyntheticScene.slabPose(x: -shift * cos(hd), z: -shift * sin(hd), tilt: tilt, heading: options.heading)
+        return SyntheticScene.slabPose(x: -shift * cos(hd), z: -shift * sin(hd), tilt: tilt, heading: options.heading, spec: KitSyntheticKit.spec)
     }
 
     func make() throws {
@@ -164,8 +165,7 @@ public final class KitSyntheticKit {
             let date = KitSyntheticKit.date.addingTimeInterval(clock - 5000)
             if s.isForm {
                 if included(s) {
-                    try store.commitMeasurements(KitMeasurements(slabWidthInches: 7, slabDepthInches: 7, slabThicknessInches: 1, dishInches: 0.125,
-                                                                 ballDiameterMm: 35), date: date)
+                    try store.commitMeasurements(KitSyntheticKit.trueMeasurements, date: date)
                 } else { try store.skipShot(s.id, date: date) }
                 continue
             }
@@ -276,8 +276,8 @@ public final class KitSyntheticKit {
         var tr = ShotTruth(shotId: s.id, kind: k, slab: slab, tiltDegrees: tilt)
         let n = max(2, options.framesPerShot), fps = options.fps
         var times = (0..<n).map { Double($0) / fps }
-        let R = BallSpec().radius, up = Vec3(0, 1, 0)
-        let spec = SlabSpec.ownerSlab
+        let R = KitSyntheticKit.ball.radius, up = Vec3(0, 1, 0)
+        let spec = KitSyntheticKit.spec
         let az0 = 15 + Double((number * 37) % 40)
         let ballKinds: [ShotTruth.Kind] = [.ballFloor, .ballOnSlab, .held, .drop]
         let withBall = ballKinds.contains(k)
@@ -312,7 +312,7 @@ public final class KitSyntheticKit {
         case .held:
             let h = Units.inches(s.nominalHeightInches ?? 12)
             let b = slab.center - slab.normal * spec.dishDepth + up * (R + h)
-            tr.heldHeight = Bounce.drop(ballCenter: b, pose: slab, spec: spec, ball: BallSpec(), down: ARKitConvention.worldDown)?.dropHeight
+            tr.heldHeight = Bounce.drop(ballCenter: b, pose: slab, spec: spec, ball: KitSyntheticKit.ball, down: ARKitConvention.worldDown)?.dropHeight
             ball = { t in b + Vec3(sin(t * 3.1), sin(t * 2.3), sin(t * 2.7)) * 0.0015 }
             let aim = slab.center + up * (h * 0.4)
             path = { t in self.orbit(aim, distance: 1.0 + h * 0.25, azimuth: az0, elevation: 40, t: t, K: K) }
@@ -398,7 +398,7 @@ public final class KitSyntheticKit {
     /// plane's normal with the app's rebound model, then bouncing on the floor (or the slab) with half its vertical speed.
     func dropTruth(slab: SlabPose, u: Double, v: Double, height h: Double, cue: Double)
         throws -> (truth: DropTruth, position: (Double) -> Vec3, end: Double) {
-        let spec = SlabSpec.ownerSlab, ballSpec = BallSpec(diameter: 0.035, rebound: options.rebound), R = ballSpec.radius
+        let spec = KitSyntheticKit.spec, ballSpec = BallSpec(diameter: KitSyntheticKit.ball.diameter, rebound: options.rebound), R = ballSpec.radius
         let down = ARKitConvention.worldDown, up = -down, G = Units.gravity, g = down * G
         let surface = slab.point(u: u, v: v) - slab.normal * Dish.at(pose: slab, depth: spec.dishDepth, u: u, v: v).depth
         let held = surface + up * (R + h)
@@ -451,9 +451,18 @@ public final class KitSyntheticKit {
 
     // MARK: rendering
 
+    /// What the synthetic kits render: the app's own slab and ball (`RecordingSettings()`'s), so the scorer scores what
+    /// ships, and the measurements an owner would enter for them.
+    public static let spec = SlabSpec.ownerSlab
+    public static let ball = BallSpec.ownerBall
+    public static let trueMeasurements = KitMeasurements(slabWidthInches: SlabSpec.ownerFlatTopInches, slabDepthInches: SlabSpec.ownerFlatTopInches,
+                                                         slabThicknessInches: SlabSpec.ownerThicknessInches, dishInches: SlabSpec.ownerDishInches,
+                                                         ballDiameterMm: BallSpec.ownerDiameterMm)
+
     func scene(_ tr: ShotTruth, frame i: Int) -> SyntheticScene {
-        var sc = SyntheticScene(spec: .ownerSlab, slab: tr.slab, ball: i < tr.balls.count ? tr.balls[i] : nil)
+        var sc = SyntheticScene(spec: KitSyntheticKit.spec, slab: tr.slab, ball: i < tr.balls.count ? tr.balls[i] : nil)
         sc.supersample = 1
+        sc.ballRadius = KitSyntheticKit.ball.radius
         return sc
     }
 
@@ -510,7 +519,7 @@ public final class KitTruthBallLocator: BallLocating, KitFrameAware {
     let truth: [String: KitSyntheticKit.ShotTruth]
     var current: (shot: String, frame: Int, view: CameraView)?
     /// the ball's radius (m)
-    public var radius = BallSpec().radius
+    public var radius = KitSyntheticKit.ball.radius
 
     public init(kit: KitSyntheticKit) { truth = kit.truth }
     public init(truth: [String: KitSyntheticKit.ShotTruth]) { self.truth = truth }

@@ -604,7 +604,7 @@ final class ARController: NSObject, ARSessionDelegate {
         // rendering); ticks the timer dropped while a frame took longer than its interval are not counted as camera gaps
         // (`countsCameraGaps` is off in the demo)
         guard demoPacer.frameArrived(captureTime: t, now: t, nominalInterval: ARController.demoFrameInterval) == .process else { return }
-        let scene = script.scene(at: t, spec: AppSettings.slab), view = script.view(at: t)
+        let scene = script.scene(at: t, spec: AppSettings.slab, ball: AppSettings.ball), view = script.view(at: t)
         let K = view.intrinsics
         let rgb = scene.renderRGB(view: view)
         let img = SyntheticScene.ycc(rgb: rgb, width: K.width, height: K.height)

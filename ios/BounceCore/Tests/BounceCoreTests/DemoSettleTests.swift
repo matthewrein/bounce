@@ -14,6 +14,8 @@ final class DemoSettleTests: XCTestCase {
         var sigmaAtSettle: Double?
         var unsettledAfterSettle = 0
         var viewGroups = 0
+        /// per frame: time, locked, settled, honest sigma
+        var frames: [(t: Double, locked: Bool, settled: Bool, sigma: Double?)] = []
     }
 
     func run(_ d: DemoScript, seconds: Double) -> Run {
@@ -23,7 +25,8 @@ final class DemoSettleTests: XCTestCase {
         var r = Run()
         var t = 0.0
         while t < seconds {
-            let view = d.view(at: t), scene = d.scene(at: t)
+            // the app's demo renders the app's slab and ball (ARController.demoTick)
+            let view = d.view(at: t), scene = d.scene(at: t, spec: settings.spec, ball: settings.ball)
             let K = view.intrinsics
             let img = SyntheticScene.ycc(rgb: scene.renderRGB(view: view), width: K.width, height: K.height)
             let truth = Units.degrees(scene.slab.tilt(down: Vec3(0, -1, 0)))
@@ -47,6 +50,7 @@ final class DemoSettleTests: XCTestCase {
                 r.unsettledAfterSettle += 1
             }
             r.viewGroups = max(r.viewGroups, out.viewGroups)
+            r.frames.append((t, out.state == .locked, out.angleSettled, out.tiltSigmaDegrees))
             t += 0.08
         }
         return r
@@ -61,11 +65,34 @@ final class DemoSettleTests: XCTestCase {
                      errs.isEmpty ? -1 : errs[errs.count / 2], errs.last ?? -1, r.unsettledAfterSettle, r.viewGroups))
         XCTAssertNotNil(r.lockedAt)
         XCTAssertNotNil(r.settledAt)
-        // the UI tests wait for the tilt to show (it settles once the re-checks have measured the detector's corner noise:
-        // `SlabTracker.cornerNoiseEstimate` needs 8 re-checks, 0.3 s apart)
-        XCTAssertLessThanOrEqual((r.settledAt ?? 99) - (r.lockedAt ?? 0), 3.5)
-        // "settling" shows for a moment first (the new UI test looks for it)
-        XCTAssertGreaterThanOrEqual((r.settledAt ?? 0) - (r.lockedAt ?? 0), 0.3)
+        // the demo's view (48 deg elevation, 0.85 m): the detector's own side noise puts one view's honest sigma under
+        // 1 deg, so the tilt shows within a second of the lock (the lock's own detections count as refreshes)
+        XCTAssertLessThanOrEqual((r.settledAt ?? 99) - (r.lockedAt ?? 0), 1.0)
+        XCTAssertEqual(r.unsettledAfterSettle, 0)
+        XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.5)
+        XCTAssertLessThan(errs.last ?? 99, 1.0)
+    }
+
+    /// The demo held steeply over the slab (72 deg elevation at 0.85 m: one view's honest sigma 1.7-4 deg, as the
+    /// sigma table predicts for that view) locks but reads "settling" for as long as it stays there (measured: no
+    /// settled frame in 7 s; at 68 deg it settled after 6 s, at 76-80 deg never); lowered to the demo's usual 48 deg, it
+    /// shows the tilt within about a second (what SlabBounceUITests.testSettlingThenTheTilt does in the Simulator).
+    func testASteepViewSettlesOnceTheCameraIsLowered() {
+        var d = DemoScript(); d.elevation = 72; d.elevationTo = 48; d.elevationAt = 5; d.elevationRamp = 1.5
+        let r = run(d, seconds: 10)
+        let lowered = d.elevationAt + d.elevationRamp
+        let steep = r.frames.filter { $0.t < d.elevationAt }
+        let steepSigma = steep.compactMap { $0.locked ? $0.sigma : nil }
+        let errs = r.settledErrors.sorted()
+        print(String(format: "DEMO steep then lowered: locked %.2f s, steep sigma min %.2f, settled %.2f s (%.2f s after the camera reached 48 deg), "
+                     + "settled tilt error median %.2f worst %.2f, up to %d view groups",
+                     r.lockedAt ?? -1, steepSigma.min() ?? -1, r.settledAt ?? -1, (r.settledAt ?? -1) - lowered,
+                     errs.isEmpty ? -1 : errs[errs.count / 2], errs.last ?? -1, r.viewGroups))
+        XCTAssertLessThan(r.lockedAt ?? 99, d.elevationAt, "locks while steep")
+        XCTAssertTrue(steep.allSatisfy { !$0.settled }, "settling while steep")
+        XCTAssertGreaterThan(steepSigma.min() ?? 0, 1.0)
+        XCTAssertNotNil(r.settledAt)
+        XCTAssertLessThanOrEqual((r.settledAt ?? 99) - lowered, 1.5)
         XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.5)
         XCTAssertLessThan(errs.last ?? 99, 1.0)
     }

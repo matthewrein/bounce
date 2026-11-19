@@ -34,6 +34,9 @@ final class LidarFusionTests: XCTestCase {
 
         var app = RecordingSettings().trackerSettings
         app.recheckInterval = 0.1
+        // the World's slab (the test is about LiDAR's weights; with the app's own slab size the picture's range would be
+        // off by the two sizes' ratio)
+        app.spec = .standard
         XCTAssertEqual(app.depthNormalWeight, 0)
         XCTAssertEqual(app.depthCentreWeight, 0.5)
         let a = run(app)

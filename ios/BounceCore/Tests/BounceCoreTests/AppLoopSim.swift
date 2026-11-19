@@ -203,14 +203,16 @@ struct AppLoopSim {
     /// Run the session and record it into `folder`. `dropPixels`: frames (line indices) whose image and ball image are
     /// left out (as when the phone's disk falls behind).
     func run(recordingTo folder: URL, dropPixels: Set<Int> = []) throws -> Run {
-        var settings = RecordingSettings(dishBounce: false).trackerSettings
+        // the app's settings on the World's slab and ball (7 in square, `BallSpec()`'s 35 mm), as the session records them
+        let appSettings = RecordingSettings(sideUInches: 7, sideVInches: 7, ballDiameterMm: 35, dishBounce: false)
+        var settings = appSettings.trackerSettings
         settings.spec = .standard
         let det = CornerCodeDetector(), loc = DiscBallLocator()
         let ballLoc: BallLocating = ballLocator ?? loc
         var tracker = SlabTracker(settings: settings, detector: makeDetector?() ?? det, ballLocator: ballLoc)
         let pK = processing
         let session = RecordingSession(build: "sim", device: "sim", frameWidth: pK.width, frameHeight: pK.height,
-                                       settings: RecordingSettings(dishBounce: false), tracker: version1 ? nil : tracker.settings,
+                                       settings: appSettings, tracker: version1 ? nil : tracker.settings,
                                        everyFrame: version1 ? nil : true, trackerStateAtStart: version1 ? nil : tracker.state)
         let writer = try RecordingWriter(folder: folder, session: session)
         var cadence = RecordingCadence(imageInterval: 0.2, ballPixels: ballPixels)

@@ -2,12 +2,21 @@ import Foundation
 
 /// The ball and how it bounces.
 public struct BallSpec: Equatable, Codable {
-    /// diameter (metres); the owner's ball is 35 mm
+    /// diameter (metres); the default (35 mm) is the size first assumed, which tests and old recordings keep; the owner's
+    /// ball is `ownerBall`
     public var diameter: Double
     /// rebound: the share of the drop height the ball would regain bouncing straight up (0.70 = 70%)
     public var rebound: Double
     public init(diameter: Double = 0.035, rebound: Double = 0.70) { self.diameter = diameter; self.rebound = rebound }
     public var radius: Double { diameter / 2 }
+
+    /// The owner's ball, as the app runs it (`AppSettings.ball`, `RecordingSettings()`, the synthetic kits): 30 mm, the
+    /// owner's word ("I used a 30mm ball"), and measured on the owner's first kit as 30.1 ± 0.6 mm (its outline fitted
+    /// as a cone from the camera on the floor at 3 ft and at 5 ft: 30.10 and 30.12 mm). The app had assumed 35 mm (16%
+    /// too big, which put the held ball 16% too far away and its drop height off by centimetres).
+    public static let ownerBall = BallSpec(diameter: ownerDiameterMm / 1000)
+    /// the owner's ball's diameter (mm): change it here
+    public static let ownerDiameterMm = 30.0
 }
 
 /// Where a ball held above the slab would land if let go, and from how high.

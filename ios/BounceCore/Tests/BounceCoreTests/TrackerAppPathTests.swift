@@ -38,7 +38,9 @@ final class TrackerAppPathTests: XCTestCase {
     let blank = ColorFrame(gray: Plane(width: 2, height: 2))
     let image = ColorFrame(gray: Plane(width: 16, height: 12))
 
-    func appSettings() -> TrackerSettings { RecordingSettings().trackerSettings }
+    /// The app's tracker settings on the test World's slab and ball (7 in square like `SlabSpec.standard`, 35 mm like
+    /// `BallSpec()`): these tests are about the app's per-frame path, not the owner's slab and ball.
+    func appSettings() -> TrackerSettings { RecordingSettings(sideUInches: 7, sideVInches: 7, ballDiameterMm: 35).trackerSettings }
 
     /// The ball through the tracker as the app drives it (60 fps, the app's intervals, the ball image made only when
     /// `ballDue`): its world centre, the drop from it, the slab handed over in camera axes, the finder's rate; no ball

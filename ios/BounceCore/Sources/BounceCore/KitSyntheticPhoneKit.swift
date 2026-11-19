@@ -180,8 +180,7 @@ public final class KitSyntheticPhoneKit {
             if s.isForm {
                 clock += 60   // the owner measures
                 if included(s) {
-                    try store.commitMeasurements(KitMeasurements(slabWidthInches: 7, slabDepthInches: 7, slabThicknessInches: 1,
-                                                                 dishInches: 0.125, ballDiameterMm: 35), date: date())
+                    try store.commitMeasurements(KitSyntheticKit.trueMeasurements, date: date())
                 } else { try store.skipShot(s.id, date: date()) }
                 continue
             }
@@ -268,7 +267,7 @@ public final class KitSyntheticPhoneKit {
     /// The same camera paths and balls as `KitSyntheticKit.makeVideo`, over the shot's real length.
     func motion(_ s: KitShotSpec, slab: SlabPose, start: Double, seconds: Double, K: CameraIntrinsics, number: Int) throws -> Motion {
         let k = scene.kind(s)
-        let R = BallSpec().radius, up = Vec3(0, 1, 0), spec = SlabSpec.ownerSlab
+        let R = KitSyntheticKit.ball.radius, up = Vec3(0, 1, 0), spec = KitSyntheticKit.spec
         let az0 = 15 + Double((number * 37) % 40), span = max(seconds, 0.5)
         let sc = scene
         var m = Motion(kind: k, path: { t in sc.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t, K: K) }, ball: { _ in nil })
@@ -294,7 +293,7 @@ public final class KitSyntheticPhoneKit {
         case .held:
             let h = Units.inches(s.nominalHeightInches ?? 12)
             let b = slab.center - slab.normal * spec.dishDepth + up * (R + h)
-            m.heldHeight = Bounce.drop(ballCenter: b, pose: slab, spec: spec, ball: BallSpec(), down: ARKitConvention.worldDown)?.dropHeight
+            m.heldHeight = Bounce.drop(ballCenter: b, pose: slab, spec: spec, ball: KitSyntheticKit.ball, down: ARKitConvention.worldDown)?.dropHeight
             m.ball = { t in b + Vec3(sin(t * 3.1), sin(t * 2.3), sin(t * 2.7)) * 0.0015 }
             let aim = slab.center + up * (h * 0.4)
             m.path = { t in sc.orbit(aim, distance: 1.0 + h * 0.25, azimuth: az0, elevation: 40, t: t, K: K) }
@@ -330,7 +329,7 @@ public final class KitSyntheticPhoneKit {
         var circle: (center: Vec2, radius: Double)? = nil
         if let b = ball, let c = view.project(world: b) {
             let z = view.toCamera(b).z
-            if z > 0.05 { circle = (c, view.intrinsics.fx * BallSpec().radius / z) }
+            if z > 0.05 { circle = (c, view.intrinsics.fx * KitSyntheticKit.ball.radius / z) }
         }
         return KitLiveResult(state: .locked, tilt: tilt + 0.1 * sin(t), corners: corners, ball: circle)
     }
@@ -342,8 +341,8 @@ public final class KitSyntheticPhoneKit {
         let s = Double(W) / Double(view.intrinsics.width)
         let K = CameraIntrinsics(fx: view.intrinsics.fx * s, fy: view.intrinsics.fy * s, cx: view.intrinsics.cx * s, cy: view.intrinsics.cy * s,
                                  width: W, height: H)
-        let o = view.position, Rw = view.worldFromCamera.rotation, n = slab.normal, R = BallSpec().radius
-        let dish = SlabSpec.ownerSlab.dishDepth
+        let o = view.position, Rw = view.worldFromCamera.rotation, n = slab.normal, R = KitSyntheticKit.ball.radius
+        let dish = KitSyntheticKit.spec.dishDepth
         var depth = [Float](repeating: .nan, count: W * H), conf = [UInt8](repeating: 0, count: W * H)
         for y in 0..<H {
             for x in 0..<W {
@@ -430,8 +429,9 @@ public final class KitSyntheticPhoneKit {
             images.withUnsafeMutableBufferPointer { buf in
                 let b = buf
                 DispatchQueue.concurrentPerform(iterations: groups.count) { g in
-                    var sc = SyntheticScene(spec: .ownerSlab, slab: slab, ball: balls[g])
+                    var sc = SyntheticScene(spec: KitSyntheticKit.spec, slab: slab, ball: balls[g])
                     sc.supersample = 1
+                    sc.ballRadius = KitSyntheticKit.ball.radius
                     b[g] = KitSyntheticKit.image(sc, view: views[g], brightness: bright)
                 }
             }
