@@ -25,17 +25,32 @@ extension World {
     }
 
     /// The outline a detector reports when it takes the near side (the visible cut face with the widest band) at the
-    /// bottom of the 1 in cut face instead of at the top edge: that side's line moves to the projected bottom edge and its
-    /// corners to where it meets the neighbouring top edges. Worked out here independently of SlabBoxView.
+    /// bottom of the cut face instead of at the top edge: that side's line moves to the projected bottom edge and its
+    /// corners to where it meets the neighbouring top edges. Worked out here independently of SlabBoxView. With a side
+    /// profile (`SlabSpec`) the face drops by its face drop H and runs out by R (its bottom corners on the corners'
+    /// diagonals, its normal along H x outward + R x normal); with none, a vertical face as deep as the thickness.
     func cutFlipOutline(in v: CameraView, spec: SlabSpec) -> [Vec2]? {
         let pc = slab.transformed(by: v.cameraFromWorld), K = v.intrinsics
         let topC = pc.topCorners
-        let top = topC.compactMap { K.project($0) }, bot = topC.compactMap { K.project($0 - pc.normal * spec.thickness) }
+        let H = spec.drop, R = spec.sideRun
+        let out: [Vec3] = (0..<4).map { (i: Int) -> Vec3 in
+            let mid: Vec3 = (topC[i] + topC[(i + 1) % 4]) / 2
+            return (mid - pc.center).rejecting(pc.normal).normalized
+        }
+        let top = topC.compactMap { K.project($0) }
+        let bot: [Vec2] = (0..<4).compactMap { (k: Int) -> Vec2? in
+            let m: Vec3 = out[(k + 3) % 4] + out[k]
+            let b: Vec3 = topC[k] - pc.normal * H + m * R
+            return K.project(b)
+        }
         guard top.count == 4, bot.count == 4 else { return nil }
         var best = -1, bw = 0.0
         for i in 0..<4 {
-            let j = (i + 1) % 4, mid = (topC[i] + topC[j]) / 2 - pc.normal * (spec.thickness / 2)
-            guard (mid - pc.center).rejecting(pc.normal).dot(-mid) > 0 else { continue }
+            let j = (i + 1) % 4
+            let edgeMid: Vec3 = (topC[i] + topC[j]) / 2
+            let mid: Vec3 = edgeMid + out[i] * (R / 2) - pc.normal * (H / 2)
+            let faceNormal: Vec3 = out[i] * H + pc.normal * R
+            guard faceNormal.dot(-mid) > 0 else { continue }
             let dir = (top[j] - top[i]).normalized
             let w = (abs(dir.cross(bot[i] - top[i])) + abs(dir.cross(bot[j] - top[j]))) / 2
             if w > bw { bw = w; best = i }
@@ -332,20 +347,25 @@ final class TrackerRobustnessTests: XCTestCase {
 
     // MARK: the near edge flipping to the cut face (#8, #24)
 
-    func testSustainedNearEdgeFlipDoesNotRelockToAWrongTilt() {
+    func testSustainedNearEdgeFlipDoesNotRelockToAWrongTilt() { checkSustainedNearEdgeFlipDoesNotRelockToAWrongTilt(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testSustainedNearEdgeFlipDoesNotRelockToAWrongTiltOnSlopedSides() { checkSustainedNearEdgeFlipDoesNotRelockToAWrongTilt(TestProfiles.sloped) }
+
+    func checkSustainedNearEdgeFlipDoesNotRelockToAWrongTilt(_ spec: SlabSpec) {
         // The real-phone failure (web/tests/LOG.md, 'Paused here'): the near edge flips between the top face's edge and
         // the bottom of the light cut face. Several flipped re-checks in a row used to relock 5-8 deg off.
         for (dist, elev) in [(0.6, 35.0), (0.75, 45.0), (0.9, 50.0)] {
             let slab = World.slabAt(Vec3(0, 0.066, -0.6), tilt: 5, heading: 250, yaw: 12)
             let w = World(slab: slab, lens: .processing)
-            let det = SceneDetector(w, noise: 0.5, seed: 61)
-            let tr = SlabTracker(settings: appSettings(), detector: det)
+            let det = SceneDetector(w, spec: spec, noise: 0.5, seed: 61)
+            let tr = SlabTracker(settings: appSettings(spec), detector: det)
             let e = Units.radians(elev), pos = slab.center + Vec3(0.05, sin(e), cos(e)) * dist
             var k = 0
             for _ in 0..<(30 * 4) { step(tr, det, swaying(w, pos, slab.center, k), Double(k) / 30); k += 1 }
             XCTAssertEqual(tr.state, .locked)
             let before = err(tr.slab, slab)
-            let band = w.nearBand(in: swaying(w, pos, slab.center, k), spec: .standard)
+            let band = w.nearBand(in: swaying(w, pos, slab.center, k), spec: spec)
             // flipped for 3 s (about 10 re-checks), then clean again
             det.flipProbability = 1
             var worst = 0.0
@@ -360,13 +380,18 @@ final class TrackerRobustnessTests: XCTestCase {
         }
     }
 
-    func testRandomNearEdgeFlipsKeepTheLock() {
+    func testRandomNearEdgeFlipsKeepTheLock() { checkRandomNearEdgeFlipsKeepTheLock(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testRandomNearEdgeFlipsKeepTheLockOnSlopedSides() { checkRandomNearEdgeFlipsKeepTheLock(TestProfiles.sloped) }
+
+    func checkRandomNearEdgeFlipsKeepTheLock(_ spec: SlabSpec) {
         // 30-50% of re-checks flipped at random over a minute, at desk distance where the band is widest.
         for p in [0.3, 0.5] {
             let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 7, heading: 300, yaw: -8)
             let w = World(slab: slab, lens: .processing)
-            let det = SceneDetector(w, noise: 0.5, seed: 71)
-            let tr = SlabTracker(settings: appSettings(), detector: det)
+            let det = SceneDetector(w, spec: spec, noise: 0.5, seed: 71)
+            let tr = SlabTracker(settings: appSettings(spec), detector: det)
             let pos = slab.center + Vec3(0.0, 0.45, 0.45)
             var k = 0
             for _ in 0..<(30 * 3) { step(tr, det, swaying(w, pos, slab.center, k), Double(k) / 30); k += 1 }
@@ -409,7 +434,12 @@ final class TrackerRobustnessTests: XCTestCase {
         XCTAssertLessThan(worst, 1.0)
     }
 
-    func testNearEdgeFlipsFromTheStartDoNotKeepAWrongLock() {
+    func testNearEdgeFlipsFromTheStartDoNotKeepAWrongLock() { checkNearEdgeFlipsFromTheStartDoNotKeepAWrongLock(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testNearEdgeFlipsFromTheStartDoNotKeepAWrongLockOnSlopedSides() { checkNearEdgeFlipsFromTheStartDoNotKeepAWrongLock(TestProfiles.sloped) }
+
+    func checkNearEdgeFlipsFromTheStartDoNotKeepAWrongLock(_ spec: SlabSpec) {
         // The near edge flips at random from the first frame, so the first three detections are sometimes all flipped
         // and the tracker confirms on them. Only asking whether a re-check was the lock's flip, never whether the lock was
         // the re-check's flip, left such a lock 5-6 deg off for as long as flips continued (the top outline counted as an
@@ -423,9 +453,9 @@ final class TrackerRobustnessTests: XCTestCase {
                 for trial in 0..<12 {
                     let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 4 + Double(trial % 5), heading: 250 + Double(trial) * 9, yaw: -8 + Double(trial))
                     let w = World(slab: slab, lens: .processing)
-                    let det = SceneDetector(w, noise: 0.5, seed: UInt64(800 + trial))
+                    let det = SceneDetector(w, spec: spec, noise: 0.5, seed: UInt64(800 + trial))
                     det.flipProbability = p
-                    let tr = SlabTracker(settings: appSettings(), detector: det)
+                    let tr = SlabTracker(settings: appSettings(spec), detector: det)
                     let e = Units.radians(elev), pos = slab.center + Vec3(0.05, sin(e), cos(e)) * dist
                     var spell = 0.0
                     for k in 0..<(30 * 30) {
@@ -453,16 +483,21 @@ final class TrackerRobustnessTests: XCTestCase {
         XCTAssertGreaterThan(flippedLocks, 5)
     }
 
-    func testALockOnFlippedOutlinesMovesToTheTopAtOnce() {
+    func testALockOnFlippedOutlinesMovesToTheTopAtOnce() { checkALockOnFlippedOutlinesMovesToTheTopAtOnce(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testALockOnFlippedOutlinesMovesToTheTopAtOnceOnSlopedSides() { checkALockOnFlippedOutlinesMovesToTheTopAtOnce(TestProfiles.sloped) }
+
+    func checkALockOnFlippedOutlinesMovesToTheTopAtOnce(_ spec: SlabSpec) {
         // Flipped outlines for the first 2 s (it locks on them), then clean ones: the old tracker needed about 3.4 s of
         // clean re-checks (11-12 of them, the cradle check tripling the evidence) to leave the flipped lock.
         var times: [Double] = []
         for trial in 0..<12 {
             let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 7, heading: 300 + Double(trial) * 11, yaw: -8)
             let w = World(slab: slab, lens: .processing)
-            let det = SceneDetector(w, noise: 0.5, seed: UInt64(400 + trial))
+            let det = SceneDetector(w, spec: spec, noise: 0.5, seed: UInt64(400 + trial))
             det.flipProbability = 1
-            let tr = SlabTracker(settings: appSettings(), detector: det)
+            let tr = SlabTracker(settings: appSettings(spec), detector: det)
             let pos = slab.center + Vec3(0.0, 0.45, 0.45)
             var k = 0
             for _ in 0..<(30 * 2) { step(tr, det, swaying(w, pos, slab.center, k), Double(k) / 30); k += 1 }
@@ -484,7 +519,12 @@ final class TrackerRobustnessTests: XCTestCase {
         XCTAssertLessThan(times.last!, 1.2)
     }
 
-    func testASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance() {
+    func testASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance() { checkASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistanceOnSlopedSides() { checkASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance(TestProfiles.sloped) }
+
+    func checkASidePutABandInsideTheTopDoesNotMoveTheLockAtDeskDistance(_ spec: SlabSpec) {
         // The mirror of the flip: a detector that sometimes puts the near side a band inside the top. Geometry alone
         // cannot tell which of two outlines a band apart is the top, so the rule that the inner one is would follow it;
         // up close the pose fits can (the inner outline misfits the square by about 1 px, the top by the noise). The
@@ -495,9 +535,9 @@ final class TrackerRobustnessTests: XCTestCase {
             for trial in 0..<12 {
                 let slab = World.slabAt(Vec3(0, 0.066, -0.55), tilt: 3 + Double(trial % 7), heading: 200 + Double(trial) * 13, yaw: -20 + Double(trial))
                 let w = World(slab: slab, lens: .processing)
-                let det = SceneDetector(w, noise: 0.5, seed: UInt64(6000 + trial))
+                let det = SceneDetector(w, spec: spec, noise: 0.5, seed: UInt64(6000 + trial))
                 det.inwardProbability = q
-                let tr = SlabTracker(settings: appSettings(), detector: det)
+                let tr = SlabTracker(settings: appSettings(spec), detector: det)
                 let e = Units.radians(45.0), pos = slab.center + Vec3(0.05, sin(e), cos(e)) * 0.64
                 for k in 0..<(30 * 30) {
                     let t = Double(k) / 30
@@ -516,7 +556,12 @@ final class TrackerRobustnessTests: XCTestCase {
         }
     }
 
-    func testCleanOutlinesNeverMoveTheLockToAnInnerOutline() {
+    func testCleanOutlinesNeverMoveTheLockToAnInnerOutline() { checkCleanOutlinesNeverMoveTheLockToAnInnerOutline(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`): the detector's flips go to the sloped
+    /// face's bottom, and the tracker's box model has the profile.
+    func testCleanOutlinesNeverMoveTheLockToAnInnerOutlineOnSlopedSides() { checkCleanOutlinesNeverMoveTheLockToAnInnerOutline(TestProfiles.sloped) }
+
+    func checkCleanOutlinesNeverMoveTheLockToAnInnerOutline(_ spec: SlabSpec) {
         // The other side of the rule above: noisy clean outlines of a still slab (a walk around it, 0.6-1.4 m) must not
         // look like the top under a flipped lock often enough to move a good lock inward.
         for noise in [1.0, 1.5] {
@@ -524,8 +569,8 @@ final class TrackerRobustnessTests: XCTestCase {
             for trial in 0..<8 {
                 let slab = World.slabAt(Vec3(0, 0.066, 0), tilt: 3 + Double(trial), heading: Double(trial) * 45)
                 let w = World(slab: slab, lens: .processing)
-                let det = SceneDetector(w, noise: noise, seed: UInt64(900 + trial))
-                let tr = SlabTracker(settings: appSettings(), detector: det)
+                let det = SceneDetector(w, spec: spec, noise: noise, seed: UInt64(900 + trial))
+                let tr = SlabTracker(settings: appSettings(spec), detector: det)
                 for k in 0..<(30 * 40) {
                     let t = Double(k) / 30
                     let az = Units.radians(90 * t / 40), el = Units.radians(35 + Double(trial) * 3)

@@ -66,12 +66,24 @@ public struct RecordingSettings: Codable, Equatable {
     /// launch the ball along the dish's normal where it lands (Settings' "dish bounce"), not the corner plane's; nil in
     /// version 1 recordings (which did not say: the corner plane)
     public var dishBounce: Bool?
+    /// The slab's side profile (`SlabSpec.faceDrop`, `sideRun`, `edgeRadius` in inches; `nearFeatureAngle` in degrees).
+    /// nil means 0: every recording made before the profile existed has none (the old box with vertical cut faces, and
+    /// the edge refiner's original rules), so it replays as it ran. New settings default to the owner's slab
+    /// (`SlabSpec.ownerSlab`).
+    public var faceDropInches: Double?
+    public var sideRunInches: Double?
+    public var edgeRadiusInches: Double?
+    public var nearFeatureDegrees: Double?
 
     public init(sideUInches: Double = 7, sideVInches: Double = 7, thicknessInches: Double = 1, dishInches: Double = 0.125,
-                ballDiameterMm: Double = 35, dropHeightFeet: Double = 3, reboundPercent: Double = 70, dishBounce: Bool? = nil) {
+                ballDiameterMm: Double = 35, dropHeightFeet: Double = 3, reboundPercent: Double = 70, dishBounce: Bool? = nil,
+                faceDropInches: Double? = SlabSpec.ownerFaceDropInches, sideRunInches: Double? = SlabSpec.ownerSideRunInches,
+                edgeRadiusInches: Double? = SlabSpec.ownerEdgeRadiusInches, nearFeatureDegrees: Double? = nil) {
         self.sideUInches = sideUInches; self.sideVInches = sideVInches; self.thicknessInches = thicknessInches; self.dishInches = dishInches
         self.ballDiameterMm = ballDiameterMm; self.dropHeightFeet = dropHeightFeet; self.reboundPercent = reboundPercent
         self.dishBounce = dishBounce
+        self.faceDropInches = faceDropInches; self.sideRunInches = sideRunInches; self.edgeRadiusInches = edgeRadiusInches
+        self.nearFeatureDegrees = nearFeatureDegrees
     }
 
     /// how often the app searches for the slab while it has none (s): the search costs tens of ms on the phone
@@ -114,7 +126,9 @@ public struct RecordingSettings: Codable, Equatable {
     public var launchRule: Bounce.LaunchRule { dishBounce == true ? .dishNormal : .cornerPlane }
 
     public var slab: SlabSpec {
-        SlabSpec(sideU: Units.inches(sideUInches), sideV: Units.inches(sideVInches), thickness: Units.inches(thicknessInches), dishDepth: Units.inches(dishInches))
+        SlabSpec(sideU: Units.inches(sideUInches), sideV: Units.inches(sideVInches), thickness: Units.inches(thicknessInches), dishDepth: Units.inches(dishInches),
+                 faceDrop: Units.inches(faceDropInches ?? 0), sideRun: Units.inches(sideRunInches ?? 0), edgeRadius: Units.inches(edgeRadiusInches ?? 0),
+                 nearFeatureAngle: Units.radians(nearFeatureDegrees ?? 0))
     }
     public var ball: BallSpec { BallSpec(diameter: ballDiameterMm / 1000, rebound: reboundPercent / 100) }
     public var dropHeight: Double { Units.feet(dropHeightFeet) }

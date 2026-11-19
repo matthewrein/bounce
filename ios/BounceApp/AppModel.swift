@@ -12,9 +12,10 @@ let appBuild = "n10"
 struct AppSettings: Equatable {
     // MARK: baked in (the one place the app's slab, ball and detector set-up come from)
 
-    /// The slab: about 7 in square, 1 in thick, with a 1/8 in dish (BounceCore's `SlabSpec.standard`). The slab finder is
-    /// tuned for it.
-    static let slab = SlabSpec.standard
+    /// The slab: about 7 in square, 1 in thick, with a 1/8 in dish and its sloped, rounded sides (BounceCore's
+    /// `SlabSpec.ownerSlab`, the same as `RecordingSettings()`'s, so the kit scorer and replays run what the app runs).
+    /// The slab finder is tuned for it.
+    static let slab = SlabSpec.ownerSlab
     /// The ball: 35 mm titanium (BounceCore's `BallSpec()`; its rebound is replaced by the user's setting).
     static let ball = BallSpec()
     // The detectors' tuning is BounceCore's (`AppDetectors`, `Detectors.swift`), and the tracker's settings are built from
@@ -58,7 +59,9 @@ struct AppSettings: Equatable {
         return RecordingSettings(sideUInches: Units.toInches(s.sideU), sideVInches: Units.toInches(s.sideV),
                                  thicknessInches: Units.toInches(s.thickness), dishInches: Units.toInches(s.dishDepth),
                                  ballDiameterMm: AppSettings.ball.diameter * 1000, dropHeightFeet: dropFeet,
-                                 reboundPercent: reboundPercent, dishBounce: dishNormal)
+                                 reboundPercent: reboundPercent, dishBounce: dishNormal,
+                                 faceDropInches: Units.toInches(s.faceDrop), sideRunInches: Units.toInches(s.sideRun),
+                                 edgeRadiusInches: Units.toInches(s.edgeRadius), nearFeatureDegrees: Units.degrees(s.nearFeatureAngle))
     }
 
     /// The tracker's settings, built exactly as a replay of a recording builds them (`RecordingSettings.trackerSettings`).

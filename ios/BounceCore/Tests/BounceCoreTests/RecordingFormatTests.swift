@@ -493,4 +493,38 @@ final class RecordingFormatTests: XCTestCase {
         XCTAssertEqual(r.frames.count, n)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(String(format: "f%06d.byc", n)).path))
     }
+
+    /// Recordings made before the slab's side profile existed (every fixture) read with none: the old box, so they replay
+    /// as they ran. New settings carry the owner's slab with its profile (`SlabSpec.ownerSlab`), and keep it through JSON.
+    func testRecordingsWithoutASideProfileReadAsTheOldBox() throws {
+        for name in ["rec_replay_still", "rec_ball_held", "rec_noslab_clutter", "rec_single_cradle_r14_d4", "rec_single_warm_lamp_d4"] {
+            let r = try Fixtures.recording(name)
+            let s = r.session.settings
+            XCTAssertNil(s.faceDropInches, name); XCTAssertNil(s.sideRunInches, name); XCTAssertNil(s.edgeRadiusInches, name)
+            XCTAssertNil(s.nearFeatureDegrees, name)
+            XCTAssertFalse(s.slab.hasProfile, name)
+            XCTAssertEqual(s.slab, SlabSpec(sideU: Units.inches(s.sideUInches), sideV: Units.inches(s.sideVInches),
+                                            thickness: Units.inches(s.thicknessInches), dishDepth: Units.inches(s.dishInches)), name)
+            if let t = r.session.tracker { XCTAssertFalse(t.spec.hasProfile, name) }
+        }
+        let s = RecordingSettings()
+        XCTAssertEqual(s.slab, SlabSpec.ownerSlab)
+        XCTAssertEqual(s.trackerSettings.spec, SlabSpec.ownerSlab)
+        let back = try JSONDecoder().decode(RecordingSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertEqual(back, s)
+        XCTAssertEqual(back.trackerSettings.spec, SlabSpec.ownerSlab)
+        // a tracker's settings with the profile keep it (`SlabSpec`'s own coding)
+        let t = try JSONDecoder().decode(TrackerSettings.self, from: JSONEncoder().encode(s.trackerSettings))
+        XCTAssertEqual(t.spec, SlabSpec.ownerSlab)
+    }
+
+    /// A diagnostics file from the phone written before the profile existed (BOUNCE_DIAGNOSTICS: a path, e.g. the owner's
+    /// n10 report, kept outside the repository) still reads, with the old box as its slab.
+    func testADiagnosticsFileFromBeforeTheProfileStillReads() throws {
+        guard let path = ProcessInfo.processInfo.environment["BOUNCE_DIAGNOSTICS"] else { throw XCTSkip("set BOUNCE_DIAGNOSTICS to a diagnostics file") }
+        let rep = try DiagnosticsReport.decode(json: String(contentsOfFile: path, encoding: .utf8))
+        let t = try XCTUnwrap(rep.tracker)
+        print("DIAGNOSTICS build \(rep.build): slab \(t.spec), profile \(t.spec.hasProfile)")
+        if rep.build.hasPrefix("n10") || rep.build.hasPrefix("e4ffadf") { XCTAssertFalse(t.spec.hasProfile) }
+    }
 }

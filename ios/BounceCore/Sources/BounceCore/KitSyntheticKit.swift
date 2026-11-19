@@ -277,7 +277,7 @@ public final class KitSyntheticKit {
         let n = max(2, options.framesPerShot), fps = options.fps
         var times = (0..<n).map { Double($0) / fps }
         let R = BallSpec().radius, up = Vec3(0, 1, 0)
-        let spec = SlabSpec.standard
+        let spec = SlabSpec.ownerSlab
         let az0 = 15 + Double((number * 37) % 40)
         let ballKinds: [ShotTruth.Kind] = [.ballFloor, .ballOnSlab, .held, .drop]
         let withBall = ballKinds.contains(k)
@@ -398,7 +398,7 @@ public final class KitSyntheticKit {
     /// plane's normal with the app's rebound model, then bouncing on the floor (or the slab) with half its vertical speed.
     func dropTruth(slab: SlabPose, u: Double, v: Double, height h: Double, cue: Double)
         throws -> (truth: DropTruth, position: (Double) -> Vec3, end: Double) {
-        let spec = SlabSpec.standard, ballSpec = BallSpec(diameter: 0.035, rebound: options.rebound), R = ballSpec.radius
+        let spec = SlabSpec.ownerSlab, ballSpec = BallSpec(diameter: 0.035, rebound: options.rebound), R = ballSpec.radius
         let down = ARKitConvention.worldDown, up = -down, G = Units.gravity, g = down * G
         let surface = slab.point(u: u, v: v) - slab.normal * Dish.at(pose: slab, depth: spec.dishDepth, u: u, v: v).depth
         let held = surface + up * (R + h)
@@ -452,7 +452,7 @@ public final class KitSyntheticKit {
     // MARK: rendering
 
     func scene(_ tr: ShotTruth, frame i: Int) -> SyntheticScene {
-        var sc = SyntheticScene(slab: tr.slab, ball: i < tr.balls.count ? tr.balls[i] : nil)
+        var sc = SyntheticScene(spec: .ownerSlab, slab: tr.slab, ball: i < tr.balls.count ? tr.balls[i] : nil)
         sc.supersample = 1
         return sc
     }

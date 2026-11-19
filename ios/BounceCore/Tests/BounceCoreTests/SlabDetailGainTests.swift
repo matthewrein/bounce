@@ -196,7 +196,10 @@ final class SlabDetailGainTests: XCTestCase {
         let v = try XCTUnwrap(tracked)
         var locks: [Bool: SlabPose] = [:]
         for withPixels in [false, true] {
-            let tr = SlabTracker(settings: RecordingSettings().trackerSettings, detector: SlabFinderDetector())
+            // the app's tracker settings on the scene's slab (rendered as the old box: this test is about full-resolution edges)
+            var settings = RecordingSettings().trackerSettings
+            settings.spec = v.scene.spec
+            let tr = SlabTracker(settings: settings, detector: SlabFinderDetector())
             for i in 0..<45 {
                 _ = tr.process(TrackerFrame(timestamp: Double(i) / 30, view: v.pview, frame: v.processingImage.colorFrame,
                                             slabDetail: withPixels ? v.provider : nil))

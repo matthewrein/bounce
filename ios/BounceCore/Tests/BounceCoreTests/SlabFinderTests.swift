@@ -371,10 +371,14 @@ final class SlabFinderTests: XCTestCase {
 
     /// The edge refiner on rendered boxes: from the outer outline a plain detector finds (the cut face's bottom on
     /// the sides where it shows), it returns the top face's corners, whether or not the top / cut-face edge is visible.
-    func testRefinerReturnsTopEdgeWithAndWithoutInnerEdge() {
+    func testRefinerReturnsTopEdgeWithAndWithoutInnerEdge() { checkRefinerReturnsTopEdgeWithAndWithoutInnerEdge(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testRefinerReturnsTopEdgeWithAndWithoutInnerEdgeOnSlopedSides() { checkRefinerReturnsTopEdgeWithAndWithoutInnerEdge(TestProfiles.sloped) }
+
+    func checkRefinerReturnsTopEdgeWithAndWithoutInnerEdge(_ spec: SlabSpec) {
         for innerVisible in [true, false] {
             for (k, (pitch, heading, yaw)) in [(50.0, 30.0, 15.0), (35, 200, -25), (60, 120, 40)].enumerated() {
-                let s = BoxScene(view: SyntheticView.make(pitch: pitch, distance: 0.8, tilt: 6, heading: heading, yaw: yaw, intrinsics: BoxScene.K),
+                let s = BoxScene(view: SyntheticView.make(pitch: pitch, distance: 0.8, tilt: 6, heading: heading, yaw: yaw, spec: spec, intrinsics: BoxScene.K),
                                  bandLuma: innerVisible ? 150 : 105)
                 let frame = s.render()
                 let outer = s.outerOutline().enumerated().map { $0.element + Vec2(0.4 * sin(Double($0.offset) * 2.1), 0.4 * cos(Double($0.offset) * 1.3)) }
@@ -400,10 +404,14 @@ final class SlabFinderTests: XCTestCase {
 
     /// The whole finder on rendered boxes, with the phone held upright, sideways either way and upside down (gravity
     /// pointing anywhere in the image): found, on the top face's edges.
-    func testFinderOnRenderedBoxAnyWayUp() {
+    func testFinderOnRenderedBoxAnyWayUp() { checkFinderOnRenderedBoxAnyWayUp(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`).
+    func testFinderOnRenderedBoxAnyWayUpOnSlopedSides() { checkFinderOnRenderedBoxAnyWayUp(TestProfiles.sloped) }
+
+    func checkFinderOnRenderedBoxAnyWayUp(_ spec: SlabSpec) {
         for roll in [0.0, 90, -90, 180] {
             for innerVisible in [true, false] {
-                let s = BoxScene(view: SyntheticView.make(pitch: 48, roll: roll, distance: 0.8, tilt: 5, heading: 70, yaw: 25, intrinsics: BoxScene.K),
+                let s = BoxScene(view: SyntheticView.make(pitch: 48, roll: roll, distance: 0.8, tilt: 5, heading: 70, yaw: 25, spec: spec, intrinsics: BoxScene.K),
                                  bandLuma: innerVisible ? 150 : 105)
                 let frame = s.render()
                 let cs = SlabFinder().find(frame: frame, intrinsics: s.view.intrinsics, spec: s.view.spec, down: s.view.down)
@@ -490,15 +498,64 @@ struct BoxScene {
         let K = view.intrinsics, W = K.width, H = K.height
         let pose = view.pose, t = view.spec.thickness
         func proj(_ ps: [Vec3]) -> [Vec2] { ps.map { K.project($0)! } }
-        // the base: 8% bigger than the slab (by default), from the slab's bottom down 1.3 in toward the floor
-        let baseTop = slabCornerSigns.map { pose.center - pose.normal * t + pose.axisU * ($0.0 * pose.halfU * baseScale) + pose.axisV * ($0.1 * pose.halfV * baseScale) }
+        let b = box
+        // the base: 8% bigger than the slab (by default), from the slab's bottom down 1.3 in toward the floor (with a side
+        // profile: from the bottom of the visible faces, where the cradle begins, 8% bigger than they reach)
+        let baseTop: [Vec3]
+        if view.spec.hasProfile {
+            let c0 = pose.center - pose.normal * view.spec.drop
+            baseTop = b.bottomCorners.map { c0 + ($0 - c0) * baseScale }
+        } else {
+            baseTop = slabCornerSigns.map { pose.center - pose.normal * t + pose.axisU * ($0.0 * pose.halfU * baseScale) + pose.axisV * ($0.1 * pose.halfV * baseScale) }
+        }
         let baseBottom = baseTop.map { $0 + view.down.normalized * Units.inches(1.3) }
         let base = FinderRun.hull(proj(baseTop + baseBottom))
-        let b = box
-        var bands: [[Vec2]] = []
-        for i in 0..<4 where b.cutFaceVisible(side: i) {
-            let j = (i + 1) % 4
-            bands.append(proj([b.topCorners[i], b.topCorners[j], b.bottomCorners[j], b.bottomCorners[i]]))
+        // the sides: (polygon, luma). With no profile, the cut faces that show; with one, the rounded edge (in strips: the
+        // part before the near feature angle lit like the top, the rest like the face; each strip drawn where it faces the
+        // camera, so a hidden face's rounding ends at its tangent point) and the sloped face where it shows.
+        var bands: [([Vec2], Float)] = []
+        if view.spec.hasProfile {
+            let sec = SideSection(spec: view.spec), c = b.topCorners, n = pose.normal
+            let out = (0..<4).map { b.outward(side: $0) }
+            let psiN = clamp(view.spec.nearFeatureAngle, 0, sec.faceAngle)
+            // the arc's strips, about 0.15 rad each, with a cut at the near feature angle
+            var cuts: [Double] = []
+            if sec.radius > 0 {
+                cuts = [0]
+                if psiN > 1e-9 {
+                    let k1 = max(1, Int((psiN / 0.15).rounded(.up)))
+                    for q in 1...k1 { cuts.append(psiN * Double(q) / Double(k1)) }
+                }
+                let k2 = max(1, Int(((sec.faceAngle - psiN) / 0.15).rounded(.up)))
+                for q in 1...k2 { cuts.append(psiN + (sec.faceAngle - psiN) * Double(q) / Double(k2)) }
+            }
+            for i in 0..<4 {
+                let j = (i + 1) % 4, mi = out[(i + 3) % 4] + out[i], mj = out[i] + out[j]
+                func at(_ k: Int, _ m: Vec3, _ x: Double, _ z: Double) -> Vec3 { c[k] + m * x + n * z }
+                // the rounding shows up to where its normal turns away from the camera (at each end of the side)
+                func silhouette(_ p: Vec3) -> Double {
+                    let v = -p
+                    let a = atan2(n.dot(v), -out[i].dot(v))
+                    return a > 0 ? a : .infinity
+                }
+                let si = silhouette(c[i]), sj = silhouette(c[j])
+                for s in 0..<max(0, cuts.count - 1) {
+                    let ai = min(cuts[s], si), bi = min(cuts[s + 1], si), aj = min(cuts[s], sj), bj = min(cuts[s + 1], sj)
+                    guard bi - ai > 1e-6 || bj - aj > 1e-6 else { continue }
+                    let pa = sec.arc(ai), pb = sec.arc(bi), qa = sec.arc(aj), qb = sec.arc(bj)
+                    bands.append((proj([at(i, mi, pa.x, pa.z), at(j, mj, qa.x, qa.z), at(j, mj, qb.x, qb.z), at(i, mi, pb.x, pb.z)]),
+                                  cuts[s] < psiN ? topLuma : bandLuma))
+                }
+                if b.cutFaceVisible(side: i) {
+                    let e = sec.arcEnd, bt = sec.bottom
+                    bands.append((proj([at(i, mi, e.x, e.z), at(j, mj, e.x, e.z), at(j, mj, bt.x, bt.z), at(i, mi, bt.x, bt.z)]), bandLuma))
+                }
+            }
+        } else {
+            for i in 0..<4 where b.cutFaceVisible(side: i) {
+                let j = (i + 1) % 4
+                bands.append((proj([b.topCorners[i], b.topCorners[j], b.bottomCorners[j], b.bottomCorners[i]]), bandLuma))
+            }
         }
         let top = proj(b.topCorners)
         func inside(_ p: Vec2, _ q: [Vec2]) -> Bool {
@@ -512,13 +569,13 @@ struct BoxScene {
         }
         func shade(_ p: Vec2) -> (Float, Float, Float) {
             if inside(p, top) { return (topLuma, -6, 4) }
-            for q in bands where inside(p, q) { return (bandLuma, -6, 4) }
+            for q in bands where inside(p, q.0) { return (q.1, -6, 4) }
             if inside(p, base) { return (baseLuma, 0, 0) }
             return (floorLuma, -20, 25)
         }
         // every polygon edge, to supersample only the pixels an edge passes near
         var segs: [(Vec2, Vec2)] = []
-        for q in [top, base] + bands { for i in 0..<q.count { segs.append((q[i], q[(i + 1) % q.count])) } }
+        for q in [top, base] + bands.map({ $0.0 }) { for i in 0..<q.count { segs.append((q[i], q[(i + 1) % q.count])) } }
         func nearEdge(_ p: Vec2) -> Bool {
             segs.contains { a, b in
                 let d = b - a, t = clamp((p - a).dot(d) / max(d.dot(d), 1e-12), 0, 1)
@@ -529,7 +586,7 @@ struct BoxScene {
         var y = [Float](repeating: 0, count: W * H), cb = y, cr = y
         var rng = SeededRandom(seed)
         // outside the box around every polygon it is all floor
-        let all = top + base + bands.flatMap { $0 }
+        let all = top + base + bands.flatMap { $0.0 }
         let bx0 = (all.map { $0.x }.min() ?? 0) - 2, bx1 = (all.map { $0.x }.max() ?? 0) + 2
         let by0 = (all.map { $0.y }.min() ?? 0) - 2, by1 = (all.map { $0.y }.max() ?? 0) + 2
         for py in 0..<H {

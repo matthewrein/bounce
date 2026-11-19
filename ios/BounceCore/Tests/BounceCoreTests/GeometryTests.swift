@@ -148,4 +148,116 @@ final class GeometryTests: XCTestCase {
         // the side seen nearly square-on: close to the vertical edge's length
         XCTAssertGreaterThan(ratios.max()!, 0.9)
     }
+
+    // MARK: the side profile
+
+    /// A profile with no run and no rounding (a face dropping straight down by the thickness) is the old box exactly: the
+    /// same bottom corners, visibility, bands, outer outline and cut-bottom outlines; its features are the band on a face
+    /// that shows (departing at the top edge) and nothing on a hidden one.
+    func testProfileWithNoRunOrRoundingIsTheOldBox() {
+        var p = SlabSpec.standard
+        p.faceDrop = p.thickness
+        XCTAssertTrue(p.hasProfile)
+        XCTAssertFalse(SlabSpec.standard.hasProfile)
+        for (pitch, yaw, tilt) in [(50.0, 20.0, 0.0), (35, -40, 8), (75, 10, 5), (20, 60, 12), (85, 0, 0)] {
+            let s = SyntheticView.make(pitch: pitch, distance: 1.1, tilt: tilt, heading: 40, yaw: yaw)
+            let old = SlabBoxView(pose: s.pose, spec: .standard, intrinsics: s.intrinsics)
+            let new = SlabBoxView(pose: s.pose, spec: p, intrinsics: s.intrinsics)
+            XCTAssertEqual(old.bottomCorners, new.bottomCorners)
+            for i in 0..<4 {
+                XCTAssertEqual(old.cutFaceVisible(side: i), new.cutFaceVisible(side: i), "pitch \(pitch) side \(i)")
+                let a = old.cutBandWidth(side: i), b = new.cutBandWidth(side: i)
+                XCTAssertEqual(a.start, b.start); XCTAssertEqual(a.end, b.end)
+                let f0 = new.featureOffsets(side: i, at: 0)!, f1 = new.featureOffsets(side: i, at: 1)!
+                XCTAssertEqual(f0.departure, 0); XCTAssertEqual(f1.departure, 0)
+                XCTAssertEqual(f0.outer, a.start, accuracy: 1e-9, "pitch \(pitch) side \(i)")
+                XCTAssertEqual(f1.outer, a.end, accuracy: 1e-9, "pitch \(pitch) side \(i)")
+                XCTAssertEqual(old.featureOffsets(side: i, at: 0.5)!.outer, new.featureOffsets(side: i, at: 0.5)!.outer)
+            }
+            let lo = old.outerOutlineLines!, ln = new.outerOutlineLines!
+            for i in 0..<4 { XCTAssertEqual(lo[i].0, ln[i].0); XCTAssertEqual(lo[i].1, ln[i].1) }
+            for sides: Set<Int> in [[0], [1, 2], [3, 0]] { XCTAssertEqual(old.outlineWithCutBottom(onSides: sides), new.outlineWithCutBottom(onSides: sides)) }
+        }
+    }
+
+    /// A level slab whose side `o` is seen at view angle `phi` (degrees from straight outside toward the normal) from
+    /// `distance` metres, its middle on the optical axis; the side's index.
+    func sideView(phi: Double, distance d: Double, spec: SlabSpec, K: CameraIntrinsics) -> (box: SlabBoxView, side: Int) {
+        let f = Units.radians(phi)
+        // the camera looks along +z at the side's middle M = (0, 0, d); from M it lies along cos(phi) o + sin(phi) n
+        let n = Vec3(0, cos(f), -sin(f)), o = Vec3(0, -sin(f), -cos(f))
+        let M = Vec3(0, 0, d), along = o.cross(n).normalized   // (o x n) x o = n: the corners run so the normal is n
+        let raw = SlabPose(center: M - o * spec.halfV, normal: n, axisU: along, axisV: o, halfU: spec.halfU, halfV: spec.halfV)
+        let pose = SlabPose.fromCorners(raw.topCorners)!
+        let box = SlabBoxView(pose: pose, spec: spec, intrinsics: K)
+        let side = (0..<4).max { box.outward(side: $0).dot(o) < box.outward(side: $1).dot(o) }!
+        return (box, side)
+    }
+
+    /// A side seen edge-on (the camera straight above its edge): a vertical cut face does not show, the owner's sloped
+    /// one does, as a band of its run seen from above: R f / d, d the depth of the band's bottom. The kit's near-level
+    /// shots (slab-kit-20261118 s08-s11) showed 5.0-5.7 px where this gives 5.9.
+    func testAnEdgeOnSideShowsItsRun() {
+        let K = CameraIntrinsics(fx: 1450, fy: 1450, cx: 960, cy: 720, width: 1920, height: 1440)
+        for d in [0.6, 1.0, 1.5] {
+            let v = sideView(phi: 90, distance: d, spec: .standard, K: K)
+            XCTAssertFalse(v.box.cutFaceVisible(side: v.side))
+            XCTAssertEqual(v.box.featureOffsets(side: v.side, at: 0.5)!.outer, 0, accuracy: 1e-9)
+            for spec in [TestProfiles.sloped, TestProfiles.rounded(0.002)] {
+                let w = sideView(phi: 90, distance: d, spec: spec, K: K)
+                XCTAssertTrue(w.box.cutFaceVisible(side: w.side), "\(d) m")
+                let f = w.box.featureOffsets(side: w.side, at: 0.5)!
+                let expected = spec.sideRun * K.fx / (d + spec.drop)
+                XCTAssertEqual(f.outer - f.departure, expected, accuracy: 0.05, "\(d) m, r \(spec.edgeRadius)")
+                XCTAssertEqual(w.box.sideProfile(side: w.side)!.bandMiddle, f.outer - f.departure, accuracy: 1e-9)
+            }
+        }
+    }
+
+    /// A side seen at a grazing angle from across the slab: a vertical cut face is hidden from any view angle past 90
+    /// deg, the sloped face shows until 180 deg - atan(H / R) (109.2 deg for the owner's 21.5 / 7.5 mm), as a band that
+    /// narrows from its edge-on width to nothing there; past that only the rounded edge's tangent point bounds the side.
+    func testAGrazingSideShowsItsSlopedFace() {
+        let K = CameraIntrinsics(fx: 1450, fy: 1450, cx: 960, cy: 720, width: 1920, height: 1440)
+        let limit = 180 - Units.degrees(atan2(TestProfiles.sloped.drop, TestProfiles.sloped.sideRun))
+        XCTAssertEqual(limit, 109.2, accuracy: 0.05)
+        var last = TestProfiles.sloped.sideRun * K.fx / (1.2 + TestProfiles.sloped.drop)
+        for phi in [95.0, 100, 105, 108] {
+            let v = sideView(phi: phi, distance: 1.2, spec: .standard, K: K), w = sideView(phi: phi, distance: 1.2, spec: TestProfiles.sloped, K: K)
+            XCTAssertFalse(v.box.cutFaceVisible(side: v.side), "\(phi)")
+            XCTAssertTrue(w.box.cutFaceVisible(side: w.side), "\(phi)")
+            XCTAssertEqual(Units.degrees(w.box.viewAngle(side: w.side)), phi, accuracy: 1e-6)
+            let band = w.box.sideProfile(side: w.side)!.bandMiddle
+            XCTAssertGreaterThan(band, 0, "\(phi)"); XCTAssertLessThan(band, last, "\(phi)")
+            last = band
+        }
+        for phi in [111.0, 130] {
+            let w = sideView(phi: phi, distance: 1.2, spec: TestProfiles.sloped, K: K)
+            XCTAssertFalse(w.box.cutFaceVisible(side: w.side), "\(phi)")
+            // with a rounded edge the outline lies at the rounding's tangent point, r (1 - cos(180 - phi)) out
+            let r = TestProfiles.rounded(0.002)
+            let x = sideView(phi: phi, distance: 1.2, spec: r, K: K)
+            let beta = Units.radians(180 - phi), z = 1.2
+            XCTAssertEqual(x.box.featureOffsets(side: x.side, at: 0.5)!.outer, 0.002 * (1 - cos(beta)) * K.fx / z, accuracy: 0.02, "\(phi)")
+        }
+    }
+
+    /// The profile in a spec round-trips through JSON; a spec without one writes exactly what it wrote before the profile
+    /// existed, and an old spec (no profile keys) reads back as the old box.
+    func testSlabSpecCodingKeepsOldFiles() throws {
+        let old = #"{"sideU":0.1778,"sideV":0.1778,"thickness":0.0254,"dishDepth":0.003175}"#
+        let s = try JSONDecoder().decode(SlabSpec.self, from: Data(old.utf8))
+        XCTAssertEqual(s, SlabSpec(sideU: 0.1778, sideV: 0.1778, thickness: 0.0254, dishDepth: 0.003175))
+        XCTAssertFalse(s.hasProfile)
+        let enc = JSONEncoder(); enc.outputFormatting = .sortedKeys
+        XCTAssertEqual(String(data: try enc.encode(s), encoding: .utf8), #"{"dishDepth":0.003175,"sideU":0.1778,"sideV":0.1778,"thickness":0.0254}"#)
+        for spec in [SlabSpec.ownerSlab, TestProfiles.rounded(0.003, psiN: 0.7)] {
+            XCTAssertEqual(try JSONDecoder().decode(SlabSpec.self, from: try enc.encode(spec)), spec)
+        }
+        XCTAssertTrue(SlabSpec.ownerSlab.hasProfile)
+        XCTAssertEqual(SlabSpec.ownerSlab.thickness, SlabSpec.standard.thickness)
+        XCTAssertEqual(SlabSpec.ownerSlab.faceDrop, 0.0215, accuracy: 1e-12)
+        XCTAssertEqual(SlabSpec.ownerSlab.sideRun, 0.0075, accuracy: 1e-12)
+        XCTAssertEqual(SlabSpec.ownerSlab.edgeRadius, 0.002, accuracy: 1e-12)
+    }
 }
