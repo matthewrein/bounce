@@ -784,8 +784,8 @@ final class ARController: NSObject, ARSessionDelegate {
         let msg = "Camera stopped: \(error.localizedDescription)"
         Task { @MainActor [weak model] in
             guard let m = model else { return }
-            var h = m.hud; h.status = msg; h.locked = false
-            m.publish(overlay: OverlayState(), hud: h, developer: m.developer, background: nil)
+            var h = m.live.hud; h.status = msg; h.locked = false
+            m.publish(overlay: OverlayState(), hud: h, developer: m.live.developer, background: nil)
         }
     }
 

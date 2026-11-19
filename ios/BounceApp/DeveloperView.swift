@@ -4,15 +4,22 @@ import SwiftUI
 /// itself: the capture kit, session recording, diagnostics, a tracking reset, the demo scene, the build and a live
 /// line from the tracker (its hints are shown only here), and for a first run on a
 /// phone the pre-flight and the developer log (Copy log, Clear log).
+///
+/// The screen does not redraw with the camera's frames: only its live line (LiveDeveloperLine) and a running
+/// recording's failure (LiveRecordingFailure) observe the per-frame state, and the live line keeps its height, so the
+/// rows below it stay put. "Screen redraws" counts this body's redraws (testSettingsAndDeveloperStayStill reads it).
 struct DeveloperView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage(AppSettings.keys.demo) private var demo = false
     /// Clear log was tapped: asking first
     @State private var confirmingClearLog = false
+    /// this body's redraws so far (the "Screen redraws" row)
+    @State private var redraws = RedrawCounter()
     /// closes Settings altogether
     var close: () -> Void
 
     var body: some View {
+        let redrawCount = redraws.next()
         Form {
             Section(header: Text("Capture")) {
                 // the capture kit runs over the camera: Settings closes and the kit's screens take over the main screen
@@ -41,8 +48,10 @@ struct DeveloperView: View {
                 .accessibilityIdentifier("recordToggle")
                 if let e = model.recordingError {
                     Text(e).font(.footnote).foregroundColor(.red).accessibilityIdentifier("developerRecordError")
-                } else if model.isRecording, let f = model.developer.recordingFailure {
-                    Text("Recording stopped: " + f).font(.footnote).foregroundColor(.red)
+                } else if model.isRecording {
+                    LiveRecordingFailure(live: model.live) { f in
+                        Text("Recording stopped: " + f).font(.footnote).foregroundColor(.red)
+                    }
                 }
                 Button("Copy diagnostics") { model.copyDiagnostics() }
                     .accessibilityIdentifier("diagnostics")
@@ -60,10 +69,12 @@ struct DeveloperView: View {
                     Spacer()
                     Text(appBuild).foregroundColor(.secondary).accessibilityIdentifier("buildLabel")
                 }
-                Text(model.developer.line)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("developerLine")
+                HStack {
+                    Text("Screen redraws")
+                    Spacer()
+                    Text(String(redrawCount)).foregroundColor(.secondary).accessibilityIdentifier("developerRedraws")
+                }
+                LiveDeveloperLine(live: model.live)
             }
             // last, so the rows above keep their places
             Section(header: Text("First run on a phone"),
@@ -111,5 +122,28 @@ struct DeveloperView: View {
     private var recordTitle: String {
         if model.isStopping { return "Saving the recording" }
         return model.isRecording ? "Stop recording" : "Record session"
+    }
+}
+
+/// Settings > Developer's live line (`DeveloperStatus.line`), the one row there that redraws with the frames. It always
+/// takes `lines` lines, whatever it says, so the rows below it ("First run on a phone") stay put while its numbers
+/// change and it rewraps (until n12 they moved up and down). The accessibility label is always the whole line.
+struct LiveDeveloperLine: View {
+    @ObservedObject var live: LiveFrame
+
+    /// Enough for the longest line on the narrowest iPhone the app runs on (iOS 16: an SE's 375 pt, about 40
+    /// characters of this font a line at the default text size): locked with LiDAR, recording, and a busy frames part
+    /// of about 260 characters wraps to 15 or 16 lines (the demo's line to about 11). A longer line (a larger text
+    /// size) ends in "…" here.
+    static let lines = 16
+
+    var body: some View {
+        let line = live.developer.line
+        Text(line)
+            .font(.system(.caption, design: .monospaced))
+            .lineLimit(LiveDeveloperLine.lines, reservesSpace: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(line)
+            .accessibilityIdentifier("developerLine")
     }
 }

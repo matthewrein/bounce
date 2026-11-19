@@ -148,7 +148,8 @@ final class SlabBounceUITests: XCTestCase {
     }
 
     /// Developer -> Pre-flight, until the pre-flight screen's Run shows and stays. The row is a navigation link near the
-    /// foot of the Developer list, a list that redraws several times a second (the live line). Up to three tries: let the
+    /// foot of the Developer list, below the live line, which redraws several times a second (until n12 the whole list
+    /// did, and the rows below the line moved when it rewrapped). Up to three tries: let the
     /// push that opened Developer finish, reveal the row (well on screen, see reveal), tap it and wait; before the third
     /// try Developer is left and opened again, in case the link is stuck. Each try prints what is on screen
     /// ("E2E-DEBUG" lines, which CI copies into its log), and a miss prints the whole screen.
@@ -375,6 +376,94 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertGreaterThan((counts["slabCrops"] ?? 0), 0, "the tracker never got a slab crop")
         // (the Developer line is checked only when the list showed it: a row scrolled out of view may not be readable)
         if !developerLine.isEmpty { XCTAssertTrue(developerLine.contains("frames:"), "the Developer line has no frame numbers: \(developerLine)") }
+        closeSettings(app)
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
+    }
+
+    /// Settings and Settings > Developer stand still while the frames come (until n12 the main screen observed the
+    /// per-frame state, so both redrew with every frame: about 8 times a second in the demo, some 24 times in 3 s), and
+    /// the Developer list's rows below the live line stay put while that line changes and rewraps. Settings' redraw
+    /// count is its Developer row's accessibility value, shown only to a test that launches with -countRedraws YES;
+    /// Developer shows its own ("developerRedraws"). The Pre-flight row's top is read again and again for 3 s while the
+    /// live line's numbers change.
+    func testSettingsAndDeveloperStayStill() {
+        let app = launch(["countRedraws": "YES"])
+        XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
+        let watch = 3.0
+
+        // Settings, once its sheet has finished opening: its count now and after 3 s
+        tap(app, "settings")
+        XCTAssertTrue(element(app, "developerRow").waitForExistence(timeout: 10), "Settings did not open")
+        Thread.sleep(forTimeInterval: 1.5)
+        // (every element carrying the row's id is asked: the count is on whichever holds its accessibility value)
+        var settingsValues = ""
+        func settingsRedraws() -> Int? {
+            let rows = app.descendants(matching: .any).matching(identifier: "developerRow").allElementsBoundByIndex
+            settingsValues = rows.map { e in "type \(e.elementType.rawValue) value \(String(describing: e.value))" }.joined(separator: ", ")
+            for e in rows {
+                if let v = e.value as? String, let n = Int(v) { return n }
+            }
+            return nil
+        }
+        let settings0 = settingsRedraws()
+        Thread.sleep(forTimeInterval: watch)
+        let settings1 = settingsRedraws()
+        let settingsSeen = settingsValues
+        screenshot(app, "settings")
+
+        // Developer: the same
+        tap(app, "developerRow")
+        XCTAssertTrue(element(app, "developerDone").waitForExistence(timeout: 10), "the Developer screen did not open")
+        Thread.sleep(forTimeInterval: 1.5)
+        func developerRedraws() -> Int? { Int(label(app, "developerRedraws")) }
+        let developer0 = developerRedraws()
+        Thread.sleep(forTimeInterval: watch)
+        let developer1 = developerRedraws()
+        screenshot(app, "developer")
+
+        // the rows below the live line: the Pre-flight row's top (scrolled well into view first), read for 3 s while
+        // the live line changes, with the line's own height
+        let row = reveal(app, "preflightRow")
+        Thread.sleep(forTimeInterval: 0.5)
+        let liveLine = element(app, "developerLine")
+        var tops: [Double] = [], heights: [Double] = [], lines: [String] = []
+        let started = Date()
+        while Date().timeIntervalSince(started) < watch {
+            if row.exists { tops.append(Double(row.frame.minY)) }
+            if liveLine.exists { heights.append(Double(liveLine.frame.height)); lines.append(liveLine.label) }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let developer2 = developerRedraws()
+        screenshot(app, "developer scrolled")
+        let topMin: Double = tops.min() ?? -1, topMax: Double = tops.max() ?? -1
+        let spread: Double = tops.isEmpty ? 0 : topMax - topMin
+        let heightMin: Double = heights.min() ?? -1, heightMax: Double = heights.max() ?? -1
+        let lineChanges = zip(lines, lines.dropFirst()).filter { $0.0 != $0.1 }.count
+        let framesShown = lines.contains { $0.contains("frames:") } ? "shown" : "not shown"
+
+        func text(_ n: Int?) -> String { n.map { String($0) } ?? "-" }
+        func change(_ a: Int?, _ b: Int?) -> String {
+            guard let a = a, let b = b else { return "?" }
+            return String(b - a)
+        }
+        let redrawWords = "Settings redrew \(change(settings0, settings1)) times (count \(text(settings0)) -> \(text(settings1))), "
+            + "Developer \(change(developer0, developer1)) times (\(text(developer0)) -> \(text(developer1)); "
+            + "\(text(developer2)) after the scroll and \(Int(watch)) s more)"
+        summary(String(format: "stillness: in %.0f s %@; Pre-flight row's top %.1f to %.1f pt over %d reads (spread %.1f pt) while the "
+                       + "live line changed %d times in %d reads (frame numbers %@), its height %.1f to %.1f pt",
+                       watch, redrawWords, topMin, topMax, tops.count, spread, lineChanges, lines.count, framesShown, heightMin, heightMax))
+        guard let s0 = settings0, let s1 = settings1 else {
+            XCTFail("Settings' redraw count was not readable (developerRow: \(settingsSeen))")
+            return
+        }
+        XCTAssertLessThanOrEqual(s1 - s0, 2, "Settings redrew \(s1 - s0) times in \(watch) s with nothing touched")
+        guard let d0 = developer0, let d1 = developer1 else {
+            XCTFail("Developer's redraw count was not readable: \"\(label(app, "developerRedraws"))\"")
+            return
+        }
+        XCTAssertLessThanOrEqual(d1 - d0, 2, "Developer redrew \(d1 - d0) times in \(watch) s with nothing touched")
+        XCTAssertGreaterThanOrEqual(tops.count, 2, "the Pre-flight row was not on screen: \(describe(app))")
+        XCTAssertLessThanOrEqual(spread, 1.0, "the Pre-flight row moved \(spread) pt while the live line changed (tops \(tops))")
         closeSettings(app)
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }

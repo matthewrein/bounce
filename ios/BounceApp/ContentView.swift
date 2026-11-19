@@ -1,8 +1,13 @@
+import ARKit
 import SwiftUI
 
 /// The main screen: point and go. The camera feed with the overlay, the readouts, a passive status chip and a small
 /// gear for Settings. Nothing to set up and nothing to read: the developer tools live in Settings > Developer. While a
 /// developer has the capture kit open (Settings > Developer > Capture kit), its screens replace the normal controls.
+///
+/// What changes with every frame (AppModel.live) is shown by small views that observe it (LiveScene, StatusChip,
+/// ReadoutPanel, LiveRecordingFailure); this body observes only AppModel, so it, and the Settings sheet it presents,
+/// do not redraw with the frames.
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -16,17 +21,7 @@ struct ContentView: View {
                 // the camera feed, the overlay and the tap target share one full-screen coordinate space
                 GeometryReader { geo in
                     ZStack {
-                        if model.hud.demo, let bg = model.background {
-                            // the demo's synthetic frame, filling the view as the camera feed does
-                            Image(decorative: bg, scale: 1)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: geo.size.width, height: geo.size.height)
-                                .clipped()
-                        } else {
-                            ARFeedView(session: model.controller.session)
-                        }
-                        OverlayView(overlay: model.overlay)
+                        LiveScene(live: model.live, session: model.controller.session, size: geo.size)
                         // tapping the slab guides the search (silently: the app never asks for it)
                         Color.clear
                             .contentShape(Rectangle())
@@ -60,7 +55,7 @@ struct ContentView: View {
     private var controls: some View {
         VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                statusChip
+                StatusChip(live: model.live)
                 Spacer(minLength: 0)
                 settingsButton
             }
@@ -68,7 +63,7 @@ struct ContentView: View {
                 HStack { recordingPill; Spacer(minLength: 0) }
             }
             Spacer()
-            readouts
+            ReadoutPanel(live: model.live)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -91,17 +86,6 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-    }
-
-    private var statusChip: some View {
-        Text(model.hud.demo ? "Demo: " + model.hud.status : model.hud.status)
-            .accessibilityIdentifier("status")
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(2)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(model.hud.locked ? Color.green.opacity(0.8) : Color.black.opacity(0.6))
-            .foregroundColor(.white)
-            .clipShape(Capsule())
     }
 
     private var settingsButton: some View {
@@ -129,7 +113,7 @@ struct ContentView: View {
                             .accessibilityIdentifier("recordElapsed")
                     }
                 }
-                if let f = model.developer.recordingFailure {
+                LiveRecordingFailure(live: model.live) { f in
                     Text("stopped: " + f).font(.caption).lineLimit(2)
                 }
                 Button(model.isStopping ? "Saving" : "Stop") { model.stopRecording() }
@@ -147,16 +131,61 @@ struct ContentView: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(Capsule().fill(Color.red.opacity(0.85)))
     }
+}
 
-    private var readouts: some View {
+// MARK: the views that redraw with every frame (they observe AppModel.live, the per-frame state)
+
+/// The camera feed (or, in the demo, its synthetic frame, filling the view as the camera feed does) and the overlay.
+private struct LiveScene: View {
+    @ObservedObject var live: LiveFrame
+    let session: ARSession
+    let size: CGSize
+
+    var body: some View {
+        ZStack {
+            if live.hud.demo, let bg = live.background {
+                Image(decorative: bg, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
+            } else {
+                ARFeedView(session: session)
+            }
+            OverlayView(overlay: live.overlay)
+        }
+    }
+}
+
+/// The passive status chip (green while locked).
+private struct StatusChip: View {
+    @ObservedObject var live: LiveFrame
+
+    var body: some View {
+        Text(live.hud.demo ? "Demo: " + live.hud.status : live.hud.status)
+            .accessibilityIdentifier("status")
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(2)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(live.hud.locked ? Color.green.opacity(0.8) : Color.black.opacity(0.6))
+            .foregroundColor(.white)
+            .clipShape(Capsule())
+    }
+}
+
+/// The readouts: Tilt, Apex, Lands, Air and the drop height.
+private struct ReadoutPanel: View {
+    @ObservedObject var live: LiveFrame
+
+    var body: some View {
         VStack(spacing: 6) {
             HStack {
-                readout("Tilt", model.hud.tilt, id: "tilt")
-                readout("Apex", model.hud.apex, id: "apex")
-                readout("Lands", model.hud.landing, id: "lands")
-                readout("Air", model.hud.air, id: "air")
+                readout("Tilt", live.hud.tilt, id: "tilt")
+                readout("Apex", live.hud.apex, id: "apex")
+                readout("Lands", live.hud.landing, id: "lands")
+                readout("Air", live.hud.air, id: "air")
             }
-            Text("Drop \(model.hud.drop)")
+            Text("Drop \(live.hud.drop)")
                 .accessibilityIdentifier("drop")
                 .font(.caption).foregroundColor(.white.opacity(0.9))
         }
@@ -178,6 +207,25 @@ struct ContentView: View {
                 .accessibilityIdentifier(id)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Why a running recording stopped writing (`DeveloperStatus.recordingFailure`, part of the per-frame state), shown by
+/// `content` when there is a reason and nothing otherwise: the recording pill and Settings > Developer show it without
+/// observing the per-frame state themselves.
+struct LiveRecordingFailure<Content: View>: View {
+    @ObservedObject var live: LiveFrame
+    let content: (String) -> Content
+
+    init(live: LiveFrame, @ViewBuilder content: @escaping (String) -> Content) {
+        _live = ObservedObject(wrappedValue: live)
+        self.content = content
+    }
+
+    var body: some View {
+        if let f = live.developer.recordingFailure {
+            content(f)
+        }
     }
 }
 
