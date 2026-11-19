@@ -266,8 +266,13 @@ public enum KitQuality {
             var what: [String] = []
             if shot.expect.slab == .forbidden { what.append("slab") }
             if shot.expect.ball == .forbidden { what.append("ball") }
-            checks.append(KitQualityCheck(id: "falsePositives", passed: true, severity: .info, value: share, threshold: nil,
-                                          message: "For the record: the app saw a \(what.joined(separator: " or ")) that isn't there in \(pct(share)) of frames."))
+            // the app cannot tell a false slab from the real one left in the picture, or from the real one it keeps
+            // following after it has left the picture (the tracker keeps a lock in the world): say so rather than "isn't there"
+            let message = shot.expect.slab == .forbidden
+                ? "For the record: the app found a \(what.joined(separator: " or ")) in \(pct(share)) of frames. A slab still in the "
+                    + "picture, or one the app kept following after it left the picture, is the real slab, not a false one."
+                : "For the record: the app saw a \(what.joined(separator: " or ")) that isn't there in \(pct(share)) of frames."
+            checks.append(KitQualityCheck(id: "falsePositives", passed: true, severity: .info, value: share, threshold: nil, message: message))
         }
         return KitQualityReport(checks: checks, frames: n, medianLuma: luma, medianBlur: blur, medianAmbient: ambient)
     }

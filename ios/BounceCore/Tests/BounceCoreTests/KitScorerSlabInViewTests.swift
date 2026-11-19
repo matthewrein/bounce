@@ -55,24 +55,26 @@ final class KitScorerSlabInViewTests: XCTestCase {
         return try KitScorer(kitFolder: kit.folder, options: opt).score()
     }
 
-    func testTheRealSlabLeftInViewIsNotAFalseSlab() throws {
+    /// One test, so the unmoved case is scored once (each scoring renders a small synthetic kit).
+    func testTheRealSlabLeftInViewIsNotAFalseSlabButALockElsewhereIs() throws {
         let r = try score(shift: .zero)
         let s = try XCTUnwrap(r.shot("s07-ball-3ft"))
         XCTAssertNil(s.error)
         XCTAssertGreaterThan(r.shot("s04-level-still")?.metric("lockRate")?.value ?? 0, 0.8, "the still shot locks the slab")
         // every find, confirming (by its detection's ray) or locked (by the lock's centre), is on the real slab
-        XCTAssertGreaterThan(try XCTUnwrap(s.metric("slabInViewRate")?.value), 0.7)
+        let inView = try XCTUnwrap(s.metric("slabInViewRate")?.value)
+        XCTAssertGreaterThan(inView, 0.7)
         XCTAssertEqual(s.metric("slabFoundRate")?.value, 0)
         XCTAssertEqual(s.metric("slabLockedRate")?.value, 0)
         XCTAssertEqual(r.aggregate("slabFoundRate")?.value, 0)
-        XCTAssertEqual(r.aggregate("slabInViewRate")?.value, s.metric("slabInViewRate")?.value)
-        let note = try XCTUnwrap(r.notes.first { $0.hasPrefix("s07-ball-3ft: the slab was in view") })
+        XCTAssertEqual(r.aggregate("slabInViewRate")?.value, inView)
+        let note = try XCTUnwrap(r.notes.first { $0.hasPrefix("s07-ball-3ft: the slab was in view") }, "\(r.notes)")
         XCTAssertTrue(note.contains("where s04-level-still locked it (the lock "), note)
         XCTAssertTrue(r.markdown().contains("on the real slab, left in view"))
-    }
+        // the ball finder looks only over the slab's top: its searches over the real slab are not ball misses
+        XCTAssertNil(s.metric("ballDetectionRate")?.value)
+        XCTAssertFalse(r.notes.contains { $0.hasPrefix("s07-ball-3ft: not checked") })
 
-    func testALockElsewhereIsStillFalse() throws {
-        let inView = try XCTUnwrap(try score(shift: .zero).shot("s07-ball-3ft")?.metric("slabInViewRate")?.value)
         // 0.4 m to the side: more than half the slab's side away, off its top
         let side = try XCTUnwrap(try score(shift: Vec3(0.4, 0, 0)).shot("s07-ball-3ft"))
         XCTAssertEqual(side.metric("slabInViewRate")?.value, 0)
@@ -84,9 +86,11 @@ final class KitScorerSlabInViewTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(floor.metric("slabLockedRate")?.value), try XCTUnwrap(side.metric("slabLockedRate")?.value),
                        accuracy: 0.11, "every lock is false")
         XCTAssertGreaterThan(try XCTUnwrap(floor.metric("slabLockedRate")?.value), 0.5)
-        // another ARKit session: no slab shot says where the slab is in that world
-        let other = try XCTUnwrap(try score(shift: .zero, session: "a2").shot("s07-ball-3ft"))
+        // another ARKit session: no slab shot says where the slab is in that world, and the report says it was not checked
+        let o = try score(shift: .zero, session: "a2")
+        let other = try XCTUnwrap(o.shot("s07-ball-3ft"))
         XCTAssertEqual(other.metric("slabInViewRate")?.value, 0)
         XCTAssertGreaterThan(try XCTUnwrap(other.metric("slabLockedRate")?.value), 0.5)
+        XCTAssertTrue(o.notes.contains { $0.hasPrefix("s07-ball-3ft: not checked for the real slab left in view") }, "\(o.notes)")
     }
 }
