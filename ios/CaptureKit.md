@@ -390,7 +390,7 @@ is set (otherwise the app's settings, with a note). The video is decoded with `f
 
 ```
 bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
-             [--fail-on-regression] [--measured]
+             [--fail-on-regression] [--measured] [--positions SHOT=POSITION,...]
 bounce-score --synthetic [--frames N] [--markdown] [--json out.json] [--video h264|hevc] [--truth-ball]
              [--max-tilt-error DEG]
 bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drop-shrink N] [--drops-json out.json]
@@ -400,6 +400,13 @@ bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drop-shrink N]
 It prints kit ids, shot ids and numbers, never paths. `--fail-on-regression` exits with status 2 when a metric got
 worse than in `--compare`; `--max-tilt-error` exits with status 3 when the synthetic kit's median tilt error is above
 it or missing; `--scorer LABEL` records who scored (a git hash) in the JSON.
+
+`--positions` corrects kit.json where the slab was not where the plan put it (`KitScorer.Options.positions`): pairs
+`SHOT=POSITION`, where SHOT is a shot id or its start (`s07` for both s07 shots; the longest match wins) and POSITION a
+position id (`p4`) or `unmeasured`. An unmeasured shot has no true tilt: it reports the tilt it read (`tiltReading`)
+and the tilt the app showed (`settledTiltReading`), with no error. The owner's first kit is scored with
+`--positions s07=p4,s08=unmeasured,s09=unmeasured,s10=unmeasured,s11=unmeasured,s12=unmeasured` (s07 was still at
+p4; s08-s12 were near level, about 0.5 ± 1.5°, with no flat-phone reading).
 
 **From a video frame to the tracker** (`KitFramePipeline`), as `ARController.handle` does it: the processing frame is
 the image shrunk by an integer box factor (`YCCImage.fromBiplanar`), converted only when `SlabTracker.detectionDue` (the
@@ -447,6 +454,9 @@ entered, no height entered, no CoreMotion-to-ARKit link, ...).
 | `timeToLock` | slab expected | first locked frame's t - t0 (s) |
 | `tiltErrorMedian`, `tiltErrorP90`, `tiltBias` | shots of a position with a usable true tilt (`manifest.position(forShot:)?.groundTruth`) | on every locked frame, the tracker's tilt (`Readouts.tiltDegrees`) minus the flat-phone `tiltDegrees`: median and 90th percentile of its absolute value, median of the signed value; per shot and per position (frames pooled) |
 | `normalErrorMedian`, `normalErrorP90` | the same | angle between the tracker's normal and the true normal (below), on every locked frame |
+| `settledRate`, `timeToSettle` | slab expected | the share of locked frames on which the tilt was shown (`TrackerOutput.angleSettled`: its honest uncertainty at or under 1°, see README "Using it"), and the first such frame's t - t0 (s; n/a: never shown) |
+| `settledTiltErrorMedian`, `settledTiltErrorMax`, `settledNormalErrorMedian`, `settledNormalErrorMax` | shots with a true tilt | the tilt and normal errors above on the shown (settled) frames only: what the owner would have seen as a number |
+| `tiltReading`, `settledTiltReading` | shots of an unmeasured position (`--positions`) | the median tilt read on locked frames, and on the shown frames |
 | `cornerRms` | slab expected | the lock's four world corners on every locked frame (matched to the first locked frame's), RMS distance from each corner's per-axis median (mm) |
 | `slabSizeError` | slab expected, measurements entered | each locked frame's detected outline cast onto the lock's plane; mean of (long side - measured long side) and (short side - measured short side), median over frames (mm). The pose's distance scales with the size the app assumes, so this shows how well the outline fits the measured shape (and the size, once LiDAR is fused) |
 | `slabFoundRate`, `slabLockedRate` | slab must not be in view (ball on the floor, `s12-no-slab`) | share of frames confirming or locked / locked |
@@ -634,7 +644,9 @@ is a regression.
 | landingErrorApp, landingErrorRebound | 5 mm | | launchDirectionError, impactClearance | 0.5°, 3 mm |
 
 **The synthetic kit** (`KitSyntheticKit`): every shot of the plan made through `KitStore` as the app makes it, rendered
-by `SyntheticScene` with known truth. Measurements entered (7 x 7 x 1 in, 1/8 in dish, 35 mm ball); positions level, 5°
+by `SyntheticScene` with known truth. The slab and ball are the app's own (`KitSyntheticKit.spec`, `.ball`:
+`SlabSpec.ownerSlab`, a 180.2 mm flat top, 1 in thick, 1/8 in dish, with its sloped, rounded sides; `BallSpec.ownerBall`,
+30 mm), so the scorer scores what ships, and they are the measurements entered; positions level, 5°
 and 10° (the optional third tilt skipped), the slab sliding in its cradle; flat-phone shots from CoreMotion streams of
 the phone laid on the slab on a camera bump and turned around, run through `KitFlatSession`; camera paths still (3-4
 ft, a little sway), half-circle arc and room scan; dim and bright (the picture's brightness x 0.6 and x 1.15); the ball

@@ -2,10 +2,10 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
-## Morning brief: build n10 (18 November 2026)
+## Morning brief: build n11 (19 November 2026)
 
-Everything in n10 reached `native-ios` only after GitHub's checks passed on it. If the badge above is green, build n10
-is ready for the phone. If it is red, don't pull yet.
+Build n11 answers your three priorities from the first kit. It reaches `native-ios` only after GitHub's checks pass on
+it: if the badge above is green and Developer says **n11**, it is the one described here.
 
 ### Update the phone
 
@@ -13,99 +13,138 @@ is ready for the phone. If it is red, don't pull yet.
 2. `cd ios`, then `xcodegen generate`, then `open SlabBounce.xcodeproj`.
 3. Plug in the iPhone, pick it at the top of the Xcode window and press **Run**. If Xcode asks for a team, pick yours
    (step 5 of "First time" keeps it for next time).
-4. In the app, tap the gear, then **Developer**: Build should say **n10**.
+4. In the app, tap the gear, then **Developer**: Build should say **n11**.
 
-### Try these three first
+### Try these first
 
-1. **Pre-flight.** Gear > Developer > **Pre-flight** > **Run**. Point the phone at the room and hold it fairly still for
-   about 10 seconds. Each line says PASS, WARN, FAIL or N/A. Tap **Copy results** and paste them to me. If anything says
-   FAIL, go back to Developer, tap **Copy log** and paste that too.
-2. **Point and go.** From 4 to 5 ft, point at the slab. It should say "Slab locked" within a few seconds and draw the
-   path. Hold the ball about a foot over the slab, with your fingers covering as little of it as you can: the drop
-   height should change and read "(ball)". Then gear > Developer > **Copy diagnostics** and paste it: its "frames"
-   numbers tell me whether the phone keeps up.
-3. **Capture kit.** Gear > Developer > **Capture kit** (about 10 minutes; every step can be skipped). Then **Make
-   bundle**, upload the parts to your private `bounce-captures` repository as described under "Sending it, privately"
-   below, and tell me **"kit uploaded"**: I check every part and score the kit with one command. If a step fails, tap
-   **Quit** (the steps already done are kept), then gear > Developer > **Copy log** and paste it.
+1. **The angle from a still phone.** Stand 3-4 ft from the slab and hold the phone still, tilted about 45-60° down
+   (the slab seen clearly from the side). Within about a second of "Slab locked" the Tilt should show a number. Then
+   gear > Developer > **Copy diagnostics** and paste it.
+2. **Settling.** From the same distance, hold the phone steeply over the slab (about 70° down, as in your kit): the
+   Tilt and Lands should read "settling". Lower the phone toward 45°: the number should come.
+3. **Your sizes.** Measure the slab's top with a ruler (the flat part and the full width), its thickness, and the
+   rounding of its top edge if you can (a coin held against it is enough), and tell me.
 
-### What changed overnight
+### Your three questions, in plain words
 
-- **New in n10 (since n9):** I redid the bounce analysis's test drops on your 7 in slab (below). The automatic test of
-  Copy log, which failed once on a slow GitHub Mac and passed when run again, now quits during the kit's real 20 s room
-  scan instead of a sped-up 5 s one. A recording thrown away just as its video was being saved (by Quit, for example)
-  no longer puts a false video error in the log. That and the build number are the only changes to the app itself.
-- **Ball height.** The held ball's size is read from its outline more carefully, so the drop height from the ball is
-  about 3 mm off on the plain test renders, down from 15 mm (a render of a ball that mirrors the room still reads about
-  1 cm low). A shiny ringed lid on the slab no longer takes the place of a held ball; a lid on its own is still taken
-  for a ball in a few views, as before. A ball held very low (about 4 in over the slab) is still usually missed.
-- **Camera frames.** The app holds at most 2 of ARKit's frames (one being worked on, one waiting), where a slow slab
-  search could hold over 100 before; ARKit stops sending frames at about a dozen. While the app is busy, a newer frame
-  replaces the one waiting. Focus, exposure and white balance are held only once the camera has stopped adjusting.
-  Opening or closing the capture kit, which changes the camera's format, makes the app re-confirm the slab's lock. The
-  slab's edges are measured on the full-resolution picture, which roughly halves the corner error at 4 to 6 ft. Picture
-  conversions are 2 to 3 times faster, with identical results.
-- **First-run tools** (gear > Developer, "First run on a phone"): **Pre-flight**, **Copy log** and **Clear log**. The log
-  records every error in the capture kit, the recorders, the camera and the motion sensors, plus each kit step, in
-  words and numbers only.
-- **Capture kit safety.** A failed or interrupted step never loses earlier steps: tested by simulating the app being
-  killed at every file write. A retake that comes out worse no longer replaces a good take.
-- **Hand-off.** When you say "kit uploaded", one command fetches your private repository, checks every part (all
-  there, not damaged), unzips and scores the kit, and says whether you can delete the kit from the phone. A full-size
-  synthetic kit (108 MB, 4 parts, each at most 24 MB) went through the whole path. GitHub also sends the bundle the
-  real app makes in the Simulator through that command on every change.
-- **Bounce analysis.** From a recorded drop the scorer now measures the ball's real path, the impact point on the dish,
-  the rebound and where the ball really lands, and compares that with the app's prediction. I redid its 12 test drops on
-  your 7 in slab (the first ones were on an 18 in slab by my mistake), half of them filmed from 3 to 3 1/2 ft away (the
-  distance the kit asks for when it films the slab; its drop steps do not name one), the rest from 4 to 5 ft. With a
-  stand-in ball finder that knows where the ball is, all 12 are measured and the rebound comes back within 0.1 point,
-  so the analysis itself works (only the error margins it states are too narrow, by a few millimetres). With the app's
-  own ball finder only 4 of 12 are measured, and they read the rebound 4 to 9 points high (the rebound to set in the
-  app comes out 76 ± 4% for a true 70%, from two drops, and 89 ± 6% for 85%, from one; the fourth is left out because
-  it read as a hit near the edge). The rendered ball's lower half is about the grey of the floor behind it. So the
-  finder often misses the ball, or sees only its bright top, takes the ball for smaller and farther away than it is,
-  and throws the reading out. Your real drops will show whether a real ball does the same.
-- **Device budget.** Each step of the per-frame work was timed and scaled to GitHub's Mac (an Apple M1); the Mac's own
-  timing of this code is in every build's checks. Once the slab is locked, the app uses about 5 to 30% of one core at 60 frames a
-  second, except close up over a speckled floor or with a hand over a corner of the slab, where it still drops some
-  frames. While it is still searching close up (2 ft) on a cluttered floor, a search takes 130 to 230 ms, so the
-  outline and path update only a few times a second until the slab locks (under a second). The camera picture itself
-  stays smooth. Newer iPhones (13 Pro and later) should be about as fast as that Mac or faster; an iPhone 12 Pro about
-  10% slower.
-- **Harsher test scenes** (on a separate test branch, not in n10): a mirror ball reflecting a cluttered room and the
-  person holding it, low light with sensor noise, motion blur, a slab side with almost no contrast, and mixed lighting.
-  What they found is under "Open questions".
+1. **The outline taking in the slab's side face (your top priority): fixed up to about 4 ft.** The app now knows the
+   real shape of your slab's sides: each side face drops about 21 mm while it runs about 8 mm outward, and the top's
+   edge is rounded. n10 assumed a straight-down 1 in face, so it expected the side face to show as a band about half as
+   wide as it really is, and it often took that band, or its bottom, for the top's edge. Now each side's line goes on
+   the top's own edge: where the side face shows as a band, on the band's inner edge, where the top's brightness ends;
+   where the face is hidden, on the rounded edge's outline. The app also learns your sides' drop and run as it goes,
+   from the sides where both edges of the band show. On your kit, of the sides that show a band, **2.7%** now sit
+   mid-band or on its bottom (**55%** with n10), and 5% sit a little inside the top's edge (bands about as light as the
+   top, where one view cannot tell which edge it sees; the app treats those as uncertain, below). Farther than about 4
+   ft, a side whose face is about as light as the top is still read a little onto the face (see 3).
+2. **A poor tilt while the camera is still: it was mostly the side face, and is fixed with it.** With every side on
+   the top's edge, a still view reads about right from the first lock: on your level still shot the locked tilt is
+   **0.06°** off (its direction 0.45°), where n10 read 7.2° off. Two more changes help. LiDAR no longer turns the tilt:
+   on this small raised top its plane was 4-15° off from a standstill; it now only checks the distance, and agrees with
+   the picture to about 1%. And the app's new honest estimate of the tilt (below) keeps only a view's newest readings,
+   so a bad start ages out within about a second. Moving the phone is no longer what fixes it.
+3. **A usable tilt within about a second, without moving: yes, without LiDAR, from a moderate angle; not from steeply
+   above.** From 3-4 ft with the phone tilted no more than about 60° down (the slab clearly seen from the side, not
+   from above), one still view pins the tilt to about 1°, and the app shows it within about a second of finding the
+   slab (shown on the test renders and by the uncertainty model; your kit had no still view that low). From steeper
+   than about 65°, the way you held the phone in the kit (about 70° down, 3.5-4.5 ft), one view cannot pin it that
+   well (its honest uncertainty there is 1.3-1.9°), so the app now says **settling** instead of showing a number that
+   may be a degree or more off. Lower the phone a little or step back, and the number comes.
+   Nearly straight above the slab (within about 20° of looking straight down on it) all four side faces show, which
+   the app does not read yet: it says settling there, or does not lock at all.
+   **Beyond about 4 ft it is not right yet.** On test pictures of your slab at 4-6 ft (45° down), the near sides,
+   whose faces are about as light as the top, are read a little too far out: the tilt comes out 1.2-1.9° off, and the
+   app can show that number for the first moment before it goes back to settling. Your kit's room scan, from about
+   4.7 ft, showed a number about 1° off for most of the shot. So for now stand 3-4 ft away; fixing this is next.
+
+### What you will see
+
+- **settling**: right after the lock, Tilt and Lands may read "settling" (dimmed), the status says **Slab locked ·
+  settling**, and the path is drawn faint and dashed with no landing ring; Apex and Air keep their values (a degree
+  moves them by millimetres). The number appears once the tilt is good to about 1° (1° moves the landing about
+  4.5 cm). Gear > Developer shows the honest uncertainty itself ("tilt sigma 1.7° · 1 view group · settling").
+- **The slab and the ball are your measured ones.** The flat top is **180.2 mm** (7.09 in) square: measured from the
+  kit's own pictures, ± 1.5 mm (the outline over the rounded edge is about 184.5 mm). You said "160mmish" by eye; the
+  kit rules 160 mm out for the flat top, so tell me what you measured, or give me a ruler reading of the top's flat
+  width, the bottom's width and the thickness: it is one number to change. The size sets the slab's distance (and so
+  the held ball's height), not its tilt. The ball is **30 mm**, as you said; the kit measures 30.1 ± 0.6 mm. n10 had
+  35 mm, 16% too big, which put a held ball's height off by centimetres.
+
+### Your kit, replayed through n11
+
+Every video shot of your first kit through the n11 app's own code, each shot from a fresh start (the scorer), with s07
+at the 17° position and s08-s12 near level (about 0.5°, not measured). "Shown" is a number on the screen; otherwise it
+said settling.
+
+- **Shown numbers:** never more than 2° off. On the three arcs where the number came (about a third to half of the
+  locked frames, after 6.8-12.6 s), the shown tilt was at most 0.21°, 0.81° and 0.63° off. The fourth arc (17°) and the
+  near-level drop shots stayed on settling, except one drop shot that showed 0.31° on a slab that is level to about a
+  degree. The arcs were filmed fast (15-30° a second), which blurs the edges; a slower arc should settle sooner.
+- **Your still views:** settling throughout, as they should: their single-view errors were up to 1.2°. The level still
+  locked at 0.06° (0.45° in direction) and the 17° view at 3 ft at 1.2°; the 5° and 17° stills from straight-ish
+  above never locked, as in n10.
+- **The locked tilt** (what the outline and path follow), median error per shot, n10 then n11: level still 7.19° to
+  0.06°, level arc 2.56° to 1.43°, 5° arc 2.10° to 0.53°, 11° arc 0.98° to 1.28° (the one shot that got worse; it
+  never showed a number more than 0.63° off), 17° arc 0.46° to 0.04°. Over all slab shots n11 reads 0.40° (90% within
+  1.8°).
+- **LiDAR**: 75 of its 98 checks of the top agreed and were used (77%; 13 were turned away for their angle, 10 for
+  their distance). LiDAR's distance to the top is 0.9% longer than the picture's (it reads long by about that much
+  against the floor too), so with your measured size the picture's distance is right to within about a percent.
+- **The learned side shape**: about 19 mm down and 8 mm out (median over the shots), against 19.5-22 mm and 7-8 mm
+  measured by hand from the kit. Started from a straight-down face instead, it learns the 8 mm run but only about 14 mm
+  of the drop, so the measured starting point matters.
+
+### What changed in n11 (since n10)
+
+- **The side's shape and the edge choice** (the outline, above), with the learned drop and run per slab.
+- **LiDAR** keeps only the distance; it never moves the tilt.
+- **The honest tilt and "settling"**: the app works out how well it knows the tilt from each side's own uncertainty
+  (how sharp the edge is, how far the side's shape could be off, motion blur, and half the band when one view cannot
+  tell which edge of it it sees), counts the same view seen again as one view, leaves out readings that do not fit the
+  square, and widens the result when views disagree. It shows the tilt at 1.0° or better on two updates in a row, and
+  goes back to settling above 1.25°. The lock and the outline work as before.
+- **Your slab and ball** (above), in one place in the code.
+- **Developer**: the tilt line, LiDAR's check counts in Copy diagnostics, the demo can start steep and lower the
+  camera, and the kit scorer can be told where the slab really was (`--positions`).
 
 ### Verified by tests, and only compiled
 
-- **Verified:** 430 tests of the slab, ball, bounce, tracking, recording, capture kit, hand-off and budget code on Linux
-  (one of them, which replays a recording from the phone, waits for a real recording), and 431 optimised on a Mac (one
-  more test runs only there); 9 end-to-end tests in the iPhone Simulator on the app's demo scene (lock and tilt,
-  sliding the slab, the rebound setting, the ball's drop height, a recording, diagnostics, the whole capture kit
-  including quitting mid-recording and resuming, pre-flight, Copy log); the hand-off dry run; the app's own bundle
-  through the one command.
-- **Only compiled, never run on a phone:** the camera and ARKit frames (including the new frame hand-off), focus,
-  exposure and white balance holding, LiDAR depth, the motion sensors, the capture kit's video recording from the
-  camera, the kit's camera format switch, pre-flight's camera, ARKit, LiDAR and motion checks, and real timing on an
-  iPhone. The Simulator tests run the optimised build, but on a drawn scene on a shared Mac, so their speed says
-  nothing about a phone.
+- **Verified:** 478 tests of the slab, edges, tilt, settling, ball, bounce, tracking, recording, capture kit and
+  hand-off code on Linux, optimised (477 in the unoptimised build GitHub's Linux check runs; in both, three wait for
+  files or settings from you), all passing;
+  your kit replayed through the n11 code (in private, nothing from it in the repository); the synthetic kit; the harsh
+  test scenes.
+- **Only compiled, never run on a phone:** the settling display (the dimmed readouts, the faint dashed path, the status
+  line), the demo's steep start, the new UI test, and how long the new edge reading takes on an iPhone (it reads each
+  side's profile in five runs and works out the side's shape for each; not yet timed on a phone or on GitHub's Mac).
+  The camera, ARKit, LiDAR and motion code is as in n10.
 
 ### Open questions and known gaps
 
+- **Your slab's size and edge.** "160mmish": what was measured? A ruler reading of the top's flat width, the bottom's
+  width and the thickness, and the top edge's rounding (a coin against it, or a radius gauge), would tighten the
+  settling: with the rounding measured, steeper views settle (at 4 ft up to about 65° instead of 60°).
+- **The next kit:** a slow arc (about a quarter turn in 10 s), so the arcs show how soon a moving view settles.
+- **Nearly straight above** the app still does not read the side faces (all four show there): it says settling or
+  does not lock. Whether a degree is reachable there is not known yet.
+- **The settling numbers are from one kit.** The constants (how sharp an edge is, how much blur costs, when two views
+  count as one) were measured on your one slab, phone and floor; the next kit checks them. On your kit the honest
+  uncertainty was a little cautious (errors were 0.70 of it at the median, 1.44 at the 95th percentile).
+- **Test scenes (the harsh scenes, which still draw the old straight-sided 7 in slab and a 35 mm ball).** At 2 ft
+  the tilt went from 1.5-1.6° off to 0.13-0.24°, and at 3 ft from 6° to 1.5° (the app no longer takes that slab's cut
+  face for its top either). But on that slab the app now expects your sloped sides: at 3 ft the held ball's height is
+  24-35 mm off (it was 0-11), at 6 ft the tilt 1.8-1.9° (it was 0.03°), and in mixed lamp and window light at 3 ft
+  2.2° (it was 0.7°). 13 of the 76 scenes pass, against 19 for n9; the 6 that no longer pass are all at 6 ft. Drawn
+  with your slab and ball, the plain scenes read 0.04-0.19° at 2-3 ft, but 1.2° at 4 ft and 1.9° at 6 ft (the
+  problem above).
+- **The held ball's height on the synthetic kit** (your slab and ball drawn) is 11 mm off (three shots: +16, +11 and
+  -9 mm) where n10 was 2 mm off on its own drawn slab; the same n11 code without the side shape reproduces n10's
+  numbers exactly, so it follows the new edges' lock, or the smaller ball. Your next kit's held-ball heights will tell.
 - **The bounce itself.** The app launches the ball along the slab's normal. A real ball dropped on a tilted surface
   also keeps some of its downhill speed, which on an 8° slab sends it off at nearly twice that angle. Your recorded
   drops will show which is right; I will change the app only if they agree.
 - **The dish's shape.** The app treats the 1/8 in dish as a bowl through the four corners. If it is a round dish
   inside the square, it leans about twice as much near the middle. Which is it?
-- **Close range.** When the slab's near cut face is about as bright as its top, the app can take the bottom of the cut
-  face for the top's edge, and the tilt reads wrong: 1.5° off at 2 ft and 6° at 3 ft on the test scenes, and 5° at
-  4 ft when a lamp lights the near cut face. From 4 to 6 ft the ordinary test scenes read within 0.1°. The obvious fix
-  breaks the case of a cut face in deep shadow, so the reviewers held it back; your kit will show how often it happens.
-- **Hard cases from the harsh scenes:** a hand holding the ball (from above or from the side, the app missed it at 2 to
-  4 ft), a fast falling ball's motion blur, a slab side that almost vanishes against a floor of the same shade, mixed
-  lamp and window light, and a shaky hand or a dim room at 6 ft can still fail. Fixes go in only where independent
-  reviewers agree they are real weaknesses, not quirks of the renders; the hand and the mixed light are agreed, and I
-  am working on their fixes for n11.
 - **A speckled floor** (terrazzo, granite, gravel) right behind the space over the slab can be taken for a ball.
 - **Privacy:** the three slab photos can still be reached on GitHub through an old commit, although no branch has them
   (I'll give you its id in our conversation, not here). Make the repository private, or ask GitHub Support to remove
@@ -113,7 +152,8 @@ is ready for the phone. If it is red, don't pull yet.
 
 The native version of Slab Bounce. It finds the cement slab on its black base, works out its tilt and draws the path a
 ball would take bouncing off it. It uses ARKit, so the lens is known exactly and the slab, once found, stays pinned in
-place as you move the phone. On iPhones with LiDAR (Pro models) it also measures the slab's top with depth.
+place as you move the phone. On iPhones with LiDAR (Pro models) it also checks the slab's distance with depth (not its
+tilt: on this small raised top LiDAR's plane is several degrees off).
 
 You build it on a Mac and install it on your iPhone from Xcode. You don't need to edit any code.
 
@@ -199,17 +239,28 @@ Then press **Run** in Xcode. If you chose the team in Xcode instead of `Local.xc
 
 ## Using it
 
-Open the app and point the phone at the slab, from about 2-5 ft away. That is all: there is nothing to set up.
+Open the app and point the phone at the slab, from about 2-4 ft away (in build n11 the tilt is not yet right from
+farther: see the morning brief). That is all: there is nothing to set up.
 
 - When the outline turns yellow and the label says **Slab locked**, the slab is pinned. Focus, exposure and white balance
   are then held too, once the camera has stopped adjusting them (within about 2.5 s).
-- The yellow outline is the plane through the slab's four top corners. The dashed white line is the launch direction,
-  perpendicular to that plane. The cyan arc is the bounce, with the apex and where it lands. The readouts at the bottom
-  give the slab's tilt, the apex height, how far away the ball lands and its time in the air.
+- The yellow outline is the slab's flat top (the app knows its sides slope outward and its top edge is rounded, so the
+  outline stays on the top's edge, not on the side face below it). The dashed white line is the launch direction,
+  perpendicular to the plane through the four top corners. The cyan arc is the bounce, with the apex and where it
+  lands. The readouts at the bottom give the slab's tilt, the apex height, how far away the ball lands and its time in
+  the air.
+- **settling**: right after the lock, and for as long as the app cannot yet pin the tilt to within about a degree, Tilt
+  and Lands read "settling" (dimmed), the label says **Slab locked · settling**, and the path is drawn faint and dashed
+  with no landing ring. Apex and Air keep their values (a degree moves them by millimetres). The tilt appears once
+  it is good to about 1° (1° moves the landing about 4.5 cm). From 3-4 ft, with the phone tilted no more than about
+  60° down (the slab seen clearly from the side, not from above), that is within about a second. From straight above
+  or steeper than about 65°, one view cannot pin the tilt that well, so the app keeps saying "settling" rather than
+  show a number that may be degrees off: lower the phone or step back a little.
 - Hold the ball above the slab: its height sets the drop height, shown as "(ball)", and the label says **Slab locked ·
   ball in view**. Without a ball, the drop height from Settings is used.
 - If you slide the slab to change its angle, the app notices after about a second and locks onto the new position.
-- The slab (about 7 in square, 1 in thick, with a 1/8 in dish) and the 35 mm titanium ball are built into the app.
+- The slab (a 180.2 mm, about 7.1 in, square flat top as measured on your first kit, 1 in thick, with a 1/8 in dish and
+  sloped, rounded sides) and the 30 mm titanium ball are built into the app.
 - Seen from straight above, the slab's tilt hardly shows in the picture, so the app waits for a view at an angle before
   it locks, rather than lock on a tilt that could be several degrees off.
 
@@ -250,7 +301,12 @@ opens them by itself.
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
   where it lands instead of the corner plane's. Both apply when Settings closes.
 - **Build** shows the build label (e.g. n7), and the line under it the tracker's live state, including its hints, which
-  the main screen never shows. Its "frames:" row sums up the last 10 seconds and is refreshed every second, e.g.
+  the main screen never shows. While locked, a "tilt sigma 1.7° · 1 view group · settling" row gives the tilt's honest
+  uncertainty (both directions together), how many distinct views of the slab it rests on (views more than 7.5° apart
+  add up; the same view seen again does not), and whether the tilt is shown ("settled", at 1.0° or less on two
+  updates in a row; back to "settling" above 1.25°). **Copy diagnostics** has the same (`tiltSigmaDegrees`,
+  `angleSettled`, `viewGroups`, `settledTiltDegrees`) and, on a LiDAR phone, `depthChecks`: how many LiDAR checks of
+  the slab's top were used and why the others were not, with LiDAR's range over the picture's. Its "frames:" row sums up the last 10 seconds and is refreshed every second, e.g.
   "frames: 58.9/s in, 3% dropped busy, held 2, wait 4/12 ms, 1% late from ARKit, delegate 1 ms p95, 0 gaps, 0 pauses,
   delivery 21/34 ms, process 6/19 ms (p50/p95; p95 plain 6, ball 9, search 80, re-check 25), detector 8.3/s": frames a
   second from the camera; the share dropped because processing was busy (a newer frame took their place), the most

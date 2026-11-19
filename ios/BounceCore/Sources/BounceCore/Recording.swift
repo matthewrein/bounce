@@ -135,11 +135,13 @@ public struct RecordingSettings: Codable, Equatable {
     /// arc, moved the lock from +0.18 to -2.10 deg. Its range is still used.
     public static let appDepthNormalWeight = 0.0
     /// LiDAR moves the lock's centre half way to its own range (`TrackerSettings.depthCentreWeight`), the weight it had
-    /// before n11. Half and half while the slab's size is unmeasured: the picture's range scales with the assumed size,
-    /// off by about 1.4% (177.8 mm assumed against the kit's 180 mm flat top), and LiDAR's range is off by 1-2% beyond
-    /// 1 m on the same kit (2.6% per metre in one shot, 0.7-0.9% in another), so neither is clearly better. Once a ruler
-    /// gives the size (the picture's range then good to about 0.3%), this should become the variance weight
-    /// picture^2 / (picture^2 + LiDAR^2), well under a half beyond 1 m.
+    /// before n11. Half and half while the slab's size is not measured with a ruler: the picture's range scales with the
+    /// assumed size, now the 180.2 mm flat top read from the owner's first kit's pictures (± 1.5 mm, 0.8%), and LiDAR's
+    /// range is off by 1-2% beyond 1 m on the same kit (2.6% per metre in one shot, 0.7-0.9% in another). Replayed with
+    /// that size, LiDAR's range to the top came out a median 0.9% longer than the picture's (shot medians 0.2-2.9%), about
+    /// what LiDAR reads long against the floor, so neither is clearly better. Once a ruler gives the size (the picture's
+    /// range then good to about 0.3%), this should become the variance weight picture^2 / (picture^2 + LiDAR^2), well
+    /// under a half beyond 1 m.
     public static let appDepthCentreWeight = 0.5
 
     public var launchRule: Bounce.LaunchRule { dishBounce == true ? .dishNormal : .cornerPlane }
