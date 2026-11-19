@@ -2,6 +2,61 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n14 (19 November 2026): tap hints
+
+Small build on top of n13; everything below still holds. Developer shows **n14**.
+
+**What changed**
+- You can tap the screen to help the app, and you never need to: nothing asks for a tap, the main screen still has no
+  instructions, and without a tap the app runs as n13 did. What a tap does depends on what is under your finger:
+  - **The slab**, before it is locked: the search looks there first. A white ring spreads from your finger for a
+    moment.
+  - **The ball**, held over the locked slab with no ring on it: the ball finder looks there first for 2 seconds, and
+    stays on the ball once it finds it there. An orange dashed ring.
+  - **A ball ring that is wrong**: the ring goes at once, and that spot is passed over for 20 seconds (up to 4 spots). A
+    red crossed-out ring. Tap the same spot again to take it back.
+- A tap that lands by mistake costs nothing. Before the lock it is a hint for one second and the search goes on as
+  before. Once locked, a tap on the floor beside the slab looks there, but the lock stays unless a slab is found there
+  twice in a row (and LiDAR agrees).
+
+**Checked on your real clips** (the taps simulated on both kits' recordings, as the app takes them)
+- No tap: both kits score exactly as with n13 (all 796 numbers the same).
+- Stray taps: on every shot of both kits, a tap on the floor beside the slab before the lock, or while it was
+  confirming, changed the time to lock by 0.00 s; taps on the floor every 3 s after the lock, or on the locked slab
+  itself, never lost it and never moved its tilt.
+- Tapping the slab: on most shots it changes nothing (the app had already found the slab under your finger). Where the
+  app was slow or never locked, it helped on 8 shots: your first kit's 5° still shot locked at 2.3 s (never without a
+  tap) and the shot without the ball at 5.3 s (never), the 11° still a little sooner; your second kit's level arc at
+  2.7 s (7.2 s without), 3.6° arc at 2.5 s (5.1 s), 7.8° arc at 3.8 s (9.8 s), and the 12° still and arc a little
+  sooner. The locks' tilts were as good or a little better, but on the 3.6° arc the tilt was shown on 35% of the locked
+  frames instead of 88% (error 1.1° either way).
+- Where a slab tap hurt: your second kit's room scan (s02), tapped 1 s in, never locked; untapped it locks at 12 s. It
+  is a marginal shot, where any small change moves the lock either way (an earlier version of the taps locked it at
+  5 s); not fixed in this build.
+- Tapping the ball, in your second kit: untapped, the app found your lattice ball on none of the 7 shots with the
+  ball. With a tap on it, it found it on 3: held 4 in (shown on 105 frames), held 1 ft (66) and the second drop (36
+  frames, before the release). On the other 4 (held 2 ft, the first and third drops, the drop near the edge) it is
+  still not seen even with a tap, and on the 2 ft hold the tap brought up a wrong ring once (9 frames). On your first
+  kit a tap made the ball show where it was missed or flickered: held 4 in 41 frames (none without), held 1 ft 51 (27),
+  the first drop 74 (18); the others were found without a tap. A tap just off the ball's edge still found it on 5 of
+  these 6 shots (not on your second kit's 1 ft hold).
+- Tapping a wrong ring: on the 4 shots where one showed (1 in your first kit, 3 in your second), one tap took the wrong
+  rings from 18 frames to 1, 32 to 1 and 21 to 1; on the fourth two taps took them from 15 to 2.
+
+**Only on test scenes**: poor light (a rendered slab at 0.4 of the light: a tap locks it in 0.27 s; never without one);
+taking a dismissal back (the demo scene: the ring stays gone while the camera drifts, and is back 0.16 s after a tap on
+its spot). Not tried on your clips: the LiDAR check before the lock moves to a slab found under a tap (no tap on your
+clips ever found a different slab there).
+
+**Only compiled**: all of the app's side (the tap marks, how a tap reaches the tracker, invisible markers for the
+tests) and two new Simulator tests (a stray tap never costs the lock; dismiss a ring and take it back). GitHub's checks
+compile them, and run the two tests on the demo scene, before this build reaches you; none of it has run on a phone.
+
+**Try**: point at the slab as before, without tapping: nothing should change from n13. Then, while it searches, tap the
+slab's middle once. Hold the ball over the locked slab and, if no ring is on it, tap the ball. If a ring sits on
+something that is not the ball, tap it, then tap the same spot again to bring it back. Tap the floor by mistake: the
+lock should stay. Settings > Developer > Copy diagnostics counts the taps (tapSlab, tapBall, tapDismiss).
+
 ## Build n13 (19 November 2026): restitution 0.9
 
 Small build on top of n12; everything below still holds except the restitution and the along-surface share it starts

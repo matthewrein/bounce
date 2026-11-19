@@ -1,6 +1,6 @@
 import Foundation
 
-// Tap hints (n12): the owner may tap the slab, the ball, or a ball ring that is wrong. Nothing asks for a tap and nothing
+// Tap hints (n14): the owner may tap the slab, the ball, or a ball ring that is wrong. Nothing asks for a tap and nothing
 // needs one: a tap only makes the search look somewhere first, or takes back a ball the finder got wrong. What a tap
 // means is decided by what is under the finger (`SlabTracker`, `TrackerSettings.tapHints`): a ring shown there is
 // dismissed; a place where a ball held over the locked slab could be is searched for the ball first; anywhere else the
@@ -8,7 +8,7 @@ import Foundation
 
 /// What a tap was taken for.
 public enum TrackerTapKind: String, Codable {
-    /// look for the slab there (the only kind before n12, and the only one with `TrackerSettings.tapHints` off)
+    /// look for the slab there (the only kind before n14, and the only one with `TrackerSettings.tapHints` off)
     case slab
     /// look for the ball there first (the slab is locked, and a ball held over it could be under the finger)
     case ball
