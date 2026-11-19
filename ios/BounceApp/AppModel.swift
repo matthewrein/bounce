@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n13"
+let appBuild = "n14"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the ball's
 /// restitution (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
@@ -110,7 +110,7 @@ struct HUDState: Equatable {
 }
 
 /// The live developer line (Settings > Developer): the tracker's state, whether the lock is unconfirmed, its hint, and
-/// the recording's progress.
+/// the recording's progress. Its row keeps the same height while the line rewraps (`LiveDeveloperLine`).
 struct DeveloperStatus: Equatable {
     var state = "not started"
     var lockUnconfirmed = false
@@ -137,11 +137,40 @@ struct DeveloperStatus: Equatable {
     }
 }
 
+/// What the controller publishes with every processed frame (several times a second; about 8 in the Simulator's demo):
+/// the overlay, the main screen's readouts and status, the developer line and the demo's synthetic frame. It is an
+/// observable object of its own, apart from AppModel, so that only the small views that show it redraw with the frames:
+/// on the main screen `LiveScene` (the feed or the demo's frame, and the overlay), `StatusChip`, `ReadoutPanel` and the
+/// recording pill's `LiveRecordingFailure`; in Settings > Developer `LiveDeveloperLine` and `LiveRecordingFailure`. The
+/// main screen's own body, Settings, Developer and Pre-flight observe AppModel, which changes only when someone does
+/// something (until n12 these values were AppModel's, so all of them redrew with every frame, Settings' sheet too).
+@MainActor
+final class LiveFrame: ObservableObject {
+    @Published private(set) var overlay = OverlayState()
+    @Published private(set) var hud = HUDState()
+    @Published private(set) var developer = DeveloperStatus()
+    /// the demo's synthetic frame (nil on the camera, whose feed ARFeedView draws)
+    @Published private(set) var background: CGImage? = nil
+
+    /// One frame's values (AppModel.publish). Each is set only if it changed, so a frame that changes nothing redraws
+    /// nothing; the demo's frame is kept until the camera runs.
+    func publish(overlay o: OverlayState, hud h: HUDState, developer d: DeveloperStatus, background bg: CGImage?) {
+        if o != overlay { overlay = o }
+        if h != hud { hud = h }
+        if d != developer { developer = d }
+        if let bg = bg { background = bg } else if !h.demo, background != nil { background = nil }
+    }
+
+    /// The demo's frame is dropped (a restart, on the camera or the demo).
+    func clearBackground() {
+        if background != nil { background = nil }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var overlay = OverlayState()
-    @Published var hud = HUDState()
-    @Published var developer = DeveloperStatus()
+    /// the per-frame state, observed only by the views that show it (see LiveFrame)
+    let live: LiveFrame
     @Published var settings = AppSettings.load()
     @Published var shareURL: URL? = nil
     @Published var isRecording = false
@@ -149,7 +178,6 @@ final class AppModel: ObservableObject {
     @Published var isStopping = false
     @Published var recordingStartedAt: Date? = nil
     @Published var arUnsupported = false
-    @Published var background: CGImage? = nil
     @Published var diagnosticsText: String? = nil
     /// why the last recording could not start or be saved (shown in Settings > Developer and on the recording pill)
     @Published var recordingError: String? = nil
@@ -165,6 +193,7 @@ final class AppModel: ObservableObject {
     private(set) lazy var preflight = PreflightRunner(model: self, controller: controller)
 
     init() {
+        live = LiveFrame()
         controller.model = self
         AppLog.start()
     }
@@ -221,7 +250,7 @@ final class AppModel: ObservableObject {
         AppLog.info("app", "restarting on the " + (AppModel.demoScriptRequested() ? "demo scene" : "camera"))
         if isRecording { stopRecording() }
         if running { controller.stop(); running = false; UIApplication.shared.isIdleTimerDisabled = false }
-        background = nil
+        live.clearBackground()
         start()
     }
 
@@ -334,11 +363,10 @@ final class AppModel: ObservableObject {
 
     func setViewport(_ size: CGSize) { controller.setViewport(size) }
 
-    // called by the controller on the main queue
+    /// A frame's overlay, readouts, developer line and demo frame, called by the controller on the main queue. They go
+    /// to `live`, not to AppModel's own published values, so the views that observe AppModel do not redraw with the
+    /// frames.
     func publish(overlay o: OverlayState, hud h: HUDState, developer d: DeveloperStatus, background bg: CGImage?) {
-        if o != overlay { overlay = o }
-        if h != hud { hud = h }
-        if d != developer { developer = d }
-        if let bg = bg { background = bg } else if !h.demo, background != nil { background = nil }
+        live.publish(overlay: o, hud: h, developer: d, background: bg)
     }
 }
