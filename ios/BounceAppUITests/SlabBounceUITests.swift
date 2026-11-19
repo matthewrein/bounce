@@ -1,5 +1,4 @@
 import BounceCore
-import CoreGraphics
 import XCTest
 
 /// End-to-end tests in the iOS Simulator. ARKit and the camera do not exist there, so the app runs its demo: a synthetic
@@ -111,13 +110,15 @@ final class SlabBounceUITests: XCTestCase {
         return v
     }
 
-    /// Scroll the Developer screen until the element is on screen (its last rows start below the fold, and a list makes
-    /// its rows only when they come into view).
+    /// Scroll the Developer screen until the element is well on screen (its last rows start below the fold, and a list
+    /// makes its rows only when they come into view). "Well on screen" is hittable and clear of the window's edges: a row
+    /// cut by the bottom edge counts as hittable, but a tap there, in the home indicator's strip, can be lost (n12's
+    /// Developer list, one switch shorter, left the Pre-flight row there).
     @discardableResult
     func reveal(_ app: XCUIApplication, _ id: String) -> XCUIElement {
         let e = element(app, id)
         for i in 0..<10 {
-            if e.exists && e.isHittable { break }
+            if e.exists && e.isHittable && clearOfEdges(app, e) { break }
             let list = app.collectionViews.firstMatch.exists ? app.collectionViews.firstMatch : app.tables.firstMatch
             let target = list.exists ? list : app
             if i < 6 { target.swipeUp() } else { target.swipeDown() }
@@ -125,6 +126,12 @@ final class SlabBounceUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.8)
         }
         return e
+    }
+
+    /// The element lies inside the window with room to spare: below the top bars and above the bottom strip.
+    func clearOfEdges(_ app: XCUIApplication, _ e: XCUIElement) -> Bool {
+        let w = app.windows.firstMatch.frame, f = e.frame
+        return !f.isEmpty && f.minY > w.minY + 100 && f.maxY < w.maxY - 60
     }
 
     /// Settings > Developer > Copy log: the text its sheet shows (the sheet is closed again, Developer stays open).
@@ -140,16 +147,18 @@ final class SlabBounceUITests: XCTestCase {
         return log
     }
 
-    /// Developer -> Pre-flight, until the pre-flight screen's Run shows. The row is a navigation link near the foot of the
-    /// Developer list, a list that redraws several times a second (the live line). Up to three tries: let the push that
-    /// opened Developer finish, reveal the row, tap it (at its centre if the list says it is not hittable) and wait;
-    /// before the third try Developer is left and opened again, in case the link is stuck. Each try prints what is on
-    /// screen ("E2E-DEBUG" lines, which CI copies into its log), and a miss prints the whole screen.
+    /// Developer -> Pre-flight, until the pre-flight screen's Run shows and stays. The row is a navigation link near the
+    /// foot of the Developer list, a list that redraws several times a second (the live line). Up to three tries: let the
+    /// push that opened Developer finish, reveal the row (well on screen, see reveal), tap it and wait; before the third
+    /// try Developer is left and opened again, in case the link is stuck. Each try prints what is on screen
+    /// ("E2E-DEBUG" lines, which CI copies into its log), and a miss prints the whole screen.
     func openPreflight(_ app: XCUIApplication) -> Bool {
         let run = element(app, "preflightRun")
         for attempt in 1...3 {
             if attempt == 3, element(app, "developerDone").exists {
-                let back = app.navigationBars["Developer"].buttons.element(boundBy: 0)
+                // back to Settings (the back button carries the previous screen's title) and into Developer again
+                let bar = app.navigationBars["Developer"]
+                let back = bar.buttons["Settings"].exists ? bar.buttons["Settings"] : bar.buttons.element(boundBy: 0)
                 if back.exists { back.tap() }
                 if element(app, "developerRow").waitForExistence(timeout: 5) { element(app, "developerRow").tap() }
                 _ = element(app, "developerDone").waitForExistence(timeout: 10)
@@ -158,12 +167,12 @@ final class SlabBounceUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 1.0)
             let row = reveal(app, "preflightRow")
             print("E2E-DEBUG pre-flight try \(attempt), before the tap: \(describe(app))")
-            if row.exists && row.isHittable {
-                row.tap()
-            } else if row.exists {
-                row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            if row.exists && row.isHittable { row.tap() }
+            if run.waitForExistence(timeout: 8) {
+                // and it stays (a push that springs back would leave the rest of the test on the wrong screen)
+                Thread.sleep(forTimeInterval: 1.0)
+                if run.exists { return true }
             }
-            if run.waitForExistence(timeout: 8) { return true }
             dumpScreen(app, "pre-flight try \(attempt) missed")
             // a sheet that opened instead is closed; anywhere but Developer, stop (the dump says where it went)
             if element(app, "logDone").exists { element(app, "logDone").tap(); waitGone(app, "logText") }
