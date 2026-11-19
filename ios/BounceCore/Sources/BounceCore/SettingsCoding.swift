@@ -86,6 +86,7 @@ extension TrackerSettings: Codable {
         .init("lostAfter", \.lostAfter),
         .init("historySize", \.historySize),
         .init("depthNormalWeight", \.depthNormalWeight),
+        .init("depthCentreWeight", \.depthCentreWeight),
         .init(optional: "maxSweepRegions", \.maxSweepRegions),
         .init("sweepSkipsFinds", \.sweepSkipsFinds),
         .init("sweepSameOutlinePixels", \.sweepSameOutlinePixels),
@@ -128,6 +129,10 @@ extension TrackerSettings: Codable {
     public init(from decoder: Decoder) throws {
         self.init()
         try SettingsField.decode(into: &self, TrackerSettings.codingFields, from: decoder)
+        // Settings from before n11 lack the centre's weight: then the normal's weight moved the centre too (and fusion ran
+        // only while it was above 0), so it is read as that weight and the file replays as the phone ran it.
+        let c = try decoder.container(keyedBy: SettingsKey.self)
+        if !c.contains(SettingsKey("depthCentreWeight")) { depthCentreWeight = depthNormalWeight }
     }
 
     public func encode(to encoder: Encoder) throws {

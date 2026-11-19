@@ -135,6 +135,10 @@ public struct DiagnosticsReport: Codable, Equatable {
     /// video format changes seen (`VideoFormatWatch`), and the last one
     public var videoFormatChanges: Int?
     public var videoFormatChange: VideoFormatWatch.Change?
+    /// LiDAR's checks of the lock's top since the tracker was made (`SlabTracker.depthChecks`): used, rejected per
+    /// reason, and running summaries of the centre's offset from LiDAR's plane less the dish's (mm), the plane's angle to
+    /// the image normal (deg) and LiDAR's range over the picture's (k); nil before the first check
+    public var depthChecks: DepthCheckSummary?
 
     /// The frame and units of every field, as written into `frames`.
     public static let fieldFrames: [String: String] = [
@@ -159,6 +163,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         "framePacing": "camera clock: frames received / processed / dropped busy (replaced in the hand-off while processing was busy) / skipped late (the demo: waited behind processing) / late but idle (ARKit's own delay) / missed by the camera; the most frames the app held (maxFramesHeld, at most 2) and the processed frames' wait in the hand-off; pauses (s); latencies and processing times in ms (p50, p95, max), processing also by what ran; detector runs per second; recent window and total",
         "captureLockSettle": "camera clock (s): when the capture lock was armed and taken, how long it waited, whether it timed out and what was still adjusting",
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
+        "depthChecks": "LiDAR's checks of the lock's top while locked: checks, used, rejected per reason (points, angle, inliers, offset); offsetMm: the lock's centre above LiDAR's plane less the dish's offset (mm); angleDegrees: LiDAR's plane to the image normal (deg); rangeRatio: LiDAR's range to the corner plane over the picture's along the line of sight (k); each count, min, max, median of the latest 101, last",
         "videoFormatChange": "the last video format change (full image size, nominal fps), the camera clock of the frame it was noted on, and what showed it (basis: size, frame-steps, time)",
     ]
 
@@ -192,6 +197,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         depthFused = output?.depthFused
         history = tracker.detectionLog.suffix(15).map(DiagnosticsReport.rounded)
         self.tracker = tracker.settings
+        depthChecks = tracker.depthChecks.checks > 0 ? tracker.depthChecks.rounded : nil
         if let v = view {
             camera = Camera(view: v, slab: tracker.slab)
             let full = lens ?? self.lens.map { CameraIntrinsics(fx: $0.fx, fy: $0.fy, cx: $0.cx, cy: $0.cy, width: $0.width, height: $0.height) }

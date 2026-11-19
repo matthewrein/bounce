@@ -26,6 +26,7 @@ final class RecordingFormatTests: XCTestCase {
         s.spec = SlabSpec(sideU: 0.18, sideV: 0.17, thickness: 0.03, dishDepth: 0.004); s.ball = BallSpec(diameter: 0.04, rebound: 0.6)
         s.defaultDropHeight = 0.7; s.launchRule = .dishNormal; s.recheckInterval = 0.25; s.searchInterval = 0.12; s.minDetectionGap = 0.05; s.confirmCount = 4
         s.matchDistance = 0.02; s.matchAngleDegrees = 3; s.moveCount = 5; s.lostAfter = 3; s.historySize = 12; s.depthNormalWeight = 0.3
+        s.depthCentreWeight = 0.35
         s.ballInterval = 0.15; s.shapeLimits.maxMisfitFraction = 0.04; s.shapeLimits.maxNormalSigmaDegrees = nil; s.shapeLimits.minDistance = 0.3
         s.shapeLimits.maxDistance = 2.5; s.shapeLimits.maxTiltDegrees = 20
         s.cornerNoisePixels = 0.8; s.matchSigmas = 2.5; s.maxMatchDistance = 0.07; s.maxMatchAngleDegrees = 9; s.maxLockSigmaDegrees = 1.2

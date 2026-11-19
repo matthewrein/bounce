@@ -108,8 +108,24 @@ public struct RecordingSettings: Codable, Equatable {
         t.sweepSameOutlinePixels = RecordingSettings.appSweepSameOutlinePixels
         t.idleSearchAfter = RecordingSettings.appIdleSearchAfter
         t.idleBallAfter = RecordingSettings.appIdleBallAfter
+        t.depthNormalWeight = RecordingSettings.appDepthNormalWeight
+        t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
         return t
     }
+
+    /// LiDAR's plane is not folded into the slab's tilt (`TrackerSettings.depthNormalWeight` 0): on the owner's first kit
+    /// (slab-kit-20261118-205900) the smoothed depth plane of the slab's small raised top read 4-20 deg off the true
+    /// plane from a standstill (it smears the top into the floor), barely moved over 5 s, and the depth checks a correct
+    /// lock would pass were a median 4.9 deg off (max 7.9): blending it in at the old 0.5 added about 2.4 deg and, on one
+    /// arc, moved the lock from +0.18 to -2.10 deg. Its range is still used.
+    public static let appDepthNormalWeight = 0.0
+    /// LiDAR moves the lock's centre half way to its own range (`TrackerSettings.depthCentreWeight`), the weight it had
+    /// before n11. Half and half while the slab's size is unmeasured: the picture's range scales with the assumed size,
+    /// off by about 1.4% (177.8 mm assumed against the kit's 180 mm flat top), and LiDAR's range is off by 1-2% beyond
+    /// 1 m on the same kit (2.6% per metre in one shot, 0.7-0.9% in another), so neither is clearly better. Once a ruler
+    /// gives the size (the picture's range then good to about 0.3%), this should become the variance weight
+    /// picture^2 / (picture^2 + LiDAR^2), well under a half beyond 1 m.
+    public static let appDepthCentreWeight = 0.5
 
     public var launchRule: Bounce.LaunchRule { dishBounce == true ? .dishNormal : .cornerPlane }
 

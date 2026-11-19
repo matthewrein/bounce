@@ -169,6 +169,12 @@ public struct TrackerSettings: Equatable {
     public var historySize: Int = 15
     /// use LiDAR depth when present: fuse its (smoothed) plane's normal with this weight (0 = only report it)
     public var depthNormalWeight: Double = 0.5
+    /// and move the lock's centre with this weight onto where the line of sight through it meets the depth plane (raised
+    /// by the dish's offset): LiDAR's range, folded in without its tilt. The default is the normal's own default: until
+    /// n11 the normal's weight moved both, and a recording whose settings lack this key reads it as its own
+    /// `depthNormalWeight` (`TrackerSettings.init(from:)`), so it replays as the phone ran it. Fusion runs while either
+    /// weight is above 0. The app's values (`RecordingSettings.trackerSettings`): normal 0, centre 0.5.
+    public var depthCentreWeight: Double = 0.5
     /// The slab search's own work (`SlabFinderDetector`): the most regions its sweep grows (nil: the finder's own, 48);
     /// whether it skips starting points inside an outline it already found (`SlabFinder.Options.skipSeedsInFinds`); and
     /// how close (pixels, mean corner distance) an outline must be to one that failed refinement from the same start to be skipped
@@ -369,6 +375,56 @@ public struct ValueSummary: Equatable, Codable {
     }
 }
 
+/// Count, smallest, largest and last of a value, and the median of its latest `window` values.
+public struct RunningStats: Equatable, Codable {
+    public var count: Int = 0
+    public var min: Double = .infinity
+    public var max: Double = -.infinity
+    public var median: Double = .nan
+    public var last: Double = .nan
+    /// the latest values, for the median (not written)
+    private var recent: [Double] = []
+    public static let window = 101
+    public init() {}
+    public mutating func add(_ v: Double) {
+        guard v.isFinite else { return }
+        count += 1; min = Swift.min(min, v); max = Swift.max(max, v); last = v
+        recent.append(v)
+        if recent.count > RunningStats.window { recent.removeFirst(recent.count - RunningStats.window) }
+        let s = recent.sorted(), k = s.count
+        median = k % 2 == 1 ? s[k / 2] : (s[k / 2 - 1] + s[k / 2]) / 2
+    }
+    /// rounded to 4 significant decimals, for reports
+    public var rounded: RunningStats {
+        var r = self
+        func r4(_ v: Double) -> Double { v.isFinite ? (v * 10000).rounded() / 10000 : v }
+        r.min = r4(min); r.max = r4(max); r.median = r4(median); r.last = r4(last); r.recent = []
+        return r
+    }
+    enum CodingKeys: String, CodingKey { case count, min, max, median, last }
+}
+
+/// LiDAR's checks of the lock's top (`SlabTracker.depthChecks`): how many, how many were used, why the others were not
+/// ("points", "angle", "inliers", "offset": `SlabTracker` depth gates), and what they read: the lock's centre above the
+/// depth plane less the dish's offset (mm; 0 when LiDAR and the picture agree on the range), the depth plane's angle to
+/// the image normal (degrees), and k, LiDAR's range to the corner plane along the line of sight through the lock's centre
+/// over the picture's (1 when they agree; the offset gate allows `depthMaxOffsetFraction` of the range).
+public struct DepthCheckSummary: Equatable, Codable {
+    public var checks = 0
+    public var used = 0
+    public var rejected: [String: Int] = [:]
+    public var offsetMm = RunningStats()
+    public var angleDegrees = RunningStats()
+    public var rangeRatio = RunningStats()
+    public init() {}
+    /// rounded, for reports
+    public var rounded: DepthCheckSummary {
+        var r = self
+        r.offsetMm = offsetMm.rounded; r.angleDegrees = angleDegrees.rounded; r.rangeRatio = rangeRatio.rounded
+        return r
+    }
+}
+
 public struct TrackerOutput {
     public var state: TrackerState
     /// the locked slab in world coordinates
@@ -446,6 +502,9 @@ public final class SlabTracker {
     public private(set) var lastFrameTime: Double = 0
     /// the values behind the rejection counters, per kind ("misfit", "tooTilted", "illConditioned")
     public private(set) var rejectionValues: [String: ValueSummary] = [:]
+    /// LiDAR's checks of the lock's top since the tracker was made: how many, why those not used were not, and what they
+    /// read (for diagnostics)
+    public private(set) var depthChecks = DepthCheckSummary()
     /// how well the lock pins the normal (degrees), for the corner noise its measurements show
     public private(set) var lockSigmaDegrees: Double?
     /// rectangular slabs: the long side's direction (world) the evidence so far favours
@@ -843,10 +902,12 @@ public final class SlabTracker {
                 if let c = chk {
                     depth = c
                     bump("depthChecks")
-                    if depthUsable(c, s, f, maxAngle: settings.depthMaxAngleDegrees) { addDepth(c, t) } else { bump("depthRejected") }
+                    let why = depthRejection(c, s, f, maxAngle: settings.depthMaxAngleDegrees)
+                    noteDepthCheck(c, s, f, rejected: why)
+                    if why == nil { addDepth(c, t) } else { bump("depthRejected") }
                 }
             }
-            if settings.depthNormalWeight > 0, let e = depthEstimate, t - e.time <= settings.depthHoldSeconds {
+            if settings.depthNormalWeight > 0 || settings.depthCentreWeight > 0, let e = depthEstimate, t - e.time <= settings.depthHoldSeconds {
                 slab = fuse(s, e, f)
                 fused = true
                 bump("depthFused")
@@ -1567,10 +1628,33 @@ public final class SlabTracker {
     /// near the image normal, and the lock's centre the dish's depth above it (a hand above the top, or the ground below
     /// where the slab was, fail this).
     private func depthUsable(_ c: DepthCheck, _ s: SlabPose, _ f: TrackerFrame, maxAngle: Double) -> Bool {
-        guard c.points >= 60, c.angleToImageDegrees < maxAngle else { return false }
-        if let fr = c.inlierFraction, fr < settings.depthMinInlierFraction { return false }
+        depthRejection(c, s, f, maxAngle: maxAngle) == nil
+    }
+
+    /// Why a frame's depth check is not used (`depthUsable`), or nil: "points" (too few on the plane), "angle" (too far
+    /// from the image normal), "inliers" (too small a share of the points inside the top on it), "offset" (the lock's
+    /// centre not the dish's depth above it, within the share of the range).
+    private func depthRejection(_ c: DepthCheck, _ s: SlabPose, _ f: TrackerFrame, maxAngle: Double) -> String? {
+        if c.points < 60 { return "points" }
+        if !(c.angleToImageDegrees < maxAngle) { return "angle" }
+        if let fr = c.inlierFraction, fr < settings.depthMinInlierFraction { return "inliers" }
         let range = s.center.distance(to: f.view.position)
-        return abs(c.centreOffset - dishOffset) <= max(0.01, settings.depthMaxOffsetFraction * range)
+        return abs(c.centreOffset - dishOffset) <= max(0.01, settings.depthMaxOffsetFraction * range) ? nil : "offset"
+    }
+
+    /// The depth checks while locked, for diagnostics: what they were and why they were not used.
+    private func noteDepthCheck(_ c: DepthCheck, _ s: SlabPose, _ f: TrackerFrame, rejected why: String?) {
+        var d = depthChecks
+        d.checks += 1
+        if let w = why { d.rejected[w, default: 0] += 1 } else { d.used += 1 }
+        d.offsetMm.add((c.centreOffset - dishOffset) * 1000)
+        d.angleDegrees.add(c.angleToImageDegrees)
+        // LiDAR's range to the corner plane (the depth plane raised by the dish's offset) along the line of sight through
+        // the lock's centre, over the picture's range to that centre
+        let o = f.view.position, los = s.center - o, r = los.length
+        let raised = Plane3(point: c.plane.point + c.plane.normal * dishOffset, normal: c.plane.normal)
+        if r > 1e-6, let p = raised.intersect(origin: o, direction: los / r) { d.rangeRatio.add(p.distance(to: o) / r) }
+        depthChecks = d
     }
 
     private func addDepth(_ c: DepthCheck, _ t: Double) {
@@ -1584,15 +1668,19 @@ public final class SlabTracker {
         depthEstimate = e
     }
 
+    /// The lock with LiDAR's smoothed plane folded in: its normal with `depthNormalWeight` (0: the image's normal is
+    /// kept exactly), its centre with `depthCentreWeight` toward where the line of sight through it meets the depth plane
+    /// raised by the dish's offset.
     private func fuse(_ s: SlabPose, _ e: DepthEstimate, _ f: TrackerFrame) -> SlabPose {
-        let w = settings.depthNormalWeight
+        let wn = settings.depthNormalWeight, wc = settings.depthCentreWeight
         let plane = Plane3(point: e.normal * e.offset, normal: e.normal)
-        let n = (s.normal * (1 - w) + e.normal * w).normalized, u = s.axisU.rejecting(n).normalized
+        var n = s.normal, u = s.axisU
+        if wn > 0 { n = (s.normal * (1 - wn) + e.normal * wn).normalized; u = s.axisU.rejecting(n).normalized }
         var c = s.center
         if let p = plane.intersect(origin: f.view.position, direction: (s.center - f.view.position).normalized) {
             c = p + e.normal * dishOffset
         }
-        return SlabPose(center: s.center * (1 - w) + c * w, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
+        return SlabPose(center: s.center * (1 - wc) + c * wc, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
     }
 
     /// A world pose's top corners in a view's image.

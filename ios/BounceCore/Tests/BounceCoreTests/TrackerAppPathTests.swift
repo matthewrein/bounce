@@ -250,6 +250,11 @@ final class TrackerAppPathTests: XCTestCase {
         XCTAssertNotNil(back.imageSlab)
         XCTAssertEqual(back.depthFused, o.depthFused)
         XCTAssertNotNil(back.depth)
+        // LiDAR's checks: how many were used and why the others were not
+        let dc = try XCTUnwrap(back.depthChecks)
+        XCTAssertEqual(dc.checks, tr.depthChecks.checks)
+        XCTAssertEqual(dc.used + dc.rejected.values.reduce(0, +), dc.checks)
+        XCTAssertNotNil(legend["depthChecks"])
         let hist = try XCTUnwrap(back.history)
         XCTAssertGreaterThan(hist.count, 5); XCTAssertLessThanOrEqual(hist.count, 15)
         XCTAssertNotNil(hist.last!.sidesPixels)
