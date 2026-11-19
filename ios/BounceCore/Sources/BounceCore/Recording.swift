@@ -110,6 +110,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.idleBallAfter = RecordingSettings.appIdleBallAfter
         t.depthNormalWeight = RecordingSettings.appDepthNormalWeight
         t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
+        t.readoutsFromSettledNormal = true
         return t
     }
 
@@ -204,6 +205,7 @@ public struct RecordedFrame: Codable, Equatable {
         depthIntrinsics = tf.depthIntrinsics
         if tf.ballImage != nil { ballIntrinsics = tf.ballIntrinsics; self.ballCrop = ballCrop }
         slabIntrinsics = output.slabDetail?.intrinsics
+        exposureDuration = tf.exposureDuration
         self.output = RecordedOutput(output)
     }
 

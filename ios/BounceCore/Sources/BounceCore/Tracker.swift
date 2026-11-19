@@ -117,6 +117,12 @@ public struct DetectionRecord: Codable, Equatable {
     /// refined on a crop around it); nil: the processing frame alone (no crop, a refine pass that missed, or a re-check
     /// whose find lay outside the crop around the lock: counted as "slabCropMisses")
     public var edges: String?
+    /// the detection in the tilt's honest uncertainty (`HonestTilt`), if it was added: its own standard deviation
+    /// (degrees, with its sides' noise), its misfit against what that noise allows (chi-square), and whether that misfit
+    /// left it out
+    public var viewSigmaDegrees: Double?
+    public var misfitChi2: Double?
+    public var misfitExcluded: Bool?
 
     public init(time: Double, state: TrackerState, found: Int, rejected: [String] = [], outcome: [String] = []) {
         self.time = time; self.state = state; self.found = found; self.rejected = rejected; self.outcome = outcome
@@ -297,6 +303,15 @@ public struct TrackerSettings: Equatable {
     public var idleSearchMoveDegrees: Double = 4
     public var idleSearchMoveDistance: Double = 0.04
 
+    // The tilt's honest uncertainty and when to show it (n11), apart from the lock: `SlabTracker.tiltSigmaDegrees`,
+    // `angleSettled`, `HonestTilt`.
+    public var settle = SettleSettings()
+    /// While the tilt is settled (`TrackerOutput.angleSettled`), the readouts and the bounce use its honest normal
+    /// (`SlabTracker.settledNormal`, from the lock's views each kept to its newest detections) with the lock's centre; the
+    /// lock still draws the outline. Off (the default, so older recordings replay as the phone ran them): the lock's pose,
+    /// as before. The app's is on (`RecordingSettings.trackerSettings`).
+    public var readoutsFromSettledNormal = false
+
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
     public init() {}
@@ -329,13 +344,16 @@ public struct TrackerFrame {
     /// got is in `TrackerOutput.slabDetail` (for the recording). nil: no such pixels (the processing frame alone, as
     /// before; recordings without them replay that way).
     public var slabDetail: (([Vec2]) -> SlabDetail?)?
+    /// the camera's exposure for this frame (s), if known: with the camera's turn since the last frame it gives the motion
+    /// blur that widens a detection's edge noise (`SettleSettings.blurShare`); nil: `SettleSettings.defaultExposure`
+    public var exposureDuration: Double?
 
     public init(timestamp: Double, view: CameraView, frame: ColorFrame, depth: DepthMap? = nil, depthIntrinsics: CameraIntrinsics? = nil,
                 ballImage: Plane? = nil, ballIntrinsics: CameraIntrinsics? = nil, tap: Vec2? = nil, floorY: Double? = nil, trackingNormal: Bool = true,
-                slabDetail: (([Vec2]) -> SlabDetail?)? = nil) {
+                slabDetail: (([Vec2]) -> SlabDetail?)? = nil, exposureDuration: Double? = nil) {
         self.timestamp = timestamp; self.view = view; self.frame = frame; self.depth = depth; self.depthIntrinsics = depthIntrinsics
         self.ballImage = ballImage; self.ballIntrinsics = ballIntrinsics; self.tap = tap; self.floorY = floorY; self.trackingNormal = trackingNormal
-        self.slabDetail = slabDetail
+        self.slabDetail = slabDetail; self.exposureDuration = exposureDuration
     }
 }
 
@@ -468,6 +486,12 @@ public struct TrackerOutput {
     /// a search's find refined on that crop: the detector's own outlines from `SlabDetecting.refine` (pixels of the
     /// processing frame), or nil if there was no such pass on this frame
     public var refinedDetections: [DetectedOutline]? = nil
+    /// While locked: the tilt's honest standard deviation (degrees, both axes; `SlabTracker.tiltSigmaDegrees`), nil before
+    /// any view; whether it is settled enough to show (`angleSettled`: false while the lock is unconfirmed); and how many
+    /// views of the slab it rests on (`viewGroups`)
+    public var tiltSigmaDegrees: Double? = nil
+    public var angleSettled: Bool = false
+    public var viewGroups: Int = 0
 }
 
 /// The per-frame logic shared by the app and the replay tests: search, confirm, lock the slab in world space so its
@@ -485,6 +509,7 @@ public final class SlabTracker {
     public var settings: TrackerSettings {
         didSet {
             if settings != oldValue { pendingControls.append(TrackerControl(kind: .settings, settings: settings)) }
+            honest.settings = settings.settle
             detector.apply(settings)
         }
     }
@@ -507,6 +532,17 @@ public final class SlabTracker {
     public private(set) var depthChecks = DepthCheckSummary()
     /// how well the lock pins the normal (degrees), for the corner noise its measurements show
     public private(set) var lockSigmaDegrees: Double?
+    /// The tilt's honest standard deviation (degrees, both axes together) while locked: the lock's views of the slab,
+    /// each its newest few detections with one view's uncertainty, combined (`HonestTilt`). nil before any view. Apart
+    /// from the lock's own estimate (`lockSigmaDegrees`, which gates the lock).
+    public var tiltSigmaDegrees: Double? { state == .locked ? honest.sigmaDegrees : nil }
+    /// The tilt is settled enough to show: its honest deviation at or under `SettleSettings.settleDegrees` on two
+    /// refreshes in a row, and not yet back above `unsettleDegrees`; false while the lock is unconfirmed. A new lock, a
+    /// re-lock (a move), a world-frame discontinuity or losing the lock starts it again.
+    public var angleSettled: Bool { state == .locked && unconfirmed == nil && honest.settled }
+    /// the honest estimate's normal (world), and how many views of the slab it rests on
+    public var settledNormal: Vec3? { state == .locked ? honest.normal : nil }
+    public var viewGroupCount: Int { state == .locked ? honest.groups.count : 0 }
     /// rectangular slabs: the long side's direction (world) the evidence so far favours
     public private(set) var longSideWorld: Vec3?
     /// where a tap said to look (world), until it locks or times out
@@ -541,6 +577,16 @@ public final class SlabTracker {
         var time: Double
         /// the fit's rms corner misfit (pixels)
         var rms: Double = 0
+        /// the camera it was measured from (its intrinsics are those of `quad`'s pixels), and the frame's motion blur there
+        /// (pixels, `KitMotionBlur`)
+        var camera: CameraView? = nil
+        var blur: Double = 0
+        /// The detector's own noise of each side's line (pixels of `quad`, pose side order: side i from corner i to i+1):
+        /// parallel to itself (`sideSigmasPixels`: the edge's definition, its profile, a one-edge ambiguity, its fit; not
+        /// motion blur, which the tracker adds), and turned about its middle (`sideTurnSigmasPixels`, at its ends). nil: not
+        /// given; the honest uncertainty then uses the corner noise the re-checks show (`HonestTilt`).
+        var sideSigmasPixels: [Double]? = nil
+        var sideTurnSigmasPixels: [Double]? = nil
         var pose: SlabPose { est.pose }
         mutating func swapSides() { if let a = alt { alt = est; est = a } }
     }
@@ -549,6 +595,13 @@ public final class SlabTracker {
 
     private var hist: [Measurement] = []
     private var lockEstimate: Estimate?
+    /// the tilt's honest uncertainty over the lock's detections (see `tiltSigmaDegrees`)
+    private var honest: HonestTilt
+    /// the last detection added to it (for the detection log)
+    private var honestNote: (time: Double, detection: HonestTilt.Detection?)?
+    /// the previous frame's camera (for motion blur) and this frame's blur (pixels of the processing frame)
+    private var previousCamera: (time: Double, pose: RigidTransform)?
+    private var frameBlur = 0.0
     private var candidates: [Measurement] = []             // while confirming
     private var movers: [Measurement] = []                 // disagreeing re-detections while locked
     private var partners: [Measurement] = []               // re-detections a band from the lock, taken for the top
@@ -585,6 +638,7 @@ public final class SlabTracker {
 
     public init(settings: TrackerSettings = TrackerSettings(), detector: SlabDetecting, ballLocator: BallLocating? = nil) {
         self.settings = settings; self.detector = detector; self.ballLocator = ballLocator
+        honest = HonestTilt(settings: settings.settle)
         pendingControls = [TrackerControl(kind: .start, settings: settings)]
         detector.apply(settings)
     }
@@ -811,6 +865,13 @@ public final class SlabTracker {
         let dt = previousTime.map { clamp(t - $0, 0, 0.5) } ?? 0
         previousTime = t
         lastFrameTime = t
+        // the camera's turn since the last frame, over this frame's exposure: its motion blur
+        frameBlur = 0
+        if let p = previousCamera, t > p.time, t - p.time < 0.5 {
+            frameBlur = KitMotionBlur.pixels(previous: p.pose, current: f.view.worldFromCamera, dt: t - p.time,
+                                             exposure: f.exposureDuration ?? settings.settle.defaultExposure, focal: f.view.intrinsics.focal)
+        }
+        previousCamera = (t, f.view.worldFromCamera)
         bump("frames")
         var events: [String] = []
         let downW = ARKitConvention.worldDown
@@ -929,6 +990,9 @@ public final class SlabTracker {
         out.detectionKind = detectionKind
         out.slabDetail = frameDetail
         out.refinedDetections = frameRefined
+        out.tiltSigmaDegrees = tiltSigmaDegrees
+        out.angleSettled = angleSettled
+        out.viewGroups = viewGroupCount
         guard state == .locked, let s = slab else { return out }
         out.outline = project(s, f.view)
 
@@ -949,12 +1013,18 @@ public final class SlabTracker {
         if events.contains(where: { $0 == "locked" || $0 == "relocked" || $0.hasPrefix("lock-unconfirmed") }) { emptyBallScans = nil }
         out.ball = ballState
 
-        // the bounce, in world coordinates
+        // the bounce, in world coordinates: from the lock, or once the tilt is settled (and the settings say so) from the
+        // lock's centre with the settled normal
+        var shown = s
+        if settings.readoutsFromSettledNormal, out.angleSettled, let n = honest.normal, n.isFinite {
+            let u = s.axisU.rejecting(n).normalized
+            shown = SlabPose(center: s.center, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
+        }
         let floorBelow = f.floorY.map { s.center.y - $0 }.flatMap { $0 > 0.005 && $0 < 1.0 ? $0 : nil }
-        let res = Bounce.compute(pose: s, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: ballState?.center,
+        let res = Bounce.compute(pose: shown, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: ballState?.center,
                                  defaultDropHeight: settings.defaultDropHeight, rule: settings.launchRule, floorBelowCenter: floorBelow)
         out.path = res.path; out.drop = res.drop
-        out.readouts = Readouts(tiltDegrees: Units.degrees(s.tilt(down: downW)), apexHeight: res.path.apexHeight, landingDistance: res.path.range,
+        out.readouts = Readouts(tiltDegrees: Units.degrees(shown.tilt(down: downW)), apexHeight: res.path.apexHeight, landingDistance: res.path.range,
                                 airTime: res.path.airTime, dropHeight: res.drop?.dropHeight ?? settings.defaultDropHeight, dropFromBall: res.drop != nil)
         return out
     }
@@ -984,6 +1054,9 @@ public final class SlabTracker {
                 record.aspect = (sides[0] + sides[2]) / max(sides[1] + sides[3], 1e-9)
                 record.sideModes = m.sideModes.isEmpty ? nil : m.sideModes
                 record.edges = edges
+            }
+            if let h = honestNote, h.time == t, let d = h.detection {
+                record.viewSigmaDegrees = d.sigmaDegrees; record.misfitChi2 = d.chi2; record.misfitExcluded = d.excluded
             }
             detectionLog.append(record)
             if detectionLog.count > SlabTracker.detectionLogSize { detectionLog.removeFirst(detectionLog.count - SlabTracker.detectionLogSize) }
@@ -1107,7 +1180,7 @@ public final class SlabTracker {
         }
         return Measurement(est: est(fit), alt: other.map(est), quad: fit.cornersInPoseOrder(o.quad),
                            sideModes: o.sideModes.count == 4 ? fit.sidesInPoseOrder(o.sideModes) : o.sideModes, time: f.timestamp,
-                           rms: fit.rmsPixels)
+                           rms: fit.rmsPixels, camera: f.view, blur: frameBlur)
     }
 
     private func reject(_ v: ShapeCheck.Verdict, _ t: Double) {
@@ -1195,6 +1268,7 @@ public final class SlabTracker {
     private func lock(_ t: Double, _ events: inout [String]) {
         hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
+        honestRestart(with: hist)
         events.append("locked"); bump("locks")
     }
 
@@ -1242,6 +1316,9 @@ public final class SlabTracker {
         }
         recent.append(m)
         if recent.count > max(2, settings.slideWindow) { recent.removeFirst(recent.count - max(2, settings.slideWindow)) }
+        // a re-check of the locked slab (agreeing with the lock or not; not a cut-face flip, a band apart, or far off):
+        // one more detection for the tilt's honest uncertainty
+        honestAdd(m)
         let agreed = agrees(L2, m.est, noise: s)
         if agreed {
             // the detector's noise, from how far agreeing re-checks land from the lock (before this one joins it); not
@@ -1299,6 +1376,7 @@ public final class SlabTracker {
         }
         hist = ms; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
+        honestRestart(with: ms)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
         ballLocator?.reset(); ballState = nil
         return true
@@ -1407,6 +1485,7 @@ public final class SlabTracker {
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
+        honest.reset()
         events.append("lost"); bump("lost")
     }
 
@@ -1418,6 +1497,7 @@ public final class SlabTracker {
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"
+        honest.reset()
     }
 
     /// The processing frame changed size (ARKit re-ran with another video format; the caller also treats it as a
@@ -1440,6 +1520,9 @@ public final class SlabTracker {
             func rescaled(_ m: Measurement) -> Measurement {
                 var x = m
                 x.est = scaled(m.est); x.alt = m.alt.map(scaled); x.quad = m.quad.map(map.forward); x.rms = m.rms * r
+                x.camera = m.camera.map { CameraView(worldFromCamera: $0.worldFromCamera, intrinsics: new) }
+                x.blur = m.blur * r
+                x.sideSigmasPixels = m.sideSigmasPixels?.map { $0 * r }; x.sideTurnSigmasPixels = m.sideTurnSigmasPixels?.map { $0 * r }
                 return x
             }
             hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled)
@@ -1447,6 +1530,7 @@ public final class SlabTracker {
             sideEvidence = min(settings.sideEvidenceCap, sideEvidence * r * r)
         }
         noiseSamples = []
+        previousCamera = nil
         ballState = nil; ballLocator?.reset()
         detector.forgetPixelMemory()
         if !hist.isEmpty { refreshLock() }
@@ -1459,11 +1543,72 @@ public final class SlabTracker {
         switch state {
         case .locked:
             unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
+            // the views were seen in the old world frame: the tilt settles again from the next re-checks
+            honest.reset()
             events.append("lock-unconfirmed: " + reason)
         case .confirming:
             candidates = []; state = .searching; events.append("candidate-lost: " + reason)
         case .searching: break
         }
+    }
+
+    // MARK: the tilt's honest uncertainty
+
+    /// Start the honest estimate again from these detections (a new lock or a re-lock), each one a refresh.
+    private func honestRestart(with ms: [Measurement]) {
+        honest.reset()
+        for m in ms { honestAdd(m) }
+    }
+
+    /// Add one detection of the locked slab to the honest estimate (and refresh it).
+    private func honestAdd(_ m: Measurement) {
+        var d: HonestTilt.Detection? = nil
+        let s = cornerNoiseEstimate
+        if let v = m.camera, let sn = sideNoise(m, v) {
+            d = HonestTilt.detection(pose: m.pose, quad: sn.quad, view: v, parallel: sn.parallel, turn: sn.turn,
+                                     cornerNoise: sn.perCorner ? s : nil, settings: settings.settle)
+        }
+        honest.add(d, cornerNoise: s)
+        honestNote = (m.time, d)
+    }
+
+    /// A detection's outline matched corner by corner to its pose (the pose may be its other side assignment), with each
+    /// side's noise (pixels), parallel and turn: the detector's own (`Measurement.sideSigmasPixels`), with their floors
+    /// (`SettleSettings.parallelFloorRadians`, `turnFloorRadians`); or, without it (`perCorner`), the corner noise the
+    /// re-checks show (`cornerNoiseEstimate`, at least 0.25 px: above the floors at a processing frame's focal length),
+    /// which `HonestTilt` splits equally into a shift and a turn of each side (s^2 / 2 each: the same normal covariance as
+    /// independent corner noise) and keeps following as the re-checks measure it. The frame's motion blur adds to the
+    /// parallel part (`SettleSettings.blurShare`).
+    private func sideNoise(_ m: Measurement, _ v: CameraView) -> (quad: [Vec2], parallel: [Double], turn: [Double], perCorner: Bool)? {
+        guard m.quad.count == 4 else { return nil }
+        let st = settings.settle, focal = v.intrinsics.focal
+        let j0 = st.parallelFloorRadians * focal, t0 = st.turnFloorRadians * focal, b = st.blurShare * m.blur
+        var par: [Double], turn: [Double]
+        let perCorner: Bool
+        if let p = m.sideSigmasPixels, p.count == 4 {
+            perCorner = false
+            par = p.map { (pow(max($0, j0), 2) + b * b).squareRoot() }
+            turn = (m.sideTurnSigmasPixels.flatMap { $0.count == 4 ? $0 : nil } ?? [t0, t0, t0, t0]).map { max($0, t0) }
+        } else {
+            perCorner = true
+            par = [b, b, b, b]; turn = [0, 0, 0, 0]
+        }
+        // the outline in the pose's corner order, and its sides with it
+        guard let T = project(m.pose, v) else { return (m.quad, par, turn, perCorner) }
+        var best = (rev: false, k: 0), bd = Double.infinity
+        for rev in [false, true] {
+            let r = rev ? Array(m.quad.reversed()) : m.quad
+            for k in 0..<4 {
+                let d = (0..<4).reduce(0) { $0 + r[($1 + k) % 4].distance(to: T[$1]) }
+                if d < bd { bd = d; best = (rev, k) }
+            }
+        }
+        guard best.rev || best.k != 0 else { return (m.quad, par, turn, perCorner) }
+        let r = best.rev ? Array(m.quad.reversed()) : m.quad
+        let q = (0..<4).map { r[($0 + best.k) % 4] }
+        // side i of the matched outline is the original side (i + k) (or, reversed, (2 - i - k)) mod 4
+        let side = (0..<4).map { i in best.rev ? ((2 - i - best.k) % 4 + 4) % 4 : (i + best.k) % 4 }
+        return (q, side.map { par[$0] }, side.map { turn[$0] }, perCorner)
     }
 
     // MARK: the box model's cut-face flip
@@ -1593,6 +1738,7 @@ public final class SlabTracker {
         if state == .locked && !hist.isEmpty {
             hist = swapped(hist)
             refreshLock(); depthEstimate = nil
+            honestRestart(with: hist)
             events.append("relocked"); bump("relocks")
         } else {
             events.append("sides-swapped")

@@ -16,10 +16,12 @@ struct OverlayView: View {
                 ctx.stroke(polygon(o.outline), with: .color(.yellow), lineWidth: 2.5)
                 for p in o.outline { ctx.fill(Path(ellipseIn: CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)), with: .color(.yellow)) }
             }
+            // while the tilt settles the launch line and the path are faint and dashed, and there is no landing spot
+            let faint = o.settling ? 0.4 : 1.0
             // the launch direction (perpendicular to the slab)
             if let s = o.start, let t = o.normalTip {
                 var p = Path(); p.move(to: s); p.addLine(to: t)
-                ctx.stroke(p, with: .color(.white), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                ctx.stroke(p, with: .color(.white.opacity(faint)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
             }
             // the ball and its drop line
             if let b = o.ball {
@@ -33,13 +35,14 @@ struct OverlayView: View {
             // the bounce
             if o.path.count > 1 {
                 var p = Path(); p.addLines(o.path)
-                ctx.stroke(p, with: .color(.cyan), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                ctx.stroke(p, with: .color(.cyan.opacity(faint)),
+                           style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: o.settling ? [6, 5] : []))
             }
             if let a = o.apex {
                 ctx.fill(Path(ellipseIn: CGRect(x: a.x - 5, y: a.y - 5, width: 10, height: 10)), with: .color(.cyan))
                 ctx.draw(Text("apex").font(.caption.bold()).foregroundColor(.cyan), at: CGPoint(x: a.x, y: a.y - 14))
             }
-            if let l = o.landing {
+            if let l = o.landing, !o.settling {
                 ctx.stroke(Path(ellipseIn: CGRect(x: l.x - 9, y: l.y - 9, width: 18, height: 18)), with: .color(.green), lineWidth: 2.5)
                 ctx.draw(Text("lands").font(.caption.bold()).foregroundColor(.green), at: CGPoint(x: l.x, y: l.y + 18))
             }

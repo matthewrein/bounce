@@ -258,6 +258,7 @@ public struct KitFramePipeline {
         var tf = TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: d?.0, depthIntrinsics: d?.1,
                               ballImage: ballPlane, ballIntrinsics: ballK, tap: nil, floorY: nil, trackingNormal: f.tracking.isNormal)
         if let img = image { tf.slabDetail = { q in self.slabDetail(img, outline: q, processing: pview, video: video) } }
+        tf.exposureDuration = f.exposure
         return Frame(tracker: tf, video: video, converted: converted, ballCrop: crop)
     }
 

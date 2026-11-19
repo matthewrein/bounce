@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n10"
+let appBuild = "n11"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the rebound
 /// (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
@@ -77,6 +77,9 @@ struct OverlayState: Equatable {
     var ball: CGPoint? = nil
     var ballRadius: CGFloat = 0
     var dropTop: CGPoint? = nil
+    /// the tilt is not settled yet (`TrackerOutput.angleSettled`): the launch line and path are drawn faint and dashed,
+    /// and the landing ring and its label are left out (1 deg of tilt moves the landing about 4.5 cm)
+    var settling = false
 }
 
 /// What the main screen shows: a passive status and the readouts. (No hints or instructions: those are developer-only.)
@@ -89,6 +92,12 @@ struct HUDState: Equatable {
     var air: String = "–"
     var drop: String = "–"
     var demo = false
+    /// the slab is locked but its tilt is still settling (`TrackerOutput.angleSettled` false): Tilt and Lands read
+    /// `HUDState.settlingText`, dimmed; Apex and Air keep their values (a degree moves them by at most 6 mm and 4 ms)
+    var settling = false
+
+    /// what Tilt and Lands read while the tilt settles
+    static let settlingText = "settling"
 }
 
 /// The live developer line (Settings > Developer): the tracker's state, whether the lock is unconfirmed, its hint, and
@@ -104,9 +113,13 @@ struct DeveloperStatus: Equatable {
     var recordingFailure: String? = nil
     /// how the camera's frames came and went over the last 10 s (ARController.framesLine), updated once a second
     var frames: String? = nil
+    /// the tilt's honest uncertainty while locked, e.g. "tilt sigma 1.7° · 1 view group · settling" (ARController
+    /// .tiltLine)
+    var tilt: String? = nil
 
     var line: String {
         var parts = ["state \(state)", "lockUnconfirmed \(lockUnconfirmed)", "tracking \(tracking)"]
+        if let t = tilt { parts.append(t) }
         if let f = frames { parts.append(f) }
         if let d = depth { parts.append(d) }
         if let n = recordedFrames { parts.append("recorded \(n) frames") }

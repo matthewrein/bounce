@@ -20,6 +20,18 @@ final class RecordingFormatTests: XCTestCase {
         XCTAssertEqual(TrackerSettings.codingFields.count, props.count)
         let lprops = Set(Mirror(reflecting: ShapeCheck.Limits()).children.compactMap { $0.label })
         XCTAssertEqual(Set(ShapeCheck.Limits.codingFields.map { $0.key }), lprops)
+        let sprops = Set(Mirror(reflecting: SettleSettings()).children.compactMap { $0.label })
+        XCTAssertEqual(Set(SettleSettings.codingFields.map { $0.key }), sprops)
+        // every settling constant survives a round trip, and a file without them keeps the defaults
+        var st = SettleSettings()
+        st.parallelFloorRadians = 1e-4; st.turnFloorRadians = 3e-4; st.blurShare = 0.3; st.defaultExposure = 0.02; st.groupDegrees = 6
+        st.perGroup = 4; st.misfitChi2 = 13.8; st.settleDegrees = 0.8; st.unsettleDegrees = 1.1; st.settleRefreshes = 3
+        for c in Mirror(reflecting: st).children {
+            let d = Mirror(reflecting: SettleSettings()).children.first { $0.label == c.label }!
+            XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes settle.\(c.label!)")
+        }
+        XCTAssertEqual(try JSONDecoder().decode(SettleSettings.self, from: JSONEncoder().encode(st)), st)
+        XCTAssertEqual(try JSONDecoder().decode(SettleSettings.self, from: Data("{}".utf8)), SettleSettings())
 
         // every field changed from its default survives a round trip
         var s = TrackerSettings()
@@ -27,6 +39,7 @@ final class RecordingFormatTests: XCTestCase {
         s.defaultDropHeight = 0.7; s.launchRule = .dishNormal; s.recheckInterval = 0.25; s.searchInterval = 0.12; s.minDetectionGap = 0.05; s.confirmCount = 4
         s.matchDistance = 0.02; s.matchAngleDegrees = 3; s.moveCount = 5; s.lostAfter = 3; s.historySize = 12; s.depthNormalWeight = 0.3
         s.depthCentreWeight = 0.35
+        s.settle.groupDegrees = 6; s.settle.settleDegrees = 0.9; s.readoutsFromSettledNormal = true
         s.ballInterval = 0.15; s.shapeLimits.maxMisfitFraction = 0.04; s.shapeLimits.maxNormalSigmaDegrees = nil; s.shapeLimits.minDistance = 0.3
         s.shapeLimits.maxDistance = 2.5; s.shapeLimits.maxTiltDegrees = 20
         s.cornerNoisePixels = 0.8; s.matchSigmas = 2.5; s.maxMatchDistance = 0.07; s.maxMatchAngleDegrees = 9; s.maxLockSigmaDegrees = 1.2

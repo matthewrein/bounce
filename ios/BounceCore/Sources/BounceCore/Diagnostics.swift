@@ -139,6 +139,13 @@ public struct DiagnosticsReport: Codable, Equatable {
     /// reason, and running summaries of the centre's offset from LiDAR's plane less the dish's (mm), the plane's angle to
     /// the image normal (deg) and LiDAR's range over the picture's (k); nil before the first check
     public var depthChecks: DepthCheckSummary?
+    /// The tilt's honest uncertainty while locked (`SlabTracker.tiltSigmaDegrees`: degrees, 1 sigma, both axes), whether
+    /// the tilt is shown (`angleSettled`; "settling" on the main screen otherwise), how many views of the slab it rests on
+    /// (`viewGroups`), and the tilt of its normal (`settledTiltDegrees`: what the main screen shows once settled)
+    public var tiltSigmaDegrees: Double?
+    public var angleSettled: Bool?
+    public var viewGroups: Int?
+    public var settledTiltDegrees: Double?
 
     /// The frame and units of every field, as written into `frames`.
     public static let fieldFrames: [String: String] = [
@@ -163,6 +170,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         "framePacing": "camera clock: frames received / processed / dropped busy (replaced in the hand-off while processing was busy) / skipped late (the demo: waited behind processing) / late but idle (ARKit's own delay) / missed by the camera; the most frames the app held (maxFramesHeld, at most 2) and the processed frames' wait in the hand-off; pauses (s); latencies and processing times in ms (p50, p95, max), processing also by what ran; detector runs per second; recent window and total",
         "captureLockSettle": "camera clock (s): when the capture lock was armed and taken, how long it waited, whether it timed out and what was still adjusting",
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
+        "tiltSigmaDegrees": "the tilt's honest uncertainty (deg, 1 sigma, both axes) over the lock's views (each its newest detections, one view's uncertainty); angleSettled: the tilt is shown (else 'settling'); viewGroups: views of the slab more than 7.5 deg apart; settledTiltDegrees: its normal's tilt (what is shown once settled)",
         "depthChecks": "LiDAR's checks of the lock's top while locked: checks, used, rejected per reason (points, angle, inliers, offset); offsetMm: the lock's centre above LiDAR's plane less the dish's offset (mm); angleDegrees: LiDAR's plane to the image normal (deg); rangeRatio: LiDAR's range to the corner plane over the picture's along the line of sight (k); each count, min, max, median of the latest 101, last",
         "videoFormatChange": "the last video format change (full image size, nominal fps), the camera clock of the frame it was noted on, and what showed it (basis: size, frame-steps, time)",
     ]
@@ -198,6 +206,12 @@ public struct DiagnosticsReport: Codable, Equatable {
         history = tracker.detectionLog.suffix(15).map(DiagnosticsReport.rounded)
         self.tracker = tracker.settings
         depthChecks = tracker.depthChecks.checks > 0 ? tracker.depthChecks.rounded : nil
+        if tracker.state == .locked {
+            tiltSigmaDegrees = tracker.tiltSigmaDegrees.flatMap { $0.isFinite ? DiagnosticsReport.r2($0) : nil }
+            angleSettled = tracker.angleSettled
+            viewGroups = tracker.viewGroupCount
+            settledTiltDegrees = tracker.settledNormal.map { DiagnosticsReport.r2(Units.degrees($0.angle(to: -ARKitConvention.worldDown))) }
+        }
         if let v = view {
             camera = Camera(view: v, slab: tracker.slab)
             let full = lens ?? self.lens.map { CameraIntrinsics(fx: $0.fx, fy: $0.fy, cx: $0.cx, cy: $0.cy, width: $0.width, height: $0.height) }
@@ -221,6 +235,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         o.center = r.center?.map(r4); o.normal = r.normal?.map(r4)
         o.tiltDegrees = r.tiltDegrees.map(r2); o.sigmaDegrees = r.sigmaDegrees.map(r2); o.rmsPixels = r.rmsPixels.map(r2)
         o.distance = r.distance.map(r4); o.sidesPixels = r.sidesPixels?.map(r2); o.aspect = r.aspect.map(r4)
+        o.viewSigmaDegrees = r.viewSigmaDegrees.map(r2); o.misfitChi2 = r.misfitChi2.map(r2)
         return o
     }
 

@@ -166,9 +166,16 @@ struct ContentView: View {
     }
 
     private func readout(_ label: String, _ value: String, id: String) -> some View {
-        VStack(spacing: 2) {
+        // "settling" (the tilt not shown yet) is dimmed, in a smaller face so it fits
+        let settling = value == HUDState.settlingText
+        return VStack(spacing: 2) {
             Text(label).font(.caption2).foregroundColor(.white.opacity(0.7))
-            Text(value).font(.headline.monospacedDigit()).foregroundColor(.white).accessibilityIdentifier(id)
+            Text(value)
+                .font(settling ? Font.subheadline : Font.headline.monospacedDigit())
+                .foregroundColor(.white.opacity(settling ? 0.5 : 1))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .accessibilityIdentifier(id)
         }
         .frame(maxWidth: .infinity)
     }

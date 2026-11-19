@@ -107,6 +107,10 @@ public struct RecordedOutput: Codable, Equatable {
     /// search's refine pass on it (`TrackerOutput.refinedDetections`); nil: none
     public var slabCrop: SlabImageCrop?
     public var refinedDetections: [DetectedOutline]?
+    /// the tilt's honest standard deviation (degrees) and whether it was settled enough to show (`TrackerOutput
+    /// .tiltSigmaDegrees`, `angleSettled`; nil: not settled, or a recording from before n11)
+    public var tiltSigmaDegrees: Double?
+    public var angleSettled: Bool?
 
     public init(state: TrackerState) { self.state = state }
 
@@ -125,6 +129,8 @@ public struct RecordedOutput: Codable, Equatable {
         lockUnconfirmed = o.lockUnconfirmed ? true : nil
         slabCrop = o.slabDetail?.crop
         refinedDetections = o.refinedDetections
+        tiltSigmaDegrees = o.tiltSigmaDegrees
+        angleSettled = o.angleSettled ? true : nil
     }
 
     /// the slab's tilt from level (degrees), while locked
@@ -189,6 +195,10 @@ public struct RecordedOutput: Codable, Equatable {
             if a.distance(to: b) > tol.centre { d.append("ball: centres \(f(a.distance(to: b) * 1000)) mm apart") }
         }
         if (phone.depthFused ?? false) != (depthFused ?? false) { d.append("depth: fused on the phone \(phone.depthFused ?? false), replay \(depthFused ?? false)") }
+        // what the phone showed: the tilt, or "settling" (recordings from before n11 do not say: not compared)
+        if let a = phone.angleSettled ?? (phone.tiltSigmaDegrees != nil ? false : nil), a != (angleSettled ?? false) {
+            d.append("settled: phone \(a), replay \(angleSettled ?? false)")
+        }
         if (phone.lockUnconfirmed ?? false) != (lockUnconfirmed ?? false) {
             d.append("lock unconfirmed: phone \(phone.lockUnconfirmed ?? false), replay \(lockUnconfirmed ?? false)")
         }

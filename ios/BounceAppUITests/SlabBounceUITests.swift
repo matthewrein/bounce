@@ -165,7 +165,10 @@ final class SlabBounceUITests: XCTestCase {
         let lockTime = waitUntil(30) { label(app, "status").contains("Slab locked") }
         screenshot(app, "after launch")
         XCTAssertNotNil(lockTime, "never locked; status: \(label(app, "status"))")
-        Thread.sleep(forTimeInterval: 2) // let the lock gather a few re-checks
+        // the tilt shows once it has settled (n11: "settling" until then; the demo settles a few seconds after the lock,
+        // once the re-checks have measured the detector's noise)
+        let shownAfter = waitUntil(30) { number(label(app, "tilt")) != nil }
+        XCTAssertNotNil(shownAfter, "the tilt never settled: \(label(app, "tilt")), status \(label(app, "status"))")
         screenshot(app, "locked")
         let tr = truth(d, at: 3)
         let tilt = number(label(app, "tilt")), apex = number(label(app, "apex")), drop = number(label(app, "drop"))
@@ -179,6 +182,33 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertEqual(drop ?? -99, 36, accuracy: 0.6, "with no ball the drop is the 3 ft setting: \(label(app, "drop"))")
         XCTAssertTrue(element(app, "settings").exists, "no gear on the main screen")
         XCTAssertTrue(developerOnMain.isEmpty, "developer controls on the main screen: \(developerOnMain)")
+    }
+
+    /// n11: right after the lock the tilt reads "settling" (Tilt and Lands; the status says so), then, once its honest
+    /// uncertainty is small enough, the number, matching the scene's truth, with the landing.
+    func testSettlingThenTheTilt() {
+        let d = DemoScript()
+        let app = launch(["demoTilt": "\(d.tilt)"])
+        // seen while the lock is new: "settling" in the readouts or the status
+        var statusSettling = "", landsSettling = ""
+        let settlingAt = waitUntil(30) {
+            let s = label(app, "status"), tilt = label(app, "tilt")
+            if s.contains("settling") || tilt == "settling" { statusSettling = s; landsSettling = label(app, "lands"); return true }
+            return false
+        }
+        screenshot(app, "settling")
+        XCTAssertNotNil(settlingAt, "never saw \"settling\"; status \(label(app, "status")), tilt \(label(app, "tilt"))")
+        let shownAt = waitUntil(30) { number(label(app, "tilt")) != nil }
+        screenshot(app, "settled")
+        let tilt = number(label(app, "tilt")), lands = label(app, "lands"), status = label(app, "status")
+        let tr = truth(d, at: 3)
+        summary(String(format: "settling: \"settling\" seen %.1f s after launch (status \"%@\", lands \"%@\"), tilt shown %.1f s after that: %@ (truth %.2f), lands %@, status \"%@\"",
+                       settlingAt ?? -1, statusSettling, landsSettling, shownAt ?? -1, tilt.map { String(format: "%.2f", $0) } ?? "-", tr.tilt, lands, status))
+        XCTAssertNotNil(shownAt, "the tilt never showed: \(label(app, "tilt")), status \(status)")
+        XCTAssertTrue(statusSettling.contains("Slab locked"), "settling is shown only on a lock: \(statusSettling)")
+        XCTAssertEqual(tilt ?? -99, tr.tilt, accuracy: 1.0, "tilt readout \(label(app, "tilt"))")
+        XCTAssertNotNil(number(lands), "the landing shows with the tilt: \(lands)")
+        XCTAssertFalse(status.contains("settling"), "status still says settling: \(status)")
     }
 
     /// A ball held over the slab sets the drop height.

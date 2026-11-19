@@ -124,6 +124,8 @@ extension TrackerSettings: Codable {
         .init("idleSearchMoveDistance", \.idleSearchMoveDistance),
         .init("idleBallAfter", \.idleBallAfter),
         .init("idleBallInterval", \.idleBallInterval),
+        .init("settle", \.settle),
+        .init("readoutsFromSettledNormal", \.readoutsFromSettledNormal),
     ]
 
     public init(from decoder: Decoder) throws {

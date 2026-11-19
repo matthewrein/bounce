@@ -715,7 +715,7 @@ final class ARController: NSObject, ARSessionDelegate {
         lastFloorY = fy
         let tf = TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: depth?.0, depthIntrinsics: depth?.1,
                               ballImage: ballImage, ballIntrinsics: ballK, tap: tap, floorY: fy, trackingNormal: f.trackingNormal,
-                              slabDetail: slabDetail)
+                              slabDetail: slabDetail, exposureDuration: f.exposureDuration)
         let out = tracker.process(tf)
         lastOutput = out
         // what the capture kit's frames are recorded with until the next processed frame
@@ -909,12 +909,14 @@ final class ARController: NSObject, ARSessionDelegate {
             }
         }
         guard out.state == .locked, let s = out.slab else { return o }
+        o.settling = !out.angleSettled
         o.outline = s.topCorners.compactMap { toView($0, view, vp) }
         if let path = out.path {
             o.path = path.samples(count: 40).compactMap { toView($0, view, vp) }
             o.start = toView(path.start, view, vp)
             if path.apexHeight > 0.005 { o.apex = toView(path.apex, view, vp) }
-            o.landing = toView(path.landing, view, vp)
+            // no landing spot while the tilt settles: it would move by centimetres per degree
+            if !o.settling { o.landing = toView(path.landing, view, vp) }
             o.normalTip = toView(path.start + path.direction * 0.08, view, vp)
         }
         if let b = out.ball {
@@ -938,13 +940,16 @@ final class ARController: NSObject, ARSessionDelegate {
                 h.status = "Checking"
             } else {
                 h.status = out.ball != nil ? "Slab locked · ball in view" : "Slab locked"
+                // the tilt is not shown until its honest uncertainty is small enough (TrackerOutput.angleSettled)
+                if !out.angleSettled { h.status += " · settling" }
             }
         }
         h.locked = out.state == .locked && !out.lockUnconfirmed
+        h.settling = out.state == .locked && !out.angleSettled
         if let r = out.readouts {
-            h.tilt = String(format: "%.1f°", r.tiltDegrees)
+            h.tilt = h.settling ? HUDState.settlingText : String(format: "%.1f°", r.tiltDegrees)
             h.apex = Format.length(r.apexHeight)
-            h.landing = Format.length(r.landingDistance)
+            h.landing = h.settling ? HUDState.settlingText : Format.length(r.landingDistance)
             h.air = String(format: "%.2f s", r.airTime)
             h.drop = Format.length(r.dropHeight) + (r.dropFromBall ? " (ball)" : "")
         }
@@ -959,6 +964,7 @@ final class ARController: NSObject, ARSessionDelegate {
         d.lockUnconfirmed = out.lockUnconfirmed
         d.hint = out.hint
         d.tracking = lastTracking
+        d.tilt = ARController.tiltLine(out)
         if let c = out.depth {
             d.depth = String(format: "LiDAR: %.1f° tilt, %.1f° from image", c.tiltDegrees, c.angleToImageDegrees)
         }
@@ -968,6 +974,16 @@ final class ARController: NSObject, ARSessionDelegate {
         }
         d.frames = framesLine
         return d
+    }
+
+    /// The developer line's tilt uncertainty while locked: "tilt sigma 1.7° · 1 view group · settling" (the honest
+    /// standard deviation, both axes; how many views of the slab it rests on; whether the tilt is shown), "tilt sigma - ·
+    /// 0 view groups · settling" before any view; nil while not locked.
+    static func tiltLine(_ out: TrackerOutput) -> String? {
+        guard out.state == .locked else { return nil }
+        let sigma = out.tiltSigmaDegrees.map { String(format: "%.1f°", $0) } ?? "-"
+        let groups = out.viewGroups == 1 ? "1 view group" : "\(out.viewGroups) view groups"
+        return "tilt sigma \(sigma) · \(groups) · " + (out.angleSettled ? "settled" : "settling")
     }
 
     /// The developer line's frame numbers over the last 10 s of camera time, e.g. "frames: 58.9/s in, 40% dropped busy,

@@ -168,7 +168,7 @@ public struct ReplayRunner {
             let tf = TrackerFrame(timestamp: f.timestamp, view: f.view, frame: frame ?? blank, depth: depth,
                                   depthIntrinsics: depth != nil ? f.depthIntrinsics : nil, ballImage: ballImage, ballIntrinsics: ballK,
                                   tap: f.tapPoint, floorY: f.floorY ?? floorY, trackingNormal: f.trackingNormal,
-                                  slabDetail: slabDetail.map { d in { _ in d } })
+                                  slabDetail: slabDetail.map { d in { _ in d } }, exposureDuration: f.exposureDuration)
             let out = tracker.process(tf)
             if let n = det.note { subs.append(n) }
             var diffs: [String] = []
