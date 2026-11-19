@@ -42,6 +42,37 @@ final class HonestTiltTests: XCTestCase {
         }
     }
 
+    /// Safeguard 3's placement: a one-edge side is centred between its two readings (`Measurement.sideShiftsPixels`)
+    /// before it counts. A side moved out by half a 5 px band turns the detection's normal as refitting the moved outline
+    /// does (to 5% of the turn), and the misfit follows it; no shift leaves the detection as it was, bit for bit.
+    func testAOneEdgeSideIsCentredBetweenItsReadings() throws {
+        let spec = SlabSpec(sideU: 0.1802, sideV: 0.1802, thickness: 0.0254, dishDepth: 0)
+        let view = CameraView(worldFromCamera: .identity, intrinsics: kitK)
+        let par = [0.3, 0.3, 2.6, 0.3], turn = [0.2, 0.2, 0.2, 0.2]
+        for (el, az) in [(50.0, 20.0), (65, 0)] {
+            let pose = poseForView(elev: el, dist: 1.2, az: az, half: 0.0901)
+            let q = pose.topCorners.map { kitK.project($0)! }
+            let plain = try XCTUnwrap(HonestTilt.detection(pose: pose, quad: q, view: view, parallel: par, turn: turn, settings: SettleSettings()))
+            let zero = try XCTUnwrap(HonestTilt.detection(pose: pose, quad: q, view: view, parallel: par, turn: turn, shift: [0, 0, 0, 0],
+                                                          settings: SettleSettings()))
+            XCTAssertEqual(zero.normal, plain.normal)
+            XCTAssertEqual(zero.chi2, plain.chi2)
+            for side in 0..<4 {
+                var sh = [0.0, 0, 0, 0]; sh[side] = 2.5
+                let d = try XCTUnwrap(HonestTilt.detection(pose: pose, quad: q, view: view, parallel: par, turn: turn, shift: sh,
+                                                           settings: SettleSettings()))
+                let moved = try XCTUnwrap(SideSensitivity.moved(q, side: side, by: 2.5, turn: false))
+                let fit = try XCTUnwrap(PoseSolver.solve(corners: moved, intrinsics: kitK, spec: spec, previousNormal: pose.normal))
+                let want = fit.pose.normal - pose.normal, got = d.normal - pose.normal
+                XCTAssertGreaterThan(Units.degrees(want.length), 0.1, "the shift matters (elevation \(el), side \(side))")
+                XCTAssertLessThan((got - want).length, 0.05 * want.length, "elevation \(el), side \(side)")
+                // a parallel move of one side leaves only what no pose absorbs; its chi-square is that misfit in the noise
+                XCTAssertGreaterThanOrEqual(d.chi2, 0)
+                XCTAssertEqual(d.sigmaDegrees, plain.sigmaDegrees, accuracy: 1e-12, "the covariance does not move with the side")
+            }
+        }
+    }
+
     /// The same numbers as the prep's replay model (scratch sidejac.py, the same views and per-side noise): this is the
     /// rule the kit replays judged.
     func testDetectionSigmaMatchesTheReplayModel() throws {

@@ -61,12 +61,14 @@ public final class SlabFinderDetector: SlabDetecting {
     public func forgetPixelMemory() { choice = nil; detail = nil }
 
     /// The tracker's view of a find: with a side profile (the refiner's sides say which feature they rest on), each
-    /// side's line noise and the profile learned so far go with it (`DetectedOutline.sideSigmas`); without one, as before.
+    /// side's line noise, a one-edge side's middle between its two readings and the profile learned so far go with it
+    /// (`DetectedOutline.sideSigmas`, `sideShifts`); without one, as before.
     static func outline(_ c: SlabCandidate) -> DetectedOutline {
         var o = DetectedOutline(quad: c.quad, score: c.score, sideModes: c.sides.map { $0.mode.rawValue })
         if c.sides.count == 4, c.sides.contains(where: { $0.feature != nil }) {
             o.sideSigmas = c.sides.map { $0.topSigmaPixels }
             o.sideTurnSigmas = c.sides.map { $0.turnSigmaPixels }
+            if c.sides.contains(where: { $0.ambiguityShiftPixels != 0 }) { o.sideShifts = c.sides.map { $0.ambiguityShiftPixels } }
             if let p = c.choice?.profile { o.faceDrop = p.faceDrop; o.sideRun = p.sideRun }
         }
         return o

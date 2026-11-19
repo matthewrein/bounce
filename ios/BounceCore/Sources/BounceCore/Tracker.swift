@@ -48,21 +48,27 @@ public struct DetectedOutline: Equatable, Codable {
     /// the side's middle, as its ends' displacement (`SideEdge.turnSigmaPixels`)
     public var sideSigmas: [Double]
     public var sideTurnSigmas: [Double]
+    /// With a side profile: on a side whose face shows but whose two edges were not both seen, how far outward (pixels
+    /// like `sideSigmas`, negative inward) the middle of its two possible readings lies from the line given
+    /// (`SideEdge.ambiguityShiftPixels`; 0 elsewhere). The outline keeps the likelier reading; an estimate that must stay
+    /// neutral between them (the tilt's honest estimate) centres the side there, and `sideSigmas` covers both.
+    public var sideShifts: [Double]
     /// the side profile the detector has learned on this slab (`ProfileLearning`: the face's drop and side run, metres);
     /// nil when none was learned or there is no profile
     public var faceDrop: Double?
     public var sideRun: Double?
 
     public init(quad: [Vec2], score: Double = 1, sideModes: [String] = [], sideSigmas: [Double] = [], sideTurnSigmas: [Double] = [],
-                faceDrop: Double? = nil, sideRun: Double? = nil) {
+                faceDrop: Double? = nil, sideRun: Double? = nil, sideShifts: [Double] = []) {
         self.quad = quad; self.score = score; self.sideModes = sideModes
         self.sideSigmas = sideSigmas; self.sideTurnSigmas = sideTurnSigmas; self.faceDrop = faceDrop; self.sideRun = sideRun
+        self.sideShifts = sideShifts
     }
 
     // JSON (recordings): {"quad": [[x, y], ...] (pixels of the frame the detector ran on), "score": s, "sideModes": [...],
-    // and with a side profile "sideSigmas", "sideTurnSigmas": [...], "faceDrop", "sideRun": m}; the later keys are absent in
-    // older recordings (and written only when set, so a detection without them writes what it wrote before)
-    enum CodingKeys: String, CodingKey { case quad, score, sideModes, sideSigmas, sideTurnSigmas, faceDrop, sideRun }
+    // and with a side profile "sideSigmas", "sideTurnSigmas", "sideShifts": [...], "faceDrop", "sideRun": m}; the later keys
+    // are absent in older recordings (and written only when set, so a detection without them writes what it wrote before)
+    enum CodingKeys: String, CodingKey { case quad, score, sideModes, sideSigmas, sideTurnSigmas, faceDrop, sideRun, sideShifts }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         quad = try c.decode([[Double]].self, forKey: .quad).map { Vec2($0[0], $0[1]) }
@@ -72,6 +78,7 @@ public struct DetectedOutline: Equatable, Codable {
         sideTurnSigmas = try c.decodeIfPresent([Double].self, forKey: .sideTurnSigmas) ?? []
         faceDrop = try c.decodeIfPresent(Double.self, forKey: .faceDrop)
         sideRun = try c.decodeIfPresent(Double.self, forKey: .sideRun)
+        sideShifts = try c.decodeIfPresent([Double].self, forKey: .sideShifts) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -82,6 +89,7 @@ public struct DetectedOutline: Equatable, Codable {
         if !sideTurnSigmas.isEmpty { try c.encode(sideTurnSigmas, forKey: .sideTurnSigmas) }
         try c.encodeIfPresent(faceDrop, forKey: .faceDrop)
         try c.encodeIfPresent(sideRun, forKey: .sideRun)
+        if !sideShifts.isEmpty { try c.encode(sideShifts, forKey: .sideShifts) }
     }
 }
 
@@ -612,6 +620,9 @@ public final class SlabTracker {
         /// given; the honest uncertainty then uses the corner noise the re-checks show (`HonestTilt`).
         var sideSigmasPixels: [Double]? = nil
         var sideTurnSigmasPixels: [Double]? = nil
+        /// a one-edge side's middle between its two readings, outward from its line (pixels of `quad`, pose side order;
+        /// `DetectedOutline.sideShifts`): where the honest estimate puts that side. nil: none given (all 0).
+        var sideShiftsPixels: [Double]? = nil
         /// the side profile the detector has learned (`DetectedOutline.faceDrop`, `sideRun`), if any
         var profile: (faceDrop: Double, sideRun: Double)? = nil
         var pose: SlabPose { est.pose }
@@ -1214,6 +1225,7 @@ public final class SlabTracker {
                             rms: fit.rmsPixels, camera: f.view, blur: frameBlur)
         if o.sideSigmas.count == 4 { m.sideSigmasPixels = fit.sidesInPoseOrder(o.sideSigmas) }
         if o.sideTurnSigmas.count == 4 { m.sideTurnSigmasPixels = fit.sidesInPoseOrder(o.sideTurnSigmas) }
+        if o.sideShifts.count == 4 { m.sideShiftsPixels = fit.sidesInPoseOrder(o.sideShifts) }
         if let h = o.faceDrop, let r = o.sideRun { m.profile = (h, r) }
         return m
     }
@@ -1558,6 +1570,7 @@ public final class SlabTracker {
                 x.camera = m.camera.map { CameraView(worldFromCamera: $0.worldFromCamera, intrinsics: new) }
                 x.blur = m.blur * r
                 x.sideSigmasPixels = m.sideSigmasPixels?.map { $0 * r }; x.sideTurnSigmasPixels = m.sideTurnSigmasPixels?.map { $0 * r }
+                x.sideShiftsPixels = m.sideShiftsPixels?.map { $0 * r }
                 return x
             }
             hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled)
@@ -1601,7 +1614,7 @@ public final class SlabTracker {
         var d: HonestTilt.Detection? = nil
         let s = cornerNoiseEstimate
         if let v = m.camera, let sn = sideNoise(m, v) {
-            d = HonestTilt.detection(pose: m.pose, quad: sn.quad, view: v, parallel: sn.parallel, turn: sn.turn,
+            d = HonestTilt.detection(pose: m.pose, quad: sn.quad, view: v, parallel: sn.parallel, turn: sn.turn, shift: sn.shift,
                                      cornerNoise: sn.perCorner ? s : nil, settings: settings.settle)
         }
         honest.add(d, cornerNoise: s)
@@ -1614,23 +1627,26 @@ public final class SlabTracker {
     /// re-checks show (`cornerNoiseEstimate`, at least 0.25 px: above the floors at a processing frame's focal length),
     /// which `HonestTilt` splits equally into a shift and a turn of each side (s^2 / 2 each: the same normal covariance as
     /// independent corner noise) and keeps following as the re-checks measure it. The frame's motion blur adds to the
-    /// parallel part (`SettleSettings.blurShare`).
-    private func sideNoise(_ m: Measurement, _ v: CameraView) -> (quad: [Vec2], parallel: [Double], turn: [Double], perCorner: Bool)? {
+    /// parallel part (`SettleSettings.blurShare`). `shift`: where the honest estimate puts each side, outward from its line
+    /// (a one-edge side's middle between its two readings, `Measurement.sideShiftsPixels`; nil: every side where it is).
+    private func sideNoise(_ m: Measurement, _ v: CameraView) -> (quad: [Vec2], parallel: [Double], turn: [Double], shift: [Double]?,
+                                                                 perCorner: Bool)? {
         guard m.quad.count == 4 else { return nil }
         let st = settings.settle, focal = v.intrinsics.focal
         let j0 = st.parallelFloorRadians * focal, t0 = st.turnFloorRadians * focal, b = st.blurShare * m.blur
-        var par: [Double], turn: [Double]
+        var par: [Double], turn: [Double], shift: [Double]? = nil
         let perCorner: Bool
         if let p = m.sideSigmasPixels, p.count == 4 {
             perCorner = false
             par = p.map { (pow(max($0, j0), 2) + b * b).squareRoot() }
             turn = (m.sideTurnSigmasPixels.flatMap { $0.count == 4 ? $0 : nil } ?? [t0, t0, t0, t0]).map { max($0, t0) }
+            if let sh = m.sideShiftsPixels, sh.count == 4, sh.contains(where: { $0 != 0 }) { shift = sh }
         } else {
             perCorner = true
             par = [b, b, b, b]; turn = [0, 0, 0, 0]
         }
         // the outline in the pose's corner order, and its sides with it
-        guard let T = project(m.pose, v) else { return (m.quad, par, turn, perCorner) }
+        guard let T = project(m.pose, v) else { return (m.quad, par, turn, shift, perCorner) }
         var best = (rev: false, k: 0), bd = Double.infinity
         for rev in [false, true] {
             let r = rev ? Array(m.quad.reversed()) : m.quad
@@ -1639,12 +1655,12 @@ public final class SlabTracker {
                 if d < bd { bd = d; best = (rev, k) }
             }
         }
-        guard best.rev || best.k != 0 else { return (m.quad, par, turn, perCorner) }
+        guard best.rev || best.k != 0 else { return (m.quad, par, turn, shift, perCorner) }
         let r = best.rev ? Array(m.quad.reversed()) : m.quad
         let q = (0..<4).map { r[($0 + best.k) % 4] }
         // side i of the matched outline is the original side (i + k) (or, reversed, (2 - i - k)) mod 4
         let side = (0..<4).map { i in best.rev ? ((2 - i - best.k) % 4 + 4) % 4 : (i + best.k) % 4 }
-        return (q, side.map { par[$0] }, side.map { turn[$0] }, perCorner)
+        return (q, side.map { par[$0] }, side.map { turn[$0] }, shift.map { sh in side.map { sh[$0] } }, perCorner)
     }
 
     // MARK: the box model's cut-face flip

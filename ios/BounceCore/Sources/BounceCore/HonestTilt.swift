@@ -91,12 +91,25 @@ struct HonestTilt {
     /// A detection's covariance and misfit, from its pose (world), its outline (pose order, pixels of `view`), the camera
     /// and its sides' noise (pixels, pose side order): parallel and turn; with `cornerNoise`, also a corner noise of that
     /// many pixels split equally into each side's shift and turn (s^2 / 2 each: the per-corner model), kept apart
-    /// (`Detection.perCornerNoise`). nil when the fit cannot be linearised.
-    static func detection(pose: SlabPose, quad: [Vec2], view: CameraView, parallel: [Double], turn: [Double], cornerNoise: Double? = nil,
-                          settings: SettleSettings) -> Detection? {
+    /// (`Detection.perCornerNoise`). `shift` (pixels outward, pose side order): sides to move before use, a one-edge
+    /// side to the middle of its two possible readings (`Measurement.sideShiftsPixels`); the normal and the misfit
+    /// follow through the linearised fit (a shift of a band's half moves the normal by about a degree, well inside the
+    /// fit's linear range). nil when the fit cannot be linearised.
+    static func detection(pose: SlabPose, quad: [Vec2], view: CameraView, parallel: [Double], turn: [Double], shift: [Double]? = nil,
+                          cornerNoise: Double? = nil, settings: SettleSettings) -> Detection? {
         guard quad.count == 4, parallel.count == 4, turn.count == 4 else { return nil }
         let pc = pose.transformed(by: view.cameraFromWorld)
         guard let ss = PoseSolver.sideSensitivity(pose: pc, corners: quad, intrinsics: view.intrinsics) else { return nil }
+        // the sides moved to where the estimate puts them: the normal (camera axes) and the misfit follow linearly
+        var nc = pc.normal, residuals = ss.residuals, shifted = false
+        if let sh = shift, sh.count == 4, sh.contains(where: { $0 != 0 }) {
+            shifted = true
+            for s in 0..<4 where sh[s] != 0 {
+                nc += ss.normalPerShift[s] * sh[s]
+                for i in 0..<8 { residuals[i] += ss.residualPerShift[s][i] * sh[s] }
+            }
+            nc = nc.normalized
+        }
         var C = zero3, U = zero3
         var Cr = [[Double]](repeating: [Double](repeating: 0, count: 8), count: 8)
         let cn2 = pow(cornerNoise ?? 0, 2) / 2
@@ -117,13 +130,13 @@ struct HonestTilt {
         if wmax > 0 {
             for k in 0..<8 where w[k] > 1e-9 * wmax {
                 var y = 0.0
-                for i in 0..<8 { y += V[i][k] * ss.residuals[i] }
+                for i in 0..<8 { y += V[i][k] * residuals[i] }
                 chi2 += y * y / w[k]; dof += 1
             }
         }
-        let v = (view.position - pose.center).normalized
-        guard Cw.m.allSatisfy({ $0.isFinite }), Uw.m.allSatisfy({ $0.isFinite }), chi2.isFinite, v.isFinite else { return nil }
-        return Detection(normal: pose.normal, cov: Cw, perCornerNoise: Uw, view: v, chi2: chi2, dof: dof, excluded: chi2 > settings.misfitChi2,
+        let v = (view.position - pose.center).normalized, nw = shifted ? R * nc : pose.normal
+        guard Cw.m.allSatisfy({ $0.isFinite }), Uw.m.allSatisfy({ $0.isFinite }), chi2.isFinite, v.isFinite, nw.isFinite else { return nil }
+        return Detection(normal: nw, cov: Cw, perCornerNoise: Uw, view: v, chi2: chi2, dof: dof, excluded: chi2 > settings.misfitChi2,
                          cornerNoise: cornerNoise ?? 0)
     }
 
