@@ -1,4 +1,5 @@
 import BounceCore
+import UIKit
 import XCTest
 
 /// End-to-end tests in the iOS Simulator. ARKit and the camera do not exist there, so the app runs its demo: a synthetic
@@ -384,8 +385,12 @@ final class SlabBounceUITests: XCTestCase {
     /// per-frame state, so both redrew with every frame: about 8 times a second in the demo, some 24 times in 3 s), and
     /// the Developer list's rows below the live line stay put while that line changes and rewraps. Settings' redraw
     /// count is its Developer row's accessibility value, shown only to a test that launches with -countRedraws YES;
-    /// Developer shows its own ("developerRedraws"). The Pre-flight row's top is read again and again for 3 s while the
-    /// live line's numbers change.
+    /// Developer shows its own ("developerRedraws"). The rows below the live line stay put because the line keeps its
+    /// height whatever it says, and that is checked directly, whether or not the line happens to rewrap while it is
+    /// watched: its height is the same at every read, through a tracking reset (the demo goes back to searching and
+    /// locks again, so the line loses its tilt line and gets it back) and the numbers' changes, and it is room for 14
+    /// lines or more of its font (16 kept at the default text size, about 11 used in the demo). The Pre-flight row's top
+    /// is also read for 3 s once the list has stopped, and must not move.
     func testSettingsAndDeveloperStayStill() {
         let app = launch(["countRedraws": "YES"])
         XCTAssertNotNil(waitUntil(30) { label(app, "status").contains("Slab locked") }, "the demo never locked")
@@ -421,16 +426,37 @@ final class SlabBounceUITests: XCTestCase {
         let developer1 = developerRedraws()
         screenshot(app, "developer")
 
-        // the rows below the live line: the Pre-flight row's top (scrolled well into view first), read for 3 s while
-        // the live line changes, with the line's own height
-        let row = reveal(app, "preflightRow")
-        Thread.sleep(forTimeInterval: 0.5)
+        // The live line keeps its height whatever it says. Reset tracking (at the top of Developer) sends the demo back
+        // to searching: the line loses its tilt line (and may show the tracker's hint) and gets it back when the demo
+        // locks again, soon after. Its height and text are read through that change for 2 s, as long as the line is on
+        // screen at the top of the list (on a tall phone it is), and again below.
         let liveLine = element(app, "developerLine")
-        var tops: [Double] = [], heights: [Double] = [], lines: [String] = []
-        let started = Date()
-        while Date().timeIntervalSince(started) < watch {
-            if row.exists { tops.append(Double(row.frame.minY)) }
+        var heights: [Double] = [], lines: [String] = []
+        func readLiveLine() {
             if liveLine.exists { heights.append(Double(liveLine.frame.height)); lines.append(liveLine.label) }
+        }
+        tap(app, "reset")
+        let resetAt = Date()
+        while Date().timeIntervalSince(resetAt) < 2 { readLiveLine(); Thread.sleep(forTimeInterval: 0.2) }
+        let readsAtTop = lines.count
+
+        // the rows below the live line: the Pre-flight row (scrolled well into view first), once the list has stopped
+        // (two tops about 0.3 s apart agree; a slow Simulator can still be coasting when reveal returns), its top read
+        // for 3 s and at least 3 times (at most 10 s) while the live line changes, with the line's height and text
+        let row = reveal(app, "preflightRow")
+        var lastTop: Double? = nil
+        let settledAfter = waitUntil(5) {
+            Thread.sleep(forTimeInterval: 0.1)
+            let top: Double? = row.exists ? Double(row.frame.minY) : nil
+            defer { lastTop = top }
+            guard let t = top, let last = lastTop else { return false }
+            return abs(t - last) < 0.5
+        }
+        var tops: [Double] = []
+        let started = Date()
+        while Date().timeIntervalSince(started) < 10 && (Date().timeIntervalSince(started) < watch || tops.count < 3) {
+            if row.exists { tops.append(Double(row.frame.minY)) }
+            readLiveLine()
             Thread.sleep(forTimeInterval: 0.2)
         }
         let developer2 = developerRedraws()
@@ -440,6 +466,16 @@ final class SlabBounceUITests: XCTestCase {
         let heightMin: Double = heights.min() ?? -1, heightMax: Double = heights.max() ?? -1
         let lineChanges = zip(lines, lines.dropFirst()).filter { $0.0 != $0.1 }.count
         let framesShown = lines.contains { $0.contains("frames:") } ? "shown" : "not shown"
+        // the line's parts (state, tracking, tilt, frames, hint...), one a text line, each wrapping to one or more
+        let parts: [Int] = lines.map { $0.split(separator: "\n").count }
+        let partsMin: Int = parts.min() ?? 0, partsMax: Int = parts.max() ?? 0
+        let notLocked: Int = lines.filter { !$0.hasPrefix("state locked") }.count
+        let settledWords: String = settledAfter.map { String(format: "after %.1f s", $0) } ?? "never"
+        // one line of the live line's font (caption, monospaced) at the text size in use: the line keeps 16 of them at
+        // the default size (more at larger sizes); its text needs about 11 in the demo
+        let captionSize: CGFloat = UIFont.preferredFont(forTextStyle: .caption1).pointSize
+        let captionLine = Double(UIFont.monospacedSystemFont(ofSize: captionSize, weight: .regular).lineHeight)
+        let linesMin: Double = heightMin / captionLine, linesMax: Double = heightMax / captionLine
 
         func text(_ n: Int?) -> String { n.map { String($0) } ?? "-" }
         func change(_ a: Int?, _ b: Int?) -> String {
@@ -448,10 +484,13 @@ final class SlabBounceUITests: XCTestCase {
         }
         let redrawWords = "Settings redrew \(change(settings0, settings1)) times (count \(text(settings0)) -> \(text(settings1))), "
             + "Developer \(change(developer0, developer1)) times (\(text(developer0)) -> \(text(developer1)); "
-            + "\(text(developer2)) after the scroll and \(Int(watch)) s more)"
-        summary(String(format: "stillness: in %.0f s %@; Pre-flight row's top %.1f to %.1f pt over %d reads (spread %.1f pt) while the "
-                       + "live line changed %d times in %d reads (frame numbers %@), its height %.1f to %.1f pt",
-                       watch, redrawWords, topMin, topMax, tops.count, spread, lineChanges, lines.count, framesShown, heightMin, heightMax))
+            + "\(text(developer2)) after a reset, the scroll and \(Int(watch)) s more)"
+        summary(String(format: "stillness: in %.0f s %@; Pre-flight row's top %.1f to %.1f pt over %d reads (spread %.1f pt; "
+                       + "the list stopped %@) while the live line changed %d times in %d reads (%d at the top after a reset, "
+                       + "%d not locked; %d to %d parts; frame numbers %@), its height %.1f to %.1f pt (%.1f to %.1f lines of %.1f pt)",
+                       watch, redrawWords, topMin, topMax, tops.count, spread,
+                       settledWords, lineChanges, lines.count, readsAtTop, notLocked, partsMin, partsMax, framesShown,
+                       heightMin, heightMax, linesMin, linesMax, captionLine))
         guard let s0 = settings0, let s1 = settings1 else {
             XCTFail("Settings' redraw count was not readable (developerRow: \(settingsSeen))")
             return
@@ -462,8 +501,15 @@ final class SlabBounceUITests: XCTestCase {
             return
         }
         XCTAssertLessThanOrEqual(d1 - d0, 2, "Developer redrew \(d1 - d0) times in \(watch) s with nothing touched")
-        XCTAssertGreaterThanOrEqual(tops.count, 2, "the Pre-flight row was not on screen: \(describe(app))")
+        XCTAssertGreaterThanOrEqual(tops.count, 3, "the Pre-flight row was not on screen: \(describe(app))")
         XCTAssertLessThanOrEqual(spread, 1.0, "the Pre-flight row moved \(spread) pt while the live line changed (tops \(tops))")
+        // the line's height does not follow its text: the same at every read (through the reset and the numbers'
+        // changes), and room for more lines than the demo's text needs (16 kept, about 11 used; 14 asked here, so a
+        // small difference between this font's line and the app's is no failure)
+        XCTAssertGreaterThanOrEqual(heights.count, 2, "the live line was not read: \(describe(app))")
+        XCTAssertLessThanOrEqual(heightMax - heightMin, 1.0, "the live line's height changed with its text (heights \(heights))")
+        XCTAssertGreaterThanOrEqual(heightMin, 14 * captionLine,
+                                    "the live line keeps no room to rewrap: \(heightMin) pt, \(linesMin) lines of \(captionLine) pt")
         closeSettings(app)
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }

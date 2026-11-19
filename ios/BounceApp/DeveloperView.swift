@@ -126,22 +126,37 @@ struct DeveloperView: View {
 }
 
 /// Settings > Developer's live line (`DeveloperStatus.line`), the one row there that redraws with the frames. It always
-/// takes `lines` lines, whatever it says, so the rows below it ("First run on a phone") stay put while its numbers
-/// change and it rewraps (until n12 they moved up and down). The accessibility label is always the whole line.
+/// takes `lines(for:)` lines at the text size in use, whatever it says, so the rows below it ("First run on a phone")
+/// stay put while its numbers change and it rewraps (until n12 they moved up and down). The accessibility label is
+/// always the whole line.
 struct LiveDeveloperLine: View {
     @ObservedObject var live: LiveFrame
+    /// the text size in use (a larger size wraps the line to more lines, so more are kept for it)
+    @Environment(\.dynamicTypeSize) private var textSize
 
-    /// Enough for the longest line on the narrowest iPhone the app runs on (iOS 16: an SE's 375 pt, about 40
-    /// characters of this font a line at the default text size): locked with LiDAR, recording, and a busy frames part
-    /// of about 260 characters wraps to 15 or 16 lines (the demo's line to about 11). A longer line (a larger text
-    /// size) ends in "…" here.
-    static let lines = 16
+    /// The lines kept for the live line: enough for the longest line on the narrowest iPhone the app runs on (iOS 16:
+    /// an SE's 375 pt, about 42 characters of this font a line at the default size, 33 at xxLarge, 12 at the largest
+    /// accessibility size). Locked with LiDAR, recording, limited tracking and a busy frames part of about 260
+    /// characters wraps to about 15 lines at the default size, 19 at xxLarge, 22 at AX1 and 44 at AX5 (the demo's line
+    /// to about 11 at the default size); each size keeps a few lines more than that. A longer line still (a 320 pt
+    /// Display Zoom screen) ends in "…" here; its accessibility label is still the whole line.
+    static func lines(for size: DynamicTypeSize) -> Int {
+        if size <= .large { return 16 }
+        if size <= .xLarge { return 18 }
+        if size <= .xxLarge { return 22 }
+        if size <= .xxxLarge { return 24 }
+        if size <= .accessibility1 { return 26 }
+        if size <= .accessibility2 { return 30 }
+        if size <= .accessibility3 { return 36 }
+        if size <= .accessibility4 { return 44 }
+        return 50
+    }
 
     var body: some View {
         let line = live.developer.line
         Text(line)
             .font(.system(.caption, design: .monospaced))
-            .lineLimit(LiveDeveloperLine.lines, reservesSpace: true)
+            .lineLimit(LiveDeveloperLine.lines(for: textSize), reservesSpace: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel(line)
             .accessibilityIdentifier("developerLine")
