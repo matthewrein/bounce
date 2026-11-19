@@ -49,6 +49,37 @@ public struct SideEdge: Equatable {
     /// inside); nil without a prediction
     public var predictedShift: Double?
 
+    // The side's uncertainty (frame pixels), for an honest estimate of the tilt. With a side profile
+    // (`SlabSpec.hasProfile`) every term is measured; without one only the floors and the ambiguity are known.
+
+    /// With a profile, the feature the line rests on (`SideFeature`); nil without one
+    public var feature: SideFeature? = nil
+    /// 1-sigma uncertainty of the line's position across the side (a parallel shift), in quadrature: the edge points'
+    /// scatter about the line (floored at the measured still-frame jitter, `Options.edgeJitterRadians` x f), the edge's
+    /// definition on the slab (`Options.edgeDefinitionSigma`), the profile's uncertainty carried into this side's feature,
+    /// and on a side whose face shows but whose two edges were not both seen, half the band (its two readings lie a band
+    /// apart; see `ambiguityShiftPixels`). Motion blur is not included: the caller knows the camera's motion.
+    public var topSigmaPixels: Double = 0
+    /// 1-sigma uncertainty of the line's turn about the side's middle, as the displacement of its ends (from the edge
+    /// points' scatter, floored at `Options.turnFloorRadians` x f)
+    public var turnSigmaPixels: Double = 0
+    /// the edge points' own contribution to `topSigmaPixels` (their scatter about the line / sqrt(n - 2), before the floor)
+    public var fitSigmaPixels: Double = 0
+    /// how many edge points (with a profile: segment medians) the line was fitted through
+    public var segments: Int = 0
+    /// a side whose face shows: both its edges (the top's departure and the band's bottom one predicted band further out)
+    /// were seen on at least 3 segments
+    public var twoEdges: Bool = false
+    /// the line was placed by the profile, not seen: one step to the background, taken as the band's bottom and moved
+    /// in by the predicted band
+    public var modelPlaced: Bool = false
+    /// on a side whose two edges were not both seen and whose one step could be either of them: how far outward (frame
+    /// pixels, negative inward) the middle of the two readings lies from the line placed. Half the band either way; an
+    /// estimate that wants to stay neutral between them centres the side there (its sigma covers both).
+    public var ambiguityShiftPixels: Double = 0
+    /// the band seen between the side's two edges (frame pixels), when both were seen
+    public var measuredBandPixels: Double? = nil
+
     public init(mode: EdgeMode, bandPixels: Double, contrast: Double, outerContrast: Double, innerContrast: Double, shift: Double,
                 points: Int, outsideRatio: Double, observed: EdgeMode? = nil, used: EdgeMode? = nil, outerPartnerContrast: Double = 0,
                 predictedShift: Double? = nil) {
@@ -89,15 +120,19 @@ public struct EdgeChoice: Equatable, Codable {
     public var outline: [Vec2]
     /// the slab normal last solved (camera axes), for the pose solver's mirror-image hysteresis
     public var normal: Vec3?
+    /// with a side profile (`SlabSpec.hasProfile`): what has been learned of it on this slab (nil: the spec's prior)
+    public var profile: ProfileLearning?
 
-    public init(sides: [Side], outline: [Vec2], normal: Vec3?) { self.sides = sides; self.outline = outline; self.normal = normal }
+    public init(sides: [Side], outline: [Vec2], normal: Vec3?, profile: ProfileLearning? = nil) {
+        self.sides = sides; self.outline = outline; self.normal = normal; self.profile = profile
+    }
 
     /// The same memory with the top outline moved to where the slab should appear now (e.g. the last pose moved by the
     /// camera's motion, projected), in either corner order; nil when the two outlines are too far apart to be the same
     /// slab. The normal is kept (it is only a tie-breaker between mirror-image poses).
     public func moved(to predicted: [Vec2]) -> EdgeChoice? {
         guard let s = sides(matching: predicted) else { return nil }
-        return EdgeChoice(sides: s, outline: predicted, normal: normal)
+        return EdgeChoice(sides: s, outline: predicted, normal: normal, profile: profile)
     }
 
     /// The sides re-indexed to another outline of the same slab (matched corner to corner, either way round); nil when the
@@ -199,6 +234,39 @@ public struct EdgeRefiner {
         public var bandScaleRate = 0.25
         public var bandScaleRange: ClosedRange<Double> = 0.6...1.4
         public var pose = PoseSolver.Options()
+
+        // With a side profile (`SlabSpec.hasProfile`). Constants measured on one kit (slab-kit-20261118: the owner's slab,
+        // phone and floor); confirm them on renders and on the next kit.
+
+        /// a side whose face shows is read at its departure when the predicted band is at least this wide (pixels of the
+        /// image searched): narrower, its two edges cannot be told apart and the side is read at its outline
+        public var bandSwitchPixels = 2.0
+        /// the floor under an edge line's scatter, as an angle (x the focal length: pixels): the kit's still-frame jitter
+        /// was 0.11-0.14 video px at f 1016 (and the segment fits' scatter 0.09-0.10, which agrees)
+        public var edgeJitterRadians = 1.2e-4
+        /// the floor under a line's turn (its ends' displacement): the kit's side turns were 0.22-0.43 px at f 1016
+        public var turnFloorRadians = 2.0e-4
+        /// the edge's definition on the slab (metres, per side): a coherent per-side pattern of 0.14-0.48 mm was left by
+        /// true-normal fits on the kit, about twice that as an independent sigma
+        public var edgeDefinitionSigma = 0.0005
+        /// the profile's prior sigmas (metres) about the spec's face drop and side run (the kit's fits spread 19.5-22.2 and
+        /// 6.8-8.2 mm; kept wide), and the rounded edge's (an effective value, 1-3 mm fitted the kit about as well)
+        public var faceDropPriorSigma = 0.005
+        public var sideRunPriorSigma = 0.004
+        public var edgeRadiusSigma = 0.0015
+        /// once `learnAfter` bands have been seen, the learned profile's sigmas, at least these (metres)
+        public var learnAfter = 5
+        public var learnedFaceDropFloor = 0.0015
+        public var learnedSideRunFloor = 0.001
+        /// how many band observations the profile's fit keeps (the newest)
+        public var profileMemory = 40
+        /// the runs along a side whose median edge offsets the line is fitted through
+        public var segments = 5
+        /// a band in deep shadow on the black base counts as seen (both its edges) only if the base beyond is darker than
+        /// the band by at least this share of the band's luma: the slab's material in shadow against black. A judgement,
+        /// not measured on the kit: on renders a shadowed band (0.25-0.33 of the top over a base at 0.17) leaves 0.3-0.5,
+        /// the black cradle's top against its own shaded side 0.1-0.15.
+        public var darkBandContrast = 0.25
         public init() {}
     }
 
@@ -258,6 +326,9 @@ public struct EdgeRefiner {
                        spec: SlabSpec, down: Vec3?, choice: EdgeChoice? = nil) -> Result? {
         guard outline.count == 4, ShapeCheck.isConvex(outline) else { return nil }
         let KD = KDIn ?? K
+        if spec.hasProfile {
+            return refineWithProfile(outline: outline, intrinsics: K, luma: luma, lumaIntrinsics: KD, spec: spec, down: down, choice: choice)
+        }
         let map = ImageMap(from: K, to: KD)
         let ds = map.scale, unit = EdgeRefiner.unit(scale: ds)
         let prevSides = choice?.sides(matching: outline)
@@ -392,6 +463,17 @@ public struct EdgeRefiner {
         }
         let out = cur.map(map.inverse)
         guard let fit = PoseSolver.solve(corners: out, intrinsics: K, spec: spec, down: down, previousNormal: choice?.normal, options: options.pose) else { return nil }
+        // the sides' uncertainty, as far as this refiner knows it: the floors, the edge's definition, and on a side moved
+        // in by the predicted band, half the band (it could be the top edge itself)
+        let defPx = options.edgeDefinitionSigma * K.focal / max(0.05, fit.pose.center.z), j0 = options.edgeJitterRadians * K.focal
+        for k in sides.indices where sides[k].mode != .unfitted {
+            let amb = sides[k].used == .shiftedOuter ? sides[k].bandPixels / 2 : 0
+            sides[k].topSigmaPixels = (j0 * j0 + defPx * defPx + amb * amb).squareRoot()
+            sides[k].turnSigmaPixels = options.turnFloorRadians * K.focal
+            sides[k].ambiguityShiftPixels = amb
+            sides[k].modelPlaced = sides[k].used == .shiftedOuter
+            sides[k].twoEdges = sides[k].used == .innerEdge || (sides[k].used == .outerIsTop && sides[k].outerPartnerContrast != 0)
+        }
         let newChoice = EdgeChoice(sides: states, outline: out, normal: fit.pose.normal)
         return Result(outline: out, fit: fit, sides: sides, choice: newChoice)
     }
@@ -676,6 +758,18 @@ struct SpokeProfiles {
     func edgeLine(_ rule: EdgeRule, unit: Double, minStep: Double = 0, coherent: (window: Double, maxTilt: Double)? = nil) -> (line: Line2, inliers: Int)? {
         var pts: [Vec2] = []
         pts.reserveCapacity(n)
+        for (j, o) in edgeOffsets(rule, unit: unit, minStep: minStep, coherent: coherent).enumerated() {
+            if let o = o { pts.append(base[j] + normal * o) }
+        }
+        guard let r = Geometry.robustLine(pts, unit: unit, minPoints: max(6, n / 3)) else { return nil }
+        var l = r.line
+        if l.d.dot(dir) < 0 { l.d = -l.d }
+        return (l, r.inliers)
+    }
+
+    /// Each reading's edge point by `rule` (`edgeLine`), as its offset along the outward normal; nil where none was clear.
+    func edgeOffsets(_ rule: EdgeRule, unit: Double, minStep: Double = 0, coherent: (window: Double, maxTilt: Double)? = nil) -> [Double?] {
+        var out = [Double?](repeating: nil, count: n)
         var mags = [Float](repeating: 0, count: m), sc = [Float](repeating: 0, count: m)
         var lineK: [Double]? = nil
         if let coh = coherent, rule != .firstFromInside {
@@ -728,12 +822,9 @@ struct SpokeProfiles {
             let sl = Double(sc[best - 1]), s0 = Double(sc[best]), sr = Double(sc[best + 1])
             let den = sl - 2 * s0 + sr
             let off = den < 0 ? 0.5 * (sl - sr) / den : 0
-            pts.append(base[j] + normal * (o0 + (Double(best) + off) * step))
+            out[j] = o0 + (Double(best) + off) * step
         }
-        guard let r = Geometry.robustLine(pts, unit: unit, minPoints: max(6, n / 3)) else { return nil }
-        var l = r.line
-        if l.d.dot(dir) < 0 { l.d = -l.d }
-        return (l, r.inliers)
+        return out
     }
 
     /// Luma near the line at `off` against the top face's: per reading, the darkest (or mean) luma at the `outside`

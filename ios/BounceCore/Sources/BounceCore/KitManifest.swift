@@ -86,11 +86,9 @@ public struct KitMeasurements: Codable, Equatable {
 
     static func fmt(_ v: Double) -> String { v == v.rounded() ? String(format: "%.0f", v) : String(format: "%g", v) }
 
-    /// The slab in metres (an unmeasured dish counts as the app's default, 1/8 in).
-    public var slab: SlabSpec {
-        SlabSpec(sideU: Units.inches(slabWidthInches), sideV: Units.inches(slabDepthInches), thickness: Units.inches(slabThicknessInches),
-                 dishDepth: Units.inches(dishInches ?? RecordingSettings().dishInches))
-    }
+    /// The slab in metres (an unmeasured dish counts as the app's default, 1/8 in; the side profile is the app's,
+    /// `RecordingSettings()`, which the kit does not measure).
+    public var slab: SlabSpec { recordingSettings().slab }
 
     /// The ball in metres, with a rebound (the kit does not measure it).
     public func ball(rebound: Double = RecordingSettings().reboundPercent / 100) -> BallSpec {

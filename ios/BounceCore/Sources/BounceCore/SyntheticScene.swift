@@ -1,9 +1,10 @@
 import Foundation
 
 /// A synthetic camera view of the slab on its black base, rendered by ray casting in plain Swift: a floor like a
-/// cutting mat, a dark base under the slab, the slab as a box (grey top, lighter cut faces, 1 in thick) and optionally a
-/// polished ball. The app's demo mode and end-to-end UI tests run it through the same tracker as the camera, with the
-/// truth known exactly. (Detector quality is measured on the web test bed's three.js renders, not on this.)
+/// cutting mat, a dark base under the slab, the slab as a box (grey top, lighter cut faces, 1 in thick; with a side
+/// profile in the spec, sloped faces and a rounded edge down to the base, `SlabSpec`) and optionally a polished ball. The
+/// app's demo mode and end-to-end UI tests run it through the same tracker as the camera, with the truth known exactly.
+/// (Detector quality is measured on the web test bed's three.js renders, not on this.)
 public struct SyntheticScene {
     public var spec: SlabSpec
     /// the slab's top-corner plane in world coordinates (y up, metres; the floor is y = 0)
@@ -67,6 +68,10 @@ public struct SyntheticScene {
         var c0: Vec3, n: Vec3, T: Double
         var sides: [(a: Vec3, eu: Vec3, len: Double, out: Vec3)]
         var ctr: Vec3, au: Vec3, av: Vec3, hu: Double, hv: Double, baseTop: Double
+        /// the side profile (`SlabSpec`), when the spec has one: the cross-section, the face's normal in (x, z), the near
+        /// feature angle
+        var profile: SideSection? = nil
+        var psiN: Double = 0
     }
 
     func prepare() -> Prepared {
@@ -78,9 +83,71 @@ public struct SyntheticScene {
             sides.append((a, eu, len, out))
         }
         let au = Vec3(slab.axisU.x, 0, slab.axisU.z).normalized
-        return Prepared(c0: c[0], n: n, T: spec.thickness, sides: sides, ctr: Vec3(slab.center.x, 0, slab.center.z), au: au,
-                        av: Vec3(-au.z, 0, au.x), hu: slab.halfU * 1.05, hv: slab.halfV * 1.05,
-                        baseTop: c.map { ($0 - n * spec.thickness).y }.min()! - 0.002)
+        guard spec.hasProfile else {
+            return Prepared(c0: c[0], n: n, T: spec.thickness, sides: sides, ctr: Vec3(slab.center.x, 0, slab.center.z), au: au,
+                            av: Vec3(-au.z, 0, au.x), hu: slab.halfU * 1.05, hv: slab.halfV * 1.05,
+                            baseTop: c.map { ($0 - n * spec.thickness).y }.min()! - 0.002)
+        }
+        // with a side profile the base (the cradle) begins at the bottom of the visible faces, a little wider than they reach
+        let sec = SideSection(spec: spec), R = spec.sideRun
+        let bottoms = (0..<4).map { k in c[k] - n * sec.drop + (sides[(k + 3) % 4].out + sides[k].out) * R }
+        return Prepared(c0: c[0], n: n, T: sec.drop, sides: sides, ctr: Vec3(slab.center.x, 0, slab.center.z), au: au,
+                        av: Vec3(-au.z, 0, au.x), hu: (slab.halfU + R) * 1.05, hv: (slab.halfV + R) * 1.05,
+                        baseTop: bottoms.map { $0.y }.min()! - 0.002, profile: sec, psiN: clamp(spec.nearFeatureAngle, 0, sec.faceAngle))
+    }
+
+    /// The nearest hit on a side's profile (`SlabSpec`: the rounded edge, then the planar face down to the bottom of the
+    /// visible band) beyond 1e-4 and before `limit`: its distance and colour. The rounding before the near feature angle has
+    /// the top's finish and the rest the face's, so a refiner's departure lies where the spec says; each point of it is
+    /// shaded by its own normal (a hidden face's rounding, its normal near the top's, shows as a light lip).
+    func traceProfileSide(_ o: Vec3, _ d: Vec3, _ sd: (a: Vec3, eu: Vec3, len: Double, out: Vec3), _ g: Prepared, _ sec: SideSection,
+                          limit: Double) -> (Double, (Double, Double, Double))? {
+        let n = g.n
+        var best: (Double, (Double, Double, Double))? = nil
+        let fnx = sin(sec.faceAngle), fnz = cos(sec.faceAngle), fn = sd.out * fnx + n * fnz
+        func faceColour(_ along: Double, _ down: Double, normal: Vec3? = nil) -> (Double, Double, Double) {
+            let gg = 0.66 + 0.1 * (SyntheticScene.noise(along * 1500, down * 1500, 3) - 0.5)
+            let sh = gg * shadeLambert(normal ?? fn)
+            return (sh, sh * 0.99, sh * 0.96)
+        }
+        // the planar face
+        let e = sec.arcEnd
+        let dn = d.dot(fn)
+        if abs(dn) > 1e-9 {
+            let t = (sd.a + sd.out * e.x + n * e.z - o).dot(fn) / dn
+            if t > 1e-4 && t < limit {
+                let rel = o + d * t - sd.a, along = rel.dot(sd.eu), x = rel.dot(sd.out), z = rel.dot(n)
+                if z <= e.z + 1e-12 && z >= -sec.drop && along >= -max(0, x) && along <= sd.len + max(0, x) {
+                    best = (t, faceColour(along, -z))
+                }
+            }
+        }
+        // the rounded edge: a cylinder of radius r about the line r below the edge
+        if sec.radius > 0 {
+            let r = sec.radius, a0 = sd.a - n * r
+            let w = o - a0, wp = w - sd.eu * w.dot(sd.eu), dp = d - sd.eu * d.dot(sd.eu)
+            let A = dp.dot(dp), B = 2 * wp.dot(dp), C = wp.dot(wp) - r * r, disc = B * B - 4 * A * C
+            if A > 1e-12 && disc >= 0 {
+                let sq = disc.squareRoot()
+                for t in [(-B - sq) / (2 * A), (-B + sq) / (2 * A)] where t > 1e-4 && t < min(limit, best?.0 ?? .infinity) {
+                    let p = o + d * t, rel = p - a0, q = rel - sd.eu * rel.dot(sd.eu)
+                    let psi = atan2(q.dot(sd.out), q.dot(n))
+                    let x = r * sin(psi), along = (p - sd.a).dot(sd.eu)
+                    guard psi >= 0 && psi <= sec.faceAngle && along >= -x && along <= sd.len + x else { continue }
+                    let an = sd.out * sin(psi) + n * cos(psi)
+                    if psi < g.psiN {
+                        let rr = p - slab.center, u = clamp(rr.dot(slab.axisU), -slab.halfU, slab.halfU), v = clamp(rr.dot(slab.axisV), -slab.halfV, slab.halfV)
+                        let gg = 0.5 + 0.08 * (SyntheticScene.noise(u * 900, v * 900, 1) - 0.5) + 0.05 * (SyntheticScene.noise(u * 60, v * 60, 2) - 0.5)
+                        let sh = gg * shadeLambert(an)
+                        best = (t, (sh * 0.98, sh, sh * 0.99))
+                    } else {
+                        best = (t, faceColour(along, -q.dot(n) - r, normal: an))
+                    }
+                    break
+                }
+            }
+        }
+        return best
     }
 
     /// Nearest surface along a world ray.
@@ -116,17 +183,23 @@ public struct SyntheticScene {
                 }
             }
         }
-        // the four cut faces
-        for sd in g.sides {
-            let dn = d.dot(sd.out)
-            guard abs(dn) > 1e-9 else { continue }
-            let t = (sd.a - o).dot(sd.out) / dn
-            guard t > 1e-4 && t < bestT else { continue }
-            let rel = o + d * t - sd.a, along = rel.dot(sd.eu), down = -rel.dot(n)
-            if along >= 0 && along <= sd.len && down >= 0 && down <= g.T {
-                let gg = 0.66 + 0.1 * (SyntheticScene.noise(along * 1500, down * 1500, 3) - 0.5)
-                let sh = gg * shadeLambert(sd.out)
-                bestT = t; rgb = (sh, sh * 0.99, sh * 0.96)
+        // the four cut faces (with a side profile: each side's rounded edge and sloped face)
+        if let sec = g.profile {
+            for sd in g.sides {
+                if let h = traceProfileSide(o, d, sd, g, sec, limit: bestT) { bestT = h.0; rgb = h.1 }
+            }
+        } else {
+            for sd in g.sides {
+                let dn = d.dot(sd.out)
+                guard abs(dn) > 1e-9 else { continue }
+                let t = (sd.a - o).dot(sd.out) / dn
+                guard t > 1e-4 && t < bestT else { continue }
+                let rel = o + d * t - sd.a, along = rel.dot(sd.eu), down = -rel.dot(n)
+                if along >= 0 && along <= sd.len && down >= 0 && down <= g.T {
+                    let gg = 0.66 + 0.1 * (SyntheticScene.noise(along * 1500, down * 1500, 3) - 0.5)
+                    let sh = gg * shadeLambert(sd.out)
+                    bestT = t; rgb = (sh, sh * 0.99, sh * 0.96)
+                }
             }
         }
         // the black base: a box from the floor up to just under the slab, about the slab's footprint, slab-aligned

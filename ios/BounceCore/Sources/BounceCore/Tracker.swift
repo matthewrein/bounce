@@ -42,21 +42,46 @@ public struct DetectedOutline: Equatable, Codable {
     public var score: Double
     /// per-side edge modes, for diagnostics (e.g. "top", "fromCutBottom", "silhouette"); side j runs from quad[j] to [j+1]
     public var sideModes: [String]
-    public init(quad: [Vec2], score: Double = 1, sideModes: [String] = []) { self.quad = quad; self.score = score; self.sideModes = sideModes }
+    /// With a side profile (`SlabSpec.hasProfile`): each side's line noise as the detector knows it (pixels of the frame
+    /// the detector ran on, per side like `sideModes`; empty when not given): a parallel shift (`SideEdge.topSigmaPixels`:
+    /// the edge's definition, the profile, a one-edge ambiguity, the edge points' scatter; not motion blur) and a turn about
+    /// the side's middle, as its ends' displacement (`SideEdge.turnSigmaPixels`)
+    public var sideSigmas: [Double]
+    public var sideTurnSigmas: [Double]
+    /// the side profile the detector has learned on this slab (`ProfileLearning`: the face's drop and side run, metres);
+    /// nil when none was learned or there is no profile
+    public var faceDrop: Double?
+    public var sideRun: Double?
 
-    // JSON (recordings): {"quad": [[x, y], ...] (pixels of the frame the detector ran on), "score": s, "sideModes": [...]}
-    enum CodingKeys: String, CodingKey { case quad, score, sideModes }
+    public init(quad: [Vec2], score: Double = 1, sideModes: [String] = [], sideSigmas: [Double] = [], sideTurnSigmas: [Double] = [],
+                faceDrop: Double? = nil, sideRun: Double? = nil) {
+        self.quad = quad; self.score = score; self.sideModes = sideModes
+        self.sideSigmas = sideSigmas; self.sideTurnSigmas = sideTurnSigmas; self.faceDrop = faceDrop; self.sideRun = sideRun
+    }
+
+    // JSON (recordings): {"quad": [[x, y], ...] (pixels of the frame the detector ran on), "score": s, "sideModes": [...],
+    // and with a side profile "sideSigmas", "sideTurnSigmas": [...], "faceDrop", "sideRun": m}; the later keys are absent in
+    // older recordings (and written only when set, so a detection without them writes what it wrote before)
+    enum CodingKeys: String, CodingKey { case quad, score, sideModes, sideSigmas, sideTurnSigmas, faceDrop, sideRun }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         quad = try c.decode([[Double]].self, forKey: .quad).map { Vec2($0[0], $0[1]) }
         score = try c.decodeIfPresent(Double.self, forKey: .score) ?? 1
         sideModes = try c.decodeIfPresent([String].self, forKey: .sideModes) ?? []
+        sideSigmas = try c.decodeIfPresent([Double].self, forKey: .sideSigmas) ?? []
+        sideTurnSigmas = try c.decodeIfPresent([Double].self, forKey: .sideTurnSigmas) ?? []
+        faceDrop = try c.decodeIfPresent(Double.self, forKey: .faceDrop)
+        sideRun = try c.decodeIfPresent(Double.self, forKey: .sideRun)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(quad.map { [$0.x, $0.y] }, forKey: .quad)
         try c.encode(score, forKey: .score)
         if !sideModes.isEmpty { try c.encode(sideModes, forKey: .sideModes) }
+        if !sideSigmas.isEmpty { try c.encode(sideSigmas, forKey: .sideSigmas) }
+        if !sideTurnSigmas.isEmpty { try c.encode(sideTurnSigmas, forKey: .sideTurnSigmas) }
+        try c.encodeIfPresent(faceDrop, forKey: .faceDrop)
+        try c.encodeIfPresent(sideRun, forKey: .sideRun)
     }
 }
 
@@ -587,6 +612,8 @@ public final class SlabTracker {
         /// given; the honest uncertainty then uses the corner noise the re-checks show (`HonestTilt`).
         var sideSigmasPixels: [Double]? = nil
         var sideTurnSigmasPixels: [Double]? = nil
+        /// the side profile the detector has learned (`DetectedOutline.faceDrop`, `sideRun`), if any
+        var profile: (faceDrop: Double, sideRun: Double)? = nil
         var pose: SlabPose { est.pose }
         mutating func swapSides() { if let a = alt { alt = est; est = a } }
     }
@@ -630,6 +657,9 @@ public final class SlabTracker {
     private var depthEstimate: DepthEstimate?
     private var fusing = false
     private var lastRecheckKind = "ok"
+    /// the side profile the detector has learned on the slab it follows (the latest detection used that carries one; nil
+    /// when none or after the detector's memory was dropped): the box model's bands (`cutFlip`, `fitsTell`) use it
+    private var learnedProfile: (faceDrop: Double, sideRun: Double)?
     private var lastHintTime = -Double.infinity
     private var weakRejections = 0                         // outlines rejected as ill-conditioned in this detection
     private var pendingControls: [TrackerControl] = []     // since the last frame (see TrackerOutput.controls)
@@ -1129,6 +1159,7 @@ public final class SlabTracker {
         }
         bump("detections")
         used = chosen
+        if settings.spec.hasProfile, let p = chosen.profile { learnedProfile = p }
         measurementQuad = chosen.quad
         lastSideModes = chosen.sideModes
         switch state {
@@ -1178,9 +1209,13 @@ public final class SlabTracker {
             return Estimate(pose: pose, sigma: Units.radians(p.normalSigmaDegrees), ncov: R * p.normalCovariance * Rt,
                             cov: R * p.centreCovariance * Rt, cost: p.bestCost)
         }
-        return Measurement(est: est(fit), alt: other.map(est), quad: fit.cornersInPoseOrder(o.quad),
-                           sideModes: o.sideModes.count == 4 ? fit.sidesInPoseOrder(o.sideModes) : o.sideModes, time: f.timestamp,
-                           rms: fit.rmsPixels, camera: f.view, blur: frameBlur)
+        var m = Measurement(est: est(fit), alt: other.map(est), quad: fit.cornersInPoseOrder(o.quad),
+                            sideModes: o.sideModes.count == 4 ? fit.sidesInPoseOrder(o.sideModes) : o.sideModes, time: f.timestamp,
+                            rms: fit.rmsPixels, camera: f.view, blur: frameBlur)
+        if o.sideSigmas.count == 4 { m.sideSigmasPixels = fit.sidesInPoseOrder(o.sideSigmas) }
+        if o.sideTurnSigmas.count == 4 { m.sideTurnSigmasPixels = fit.sidesInPoseOrder(o.sideTurnSigmas) }
+        if let h = o.faceDrop, let r = o.sideRun { m.profile = (h, r) }
+        return m
     }
 
     private func reject(_ v: ShapeCheck.Verdict, _ t: Double) {
@@ -1496,7 +1531,7 @@ public final class SlabTracker {
         recent = []; partners = []; implausible = 0
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
-        lastRecheckKind = "ok"
+        lastRecheckKind = "ok"; learnedProfile = nil
         honest.reset()
     }
 
@@ -1533,6 +1568,7 @@ public final class SlabTracker {
         previousCamera = nil
         ballState = nil; ballLocator?.reset()
         detector.forgetPixelMemory()
+        learnedProfile = nil
         if !hist.isEmpty { refreshLock() }
     }
 
@@ -1624,7 +1660,7 @@ public final class SlabTracker {
     /// lock or the candidates onto that outline), is strict (`innerCloser`).
     func cutFlip(_ quad: [Vec2], of ref: SlabPose, _ f: TrackerFrame, noise s: Double, closer: Double = SlabTracker.flipCloser) -> Set<Int>? {
         guard quad.count == 4 else { return nil }
-        let box = SlabBoxView(pose: ref.transformed(by: f.view.cameraFromWorld), spec: settings.spec, intrinsics: f.view.intrinsics)
+        let box = SlabBoxView(pose: ref.transformed(by: f.view.cameraFromWorld), spec: boxSpec, intrinsics: f.view.intrinsics)
         guard let T = box.topOutline else { return nil }
         let Q = SlabTracker.aligned(quad, to: T)
         func rms(_ a: [Vec2], _ b: [Vec2]) -> Double { (zip(a, b).reduce(0) { $0 + pow($1.0.distance(to: $1.1), 2) } / 4).squareRoot() }
@@ -1642,6 +1678,13 @@ public final class SlabTracker {
             if d < tol && d < closer * d0 && d < (best?.d ?? .infinity) { best = (sides, d) }
         }
         return best?.sides
+    }
+
+    /// The slab the box model's bands come from: the settings' spec, with the side profile the detector has learned on
+    /// this slab when the spec has a profile (with no profile, the settings' spec exactly, as before).
+    var boxSpec: SlabSpec {
+        guard settings.spec.hasProfile, let p = learnedProfile else { return settings.spec }
+        return settings.spec.withProfile(faceDrop: p.faceDrop, sideRun: p.sideRun)
     }
 
     /// See `cutFlip`. At 1.5 m (a band of about 4 px) and 0.5 px corner noise, with a half enough flipped re-checks
@@ -1666,7 +1709,7 @@ public final class SlabTracker {
     /// Whether the pose fits can tell p's top outline from the one with these sides a band off in this view: that one,
     /// noise-free, misfits the square by `fitsTellMisfit` corner noises or more.
     func fitsTell(_ p: SlabPose, _ sides: Set<Int>, _ f: TrackerFrame, noise s: Double) -> Bool {
-        let box = SlabBoxView(pose: p.transformed(by: f.view.cameraFromWorld), spec: settings.spec, intrinsics: f.view.intrinsics)
+        let box = SlabBoxView(pose: p.transformed(by: f.view.cameraFromWorld), spec: boxSpec, intrinsics: f.view.intrinsics)
         guard let F = box.outlineWithCutBottom(onSides: sides),
               let fit = PoseSolver.solve(corners: F, intrinsics: f.view.intrinsics, spec: settings.spec,
                                          down: f.view.directionToCamera(ARKitConvention.worldDown)) else { return false }

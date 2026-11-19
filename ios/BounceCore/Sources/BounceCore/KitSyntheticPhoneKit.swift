@@ -268,7 +268,7 @@ public final class KitSyntheticPhoneKit {
     /// The same camera paths and balls as `KitSyntheticKit.makeVideo`, over the shot's real length.
     func motion(_ s: KitShotSpec, slab: SlabPose, start: Double, seconds: Double, K: CameraIntrinsics, number: Int) throws -> Motion {
         let k = scene.kind(s)
-        let R = BallSpec().radius, up = Vec3(0, 1, 0), spec = SlabSpec.standard
+        let R = BallSpec().radius, up = Vec3(0, 1, 0), spec = SlabSpec.ownerSlab
         let az0 = 15 + Double((number * 37) % 40), span = max(seconds, 0.5)
         let sc = scene
         var m = Motion(kind: k, path: { t in sc.orbit(slab.center, distance: 1.0, azimuth: az0, elevation: 42, t: t, K: K) }, ball: { _ in nil })
@@ -343,7 +343,7 @@ public final class KitSyntheticPhoneKit {
         let K = CameraIntrinsics(fx: view.intrinsics.fx * s, fy: view.intrinsics.fy * s, cx: view.intrinsics.cx * s, cy: view.intrinsics.cy * s,
                                  width: W, height: H)
         let o = view.position, Rw = view.worldFromCamera.rotation, n = slab.normal, R = BallSpec().radius
-        let dish = SlabSpec.standard.dishDepth
+        let dish = SlabSpec.ownerSlab.dishDepth
         var depth = [Float](repeating: .nan, count: W * H), conf = [UInt8](repeating: 0, count: W * H)
         for y in 0..<H {
             for x in 0..<W {
@@ -430,7 +430,7 @@ public final class KitSyntheticPhoneKit {
             images.withUnsafeMutableBufferPointer { buf in
                 let b = buf
                 DispatchQueue.concurrentPerform(iterations: groups.count) { g in
-                    var sc = SyntheticScene(slab: slab, ball: balls[g])
+                    var sc = SyntheticScene(spec: .ownerSlab, slab: slab, ball: balls[g])
                     sc.supersample = 1
                     b[g] = KitSyntheticKit.image(sc, view: views[g], brightness: bright)
                 }

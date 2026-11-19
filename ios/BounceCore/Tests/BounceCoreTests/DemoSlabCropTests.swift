@@ -32,7 +32,8 @@ final class DemoSlabCropTests: XCTestCase {
         var runs = [Run(), Run()]
         var t = 0.0
         while t < seconds {
-            let view = d.view(at: t), scene = d.scene(at: t)
+            // the app's demo renders the app's slab (ARController: `script.scene(at:spec: AppSettings.slab)`)
+            let view = d.view(at: t), scene = d.scene(at: t, spec: settings.spec)
             let K = view.intrinsics
             let img = SyntheticScene.ycc(rgb: scene.renderRGB(view: view), width: K.width, height: K.height)
             let truth = Units.degrees(scene.slab.tilt(down: Vec3(0, -1, 0)))

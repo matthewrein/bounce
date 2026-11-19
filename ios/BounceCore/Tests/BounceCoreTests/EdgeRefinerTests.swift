@@ -10,8 +10,8 @@ final class EdgeRefinerTests: XCTestCase {
     static let views: [(K: CameraIntrinsics, distance: Double, label: String)] = [
         (BoxScene.K, 0.8, "480x360 at 0.8 m"), (BoxScene.Kportrait, 0.6, "270x480 at 0.6 m")]
 
-    func scene(_ v: (K: CameraIntrinsics, distance: Double, label: String), band: Float, offset: Vec2 = .zero) -> BoxScene {
-        BoxScene(view: SyntheticView.make(pitch: 50, distance: v.distance, tilt: 6, heading: 30, yaw: 15, intrinsics: v.K, offset: offset), bandLuma: band)
+    func scene(_ v: (K: CameraIntrinsics, distance: Double, label: String), band: Float, offset: Vec2 = .zero, spec: SlabSpec = .standard) -> BoxScene {
+        BoxScene(view: SyntheticView.make(pitch: 50, distance: v.distance, tilt: 6, heading: 30, yaw: 15, spec: spec, intrinsics: v.K, offset: offset), bandLuma: band)
     }
 
     /// corner errors against the true top corners (same order), and the normal's error (degrees)
@@ -32,10 +32,14 @@ final class EdgeRefinerTests: XCTestCase {
     /// Known limit (stated, not hidden): where a band is both narrow (about 2 px here) and within about 10 grey levels of
     /// the black base (0.25 of the top), its two edges merge and it looks exactly like a cut face as light as the top
     /// resting on the base; that side is then moved in by its band (about 2 px). The bounds below say so.
-    func testShadowedCutFaceStaysOnTheTopEdge() {
+    func testShadowedCutFaceStaysOnTheTopEdge() { checkShadowedCutFaceStaysOnTheTopEdge(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testShadowedCutFaceStaysOnTheTopEdgeOnSlopedSides() { checkShadowedCutFaceStaysOnTheTopEdge(TestProfiles.sloped) }
+
+    func checkShadowedCutFaceStaysOnTheTopEdge(_ spec: SlabSpec) {
         for v in Self.views {
             for share: Float in [0.25, 0.33, 0.4, 0.5, 0.6] {
-                let s = scene(v, band: 105 * share), frame = s.render()
+                let s = scene(v, band: 105 * share, spec: spec), frame = s.render()
                 for (start, q) in [("outer", s.outerOutline()), ("top", s.view.corners)] {
                     guard let r = EdgeRefiner().refine(outline: q, frame: frame, intrinsics: v.K, spec: s.view.spec, down: s.view.down) else {
                         XCTFail("\(v.label) band \(share): no result"); continue
@@ -64,10 +68,14 @@ final class EdgeRefinerTests: XCTestCase {
     /// the slab slides in its cradle and overhangs it): the strong edge is the cut face's bottom whatever the floor's
     /// luma, and the top edge is the brightening edge one band inside. Before the fix, floors of 70-125 left a side on
     /// the cut face's bottom (up to 8.7 px).
-    func testLitCutFaceOverTheFloor() {
+    func testLitCutFaceOverTheFloor() { checkLitCutFaceOverTheFloor(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testLitCutFaceOverTheFloorOnSlopedSides() { checkLitCutFaceOverTheFloor(TestProfiles.sloped) }
+
+    func checkLitCutFaceOverTheFloor(_ spec: SlabSpec) {
         for v in Self.views {
             for floor: Float in [40, 70, 100, 125] {
-                var s = scene(v, band: 150)
+                var s = scene(v, band: 150, spec: spec)
                 s.floorLuma = floor; s.baseScale = 0.8
                 let frame = s.render()
                 for (start, q) in [("outer", s.outerOutline()), ("top", s.view.corners)] {
@@ -96,7 +104,11 @@ final class EdgeRefinerTests: XCTestCase {
     /// the side whose band is 1.6-2 px wide: its two edges merge into one broad step that is read as the top edge on some
     /// frames and as the bottom with the top one band inside on others, each off by under half that band. A flip there
     /// would move it by the whole band, over 1.6 px.)
-    func testHalfShadowedCutFaceDoesNotFlip() {
+    func testHalfShadowedCutFaceDoesNotFlip() { checkHalfShadowedCutFaceDoesNotFlip(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testHalfShadowedCutFaceDoesNotFlipOnSlopedSides() { checkHalfShadowedCutFaceDoesNotFlip(TestProfiles.sloped) }
+
+    func checkHalfShadowedCutFaceDoesNotFlip(_ spec: SlabSpec) {
         for v in Self.views {
             var choice: EdgeChoice? = nil
             var last: (out: [Vec2], truth: [Vec2])? = nil
@@ -104,7 +116,7 @@ final class EdgeRefinerTests: XCTestCase {
             var strongestWasTop = Set<Bool>()
             for k in 0..<8 {
                 let offset = Vec2(0.006 * sin(Double(k) * 1.7), 0.005 * cos(Double(k) * 2.3))
-                var s = scene(v, band: 61 + Float((k * 7) % 5) - 2, offset: offset)
+                var s = scene(v, band: 61 + Float((k * 7) % 5) - 2, offset: offset, spec: spec)
                 s.seed = UInt64(100 + k)
                 let frame = s.render(), truth = s.view.corners
                 // the prediction: the last output moved as the slab moved in the image
@@ -116,8 +128,8 @@ final class EdgeRefinerTests: XCTestCase {
                 }
                 let e = errors(r, s)
                 worst.append(e.corners.max()!)
-                // the near side's two corners
-                let wide = (0..<4).filter { r.sides[$0].bandPixels > 4 }
+                // the near side's two corners (with the sloped profile the side bands are wider too: the widest is the near one)
+                let wide = spec.hasProfile ? [(0..<4).max { r.sides[$0].bandPixels < r.sides[$1].bandPixels }!] : (0..<4).filter { r.sides[$0].bandPixels > 4 }
                 let nearCorners = Set(wide.flatMap { [$0, ($0 + 1) % 4] })
                 XCTAssertEqual(wide.count, 1, "\(v.label) frame \(k): one wide band")
                 nearWorst.append(nearCorners.map { e.corners[$0] }.max() ?? .nan)
@@ -137,20 +149,25 @@ final class EdgeRefinerTests: XCTestCase {
             XCTAssertLessThan(nearJumps.max()!, 0.6, v.label)
             XCTAssertLessThan(worst.max()!, 0.8, v.label)
             XCTAssertLessThan(jumps.max()!, 1.0, v.label)
-            // the case is the one the review raised: the strongest edge really did change between the two physical edges
-            XCTAssertEqual(strongestWasTop.count, 2, "\(v.label): the strongest edge was the same edge on every frame")
+            // the case is the one the review raised: the strongest edge really did change between the two physical edges (the
+            // original rules choose by the strongest edge; with a profile the line is the top's departure, whichever is stronger)
+            if !spec.hasProfile { XCTAssertEqual(strongestWasTop.count, 2, "\(v.label): the strongest edge was the same edge on every frame") }
         }
     }
 
     /// The memory is a position: once a side's top edge is known, weak evidence (here a narrow band so dark that its two
     /// edges merge, which without memory is read as a band as light as the top, about 2 px off) does not move it.
-    func testMemoryHoldsTheTopEdgeThroughWeakEvidence() {
+    func testMemoryHoldsTheTopEdgeThroughWeakEvidence() { checkMemoryHoldsTheTopEdgeThroughWeakEvidence(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testMemoryHoldsTheTopEdgeThroughWeakEvidenceOnSlopedSides() { checkMemoryHoldsTheTopEdgeThroughWeakEvidence(TestProfiles.sloped) }
+
+    func checkMemoryHoldsTheTopEdgeThroughWeakEvidence(_ spec: SlabSpec) {
         let v = Self.views[1]
         var choice: EdgeChoice? = nil
         var withMemory: [Double] = [], without: [Double] = []
         for k in 0..<6 {
             // first a band clear of the base (its narrow side read from the luma levels), then one barely above it
-            var s = scene(v, band: k < 2 ? 42 : 27)
+            var s = scene(v, band: k < 2 ? 42 : 27, spec: spec)
             s.seed = UInt64(200 + k)
             let frame = s.render()
             let start = choice?.outline ?? s.outerOutline()
@@ -164,15 +181,25 @@ final class EdgeRefinerTests: XCTestCase {
             choice = r.choice
         }
         XCTAssertLessThan(withMemory.max()!, 0.6)
-        // without memory the late frames are a band off on the narrow side (the known limit above)
-        XCTAssertGreaterThan(without.suffix(4).min()!, 1.5)
+        if spec.hasProfile {
+            // with the sloped sides the narrow side's band is about 5 px, not 2, and its two edges stay apart even this dark:
+            // the known limit does not arise, and without memory it is as right
+            XCTAssertLessThan(without.max()!, 0.6)
+        } else {
+            // without memory the late frames are a band off on the narrow side (the known limit above)
+            XCTAssertGreaterThan(without.suffix(4).min()!, 1.5)
+        }
     }
 
     /// Clear evidence against a wrong memory wins after `switchAfter` calls: the memory starts on the cut face's bottom
     /// (the outer outline), the frames show a lit cut face with a clear inner edge.
-    func testClearEvidenceOvercomesAWrongMemory() {
+    func testClearEvidenceOvercomesAWrongMemory() { checkClearEvidenceOvercomesAWrongMemory(.standard) }
+    /// The same on the owner's slab with its sloped sides (`TestProfiles.sloped`), refined with that profile.
+    func testClearEvidenceOvercomesAWrongMemoryOnSlopedSides() { checkClearEvidenceOvercomesAWrongMemory(TestProfiles.sloped) }
+
+    func checkClearEvidenceOvercomesAWrongMemory(_ spec: SlabSpec) {
         let v = Self.views[0]
-        let s = scene(v, band: 150), frame = s.render()
+        let s = scene(v, band: 150, spec: spec), frame = s.render()
         let outer = s.outerOutline()
         let o = EdgeRefiner.Options()
         var choice: EdgeChoice? = EdgeChoice(sides: (0..<4).map { _ in EdgeChoice.Side(mode: .outerIsTop) }, outline: outer, normal: nil)
@@ -185,8 +212,14 @@ final class EdgeRefinerTests: XCTestCase {
             print(String(format: "  call %d: worst corner %.2f px; %@", k, worst.last!, describe(r)))
             choice = r.choice
         }
-        // held on the remembered (wrong) edge while the evidence is new, then on the top edge for good
-        XCTAssertGreaterThan(worst[0], 3)
-        for k in (o.switchAfter - 1)..<worst.count { XCTAssertLessThan(worst[k], 0.6, "call \(k)") }
+        if spec.hasProfile {
+            // with a profile the memory only decides between two readings of one ambiguous step; clear evidence that agrees
+            // with the profile (both edges of the band, a predicted band apart) wins at once
+            for k in 0..<worst.count { XCTAssertLessThan(worst[k], 0.6, "call \(k)") }
+        } else {
+            // held on the remembered (wrong) edge while the evidence is new, then on the top edge for good
+            XCTAssertGreaterThan(worst[0], 3)
+            for k in (o.switchAfter - 1)..<worst.count { XCTAssertLessThan(worst[k], 0.6, "call \(k)") }
+        }
     }
 }
