@@ -34,10 +34,11 @@ public struct BallSpec: Equatable, Codable {
     /// the owner's ball's diameter (mm): change it here
     public static let ownerDiameterMm = 30.0
     /// The owner's ball's restitution on the slab: 0.9, measured on the owner's first kit (its drops' first bounces
-    /// 0.896, 0.912, 0.903 and 0.917 one by one, its later bounces 0.917-0.924; the second kit's are not measured well:
-    /// one usable first bounce, seen for 4 frames of its fall). The owner had said about 0.8 and does not have an exact
-    /// figure ("whatever you calculate is probably good"); n12 used 0.8. The app's setting starts here
-    /// (`RecordingSettings.restitution`, AppSettings.defaultRestitution).
+    /// 0.896, 0.912, 0.903 and 0.917 one by one, each ± 0.01-0.03 and fitted assuming the ball was let go from rest;
+    /// 0.89-0.91 without that; its later bounces 0.917-0.924, and the flight times between them 0.93; the second kit's
+    /// are not measured well: one usable first bounce, seen for 4 frames of its fall). The owner had said about 0.8 and
+    /// does not have an exact figure ("whatever you calculate is probably good"); n12 used 0.8. The app's setting starts
+    /// here (`RecordingSettings.restitution`, AppSettings.defaultRestitution).
     public static let ownerRestitution = 0.9
     /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t): 0.2. It is not
     /// measured. It is the share that, with the restitution 0.9 (`ownerRestitution`), keeps the owner's finding that n11's
