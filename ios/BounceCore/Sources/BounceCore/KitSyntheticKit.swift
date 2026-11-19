@@ -83,8 +83,10 @@ public final class KitSyntheticKit {
         /// the picture's brightness (1 normal)
         public var brightness = 1.0
         /// held shots: the height the owner enters, as the app asks for it: the ball's bottom above the slab's surface
-        /// straight below it, i.e. in the dish (a ruler stood on the slab under the ball; m). It is also the app's drop
-        /// height (`Bounce.drop`), so a perfect app scores 0.
+        /// straight below it, i.e. in the dish (a ruler stood on the slab under the ball; m: `Bounce.drop`'s height). The
+        /// app's drop height since n12 is the impact rule's (`Bounce.impactDrop`: how far the centre falls until the ball
+        /// touches, on the slope facing it), about r (1/cos θ - 1) less on a slab tilted θ (0.3 mm at 12°): what a perfect app
+        /// scores, against what the owner can measure.
         public var heldHeight: Double? = nil
         /// drops
         public var drop: DropTruth? = nil

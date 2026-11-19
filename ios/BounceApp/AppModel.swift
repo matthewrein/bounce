@@ -35,11 +35,14 @@ struct AppSettings: Equatable {
     /// coming off (a straight-up bounce regains e² of the drop height)
     var restitution: Double = AppSettings.defaultRestitution
 
-    /// UserDefaults keys. The slab, thickness, dish, ball and "dishBounce" keys of earlier builds are no longer read; the
-    /// rebound percent of builds before n12 ("reboundPercent") is read once, as the restitution sqrt(rebound) (`load`),
-    /// and the developer's dish-normal switch of those builds ("devDishNormalLaunch") no longer exists (the bounce now
-    /// always leaves about the dish's own normal where the ball hits).
-    static let keys = (drop: "dropFeet", restitution: "restitution", oldRebound: "reboundPercent", demo: "demo")
+    /// UserDefaults keys. The slab, thickness, dish, ball and "dishBounce" keys of earlier builds are no longer read.
+    static let keys = (drop: "dropFeet", restitution: "restitution", demo: "demo")
+    /// Keys of the builds before n12 that are removed, not read (`load`): the rebound percent ("reboundPercent") tuned the
+    /// old launch along the slab's normal, which had no speed along the surface, so it stood in for that missing speed
+    /// as well as for the bounce (the owner's 100% matched the distance); read as a restitution it would make the new
+    /// bounce land a third too far. Settings starts at the owner's restitution instead. The developer's dish-normal switch
+    /// ("devDishNormalLaunch") is gone: the bounce always leaves about the dish's own normal where the ball hits.
+    static let retiredKeys = ["reboundPercent", "devDishNormalLaunch"]
 
     static func load(_ d: UserDefaults = .standard) -> AppSettings {
         var s = AppSettings()
@@ -47,10 +50,7 @@ struct AppSettings: Equatable {
             guard let x = d.object(forKey: k) as? Double, x.isFinite else { return nil }
             return x
         }
-        // a rebound saved by a build before n12 becomes the restitution it stands for, once (Settings shows the new key)
-        if number(keys.restitution) == nil, let old = number(keys.oldRebound) {
-            d.set(clamped(RecordingSettings.restitution(reboundPercent: old), restitutionRange), forKey: keys.restitution)
-        }
+        for k in retiredKeys where d.object(forKey: k) != nil { d.removeObject(forKey: k) }
         if let x = number(keys.drop) { s.dropFeet = clamped(x, dropRange) }
         if let x = number(keys.restitution) { s.restitution = clamped(x, restitutionRange) }
         return s
@@ -65,7 +65,7 @@ struct AppSettings: Equatable {
         var r = RecordingSettings()
         r.dropHeightFeet = dropFeet
         r.restitution = restitution
-        r.reboundPercent = 100 * restitution * restitution
+        r.reboundPercent = RecordingSettings.reboundPercent(restitution: restitution)
         return r
     }
 

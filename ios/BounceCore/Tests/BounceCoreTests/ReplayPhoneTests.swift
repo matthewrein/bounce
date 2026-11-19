@@ -229,8 +229,9 @@ final class ReplayPhoneTests: XCTestCase {
     /// Without settings the replay uses the recording's (#33): the phone's exact tracker settings when it has them,
     /// else those the app builds from the owner's settings (launch rule, search interval, sizes, drop height).
     func testReplayWithoutSettingsUsesTheRecordingsSettings() throws {
+        // the owner's settings as a build before n12 wrote them: a rebound, no restitution
         var owner = RecordingSettings(sideUInches: 7.2, sideVInches: 6.8, thicknessInches: 1.1, dishInches: 0.2, ballDiameterMm: 40,
-                                      dropHeightFeet: 2.5, reboundPercent: 60, dishBounce: true)
+                                      dropHeightFeet: 2.5, reboundPercent: 60, dishBounce: true, restitution: nil, tangential: nil)
         let folder = tmp.appendingPathComponent("v1.bouncerec")
         let w = try RecordingWriter(folder: folder, session: RecordingSession(build: "t", device: "d", frameWidth: 8, frameHeight: 6, settings: owner))
         let K = CameraIntrinsics(fx: 8, fy: 8, cx: 4, cy: 3, width: 8, height: 6)
@@ -240,16 +241,19 @@ final class ReplayPhoneTests: XCTestCase {
         let (_, tr) = try ReplayRunner(reader: try RecordingReader(folder: folder)).run(detector: NullSlabDetector())
         XCTAssertEqual(tr.settings.spec, owner.slab)
         XCTAssertEqual(tr.settings.ball, owner.ball)
+        XCTAssertEqual(tr.settings.ball, BallSpec(diameter: 0.04, rebound: 0.6))
         XCTAssertEqual(tr.settings.defaultDropHeight, Units.feet(2.5), accuracy: 1e-12)
         XCTAssertEqual(tr.settings.launchRule, .dishNormal)
         XCTAssertEqual(tr.settings.searchInterval, RecordingSettings.appSearchInterval)
         XCTAssertEqual(tr.settings, owner.trackerSettings)
-        // a version 1 session.json (no dishBounce, no restitution, no tracker) still reads, with the corner-plane rule; one
-        // with a restitution (n12 on) bounces by the impact rule
+        // a version 1 session.json (no dishBounce, no restitution, no tracker) still reads, with the corner-plane rule
         owner.dishBounce = nil
-        XCTAssertEqual(owner.trackerSettings.launchRule, .impact)
-        owner.restitution = nil
         XCTAssertEqual(owner.trackerSettings.launchRule, .cornerPlane)
+        // one with a restitution (n12 on) bounces by the impact rule, with the rebound it writes the restitution's square
+        var n12 = owner
+        n12.restitution = 0.75
+        XCTAssertEqual(n12.trackerSettings.launchRule, .impact)
+        XCTAssertEqual(n12.ball, BallSpec(diameter: 0.04, restitution: 0.75, tangential: BallSpec.ownerTangential))
 
         // the phone's exact settings win
         var exact = owner.trackerSettings

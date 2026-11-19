@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Settings > Developer: tools for the people working on the app. The app never needs them and never opens them by
-/// itself: the capture kit, session recording, diagnostics, a tracking reset, the demo scene, the launch rule
-/// experiment, the build and a live line from the tracker (its hints are shown only here), and for a first run on a
+/// itself: the capture kit, session recording, diagnostics, a tracking reset, the demo scene, the build and a live
+/// line from the tracker (its hints are shown only here), and for a first run on a
 /// phone the pre-flight and the developer log (Copy log, Clear log).
 struct DeveloperView: View {
     @EnvironmentObject var model: AppModel

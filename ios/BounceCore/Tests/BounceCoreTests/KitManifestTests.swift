@@ -50,11 +50,13 @@ final class KitManifestTests: XCTestCase {
         // the app's rebound: its restitution (0.8, n12's setting) squared
         XCTAssertEqual(m.ball().rebound, 0.64, accuracy: 1e-12)
         XCTAssertEqual(m.ball(rebound: 0.5).rebound, 0.5)
-        let base = RecordingSettings(sideUInches: 5, sideVInches: 5, thicknessInches: 2, dishInches: 0.3, ballDiameterMm: 40, dropHeightFeet: 2, reboundPercent: 60)
+        let base = RecordingSettings(sideUInches: 5, sideVInches: 5, thicknessInches: 2, dishInches: 0.3, ballDiameterMm: 40, dropHeightFeet: 2,
+                                     restitution: 0.7, tangential: 0.3)
         let s = m.recordingSettings(base: base)
         XCTAssertEqual(s.sideUInches, 7.1); XCTAssertEqual(s.sideVInches, 6.9); XCTAssertEqual(s.thicknessInches, 1.05)
         XCTAssertEqual(s.dishInches, 0.125); XCTAssertEqual(s.ballDiameterMm, 35)
-        XCTAssertEqual(s.dropHeightFeet, 2); XCTAssertEqual(s.reboundPercent, 60)
+        XCTAssertEqual(s.dropHeightFeet, 2); XCTAssertEqual(s.restitution, 0.7); XCTAssertEqual(s.tangential, 0.3)
+        XCTAssertEqual(s.reboundPercent, 49, accuracy: 1e-9)
         var noDish = m
         noDish.dishInches = nil
         XCTAssertEqual(noDish.recordingSettings(base: base).dishInches, 0.3, "an unmeasured dish keeps the setting")

@@ -32,19 +32,22 @@ public struct BallSpec: Equatable, Codable {
     public static let ownerBall = BallSpec(diameter: ownerDiameterMm / 1000, restitution: ownerRestitution, tangential: ownerTangential)
     /// the owner's ball's diameter (mm): change it here
     public static let ownerDiameterMm = 30.0
-    /// The owner's ball's restitution on the slab: about 0.8, the owner's word for the titanium lattice ball (a rebound
-    /// height ratio of about 0.64); the app's setting starts here (`RecordingSettings.restitution`). Measured on the two
-    /// kits' drops it is higher: 0.911 ± 0.007 on the five first bounces tracked well (in at 2.6-3.0 m/s), 0.92-0.94 on
-    /// the later, slower ones (each bounce's speed along the dish's normal out over in; the flight times between bounces
-    /// agree), a rebound height ratio of about 0.83: if the owner's 0.8 was the height ratio, this should be 0.9.
+    /// The owner's ball's restitution on the slab: 0.8, the owner's word for the titanium lattice ball; the app's setting
+    /// starts here (`RecordingSettings.restitution`). The drops on the owner's kits bounce higher: about 0.90-0.92 on the
+    /// first kit (its four first bounces 0.90-0.92 one by one, 0.86-0.96 fitted without assuming the ball was let go
+    /// from rest; the flight times between its bounces 0.90-0.94), while the second kit's are not measured well (one
+    /// usable first bounce, seen for 4 frames of its fall). That is a height ratio of about 0.83, so if the owner's 0.8
+    /// was the height ratio the restitution is about 0.9, and the tangential share then about 0.2, to keep the distance
+    /// the owner matched (`ownerTangential`).
     public static let ownerRestitution = 0.8
-    /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t), measured on the
-    /// owner's two kits (slab-kit-20261118-205900 and slab-kit-20261119-174003: every drop's bounces off the near-level
-    /// slab, tracked frame by frame, each kit's true slab normal fitted with it): 0.57 ± 0.43 (kit 1, 7 bounces) and
-    /// 0.33 ± 0.24 (kit 2, 5 bounces), together 0.39 ± 0.21. With the owner's restitution it gives e (e + k_t) = 0.96,
-    /// which is what a launch along the normal at a rebound of 100% gives on a tilted slab: the owner's finding that the
-    /// old rule at 100% "matched the distance". (A ball that rolls off keeps 5/7 if solid, 0.6 if a thin shell.) The
-    /// least certain number of the bounce: on a 12° slab 0.2 either way moves the landing about 9 cm downhill.
+    /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t), chosen so that
+    /// with the owner's restitution the bounce goes about as far as the old launch along the slab's normal at a rebound
+    /// of 100%, which the owner found matched the distance: on a tilted slab the new bounce's range over the old one's is
+    /// about e (e + k_t), 0.8 x 1.2 = 0.96 (0.90-0.97 on 0.5-12° slabs from 1 and 3 ft). It is not measured: the kits'
+    /// drops, all on a near-level slab, fit it only loosely, 0.39 ± 0.21 over both kits with a poor fit (chi²/dof 122/11
+    /// and 33/7; single bounces from -1.9 to 2.8), and on their landings anything from 0 to 0.6 does about as well. With
+    /// e = 0.9, about 0.2 keeps the owner's distance (0.94-1.00 of the old rule's). (A solid ball that rolls off keeps
+    /// 5/7, a thin shell 0.6.) A drop on a tilted slab measures it.
     public static let ownerTangential = 0.4
 }
 
@@ -170,7 +173,9 @@ public enum Bounce {
     /// Drop a ball straight down (along `down`) until it first touches the dish (`impactDish`): where it touches, its
     /// centre then, the dish's normal there (from the point toward the centre) and how far the centre fell. Off the
     /// middle of a dish (or on a tilted slab) the ball touches it to the side of the point straight below its centre, on
-    /// the slope that faces it. nil when the ball is not above the slab's face.
+    /// the slope that faces it. The top runs on, flat, past the slab's outline: a ball beyond the edges gets a point
+    /// there with `onSlab` false (the caller decides). nil when the ball cannot come down on the top: the fall line does
+    /// not meet its face, or the ball is already more than a diameter below it.
     public static func impactDrop(ballCenter B: Vec3, pose: SlabPose, spec: SlabSpec, ball: BallSpec, down gIn: Vec3) -> DropPoint? {
         let g = gIn.normalized, den = g.dot(pose.normal), r = ball.radius
         guard den < -1e-3 else { return nil }

@@ -19,7 +19,7 @@ struct OverlayView: View {
             // while the tilt settles the launch line and the path are faint and dashed, and there is no landing spot
             let faint: Double = o.settling ? 0.4 : 1.0
             let pathDash: [CGFloat] = o.settling ? [6, 5] : []
-            // the launch direction (perpendicular to the slab)
+            // the launch direction (the way the bounce leaves the slab: the path's own direction)
             if let s = o.start, let t = o.normalTip {
                 var p = Path(); p.move(to: s); p.addLine(to: t)
                 ctx.stroke(p, with: .color(.white.opacity(faint)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))

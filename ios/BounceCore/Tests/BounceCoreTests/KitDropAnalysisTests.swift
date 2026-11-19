@@ -337,10 +337,7 @@ final class KitDropAnalysisTests: XCTestCase {
         var shot = KitDropShot.standardSet[0]
         let hd = Units.radians(shot.heading)
         shot.releaseSpin = Vec3(cos(hd), 0, sin(hd)) * 30
-        // a solid sphere with friction, whose spin turns into sideways speed (the app's tangential share has no spin)
-        var o = KitSyntheticDrops.Options()
-        o.tangential = .rolling(mu: 0.4)
-        let d = KitSyntheticDrops(options: o).make(shot)
+        let d = maker.make(shot)
         let a = try XCTUnwrap(KitDropAnalysis.analyze(track: KitSyntheticDrops.perfectTrack(d), cue: d.truth.cue, context: context(d)).analysis)
         XCTAssertGreaterThan(abs(a.sideways ?? 0), 3)
         XCTAssertTrue(a.notes.contains { $0.contains("out of the plane of incidence") }, "\(a.notes)")

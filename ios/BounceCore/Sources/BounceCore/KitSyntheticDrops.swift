@@ -115,10 +115,9 @@ public struct KitDropLevelTruth: Codable, Equatable {
 }
 
 /// Drops onto the slab rendered with known, physical truth (`KitDropPhysics`: the bounce reflects about the dish's LOCAL
-/// normal with the restitution of its rebound, and keeps the app's tangential share of the velocity along the surface,
-/// `BallSpec.ownerTangential`: the app's own impact rule, so the app predicts a drop let go from rest exactly with the
-/// true rebound; `Options.tangential` can make the ball a solid sphere rolling off instead, with its spin), for scoring the
-/// drop analysis (`KitDropAnalysis`) through the scorer's own per-frame path
+/// normal with the restitution of its rebound, the velocity along the surface as a solid sphere rolling off; not the
+/// app's model, whose tangential share is lower: `Options.tangential` can give the ball the app's own ratio instead), for
+/// scoring the drop analysis (`KitDropAnalysis`) through the scorer's own per-frame path
 /// (`KitDropBench`). Each drop is a shot as a kit records it: a few frames at 6 fps for the tracker to lock, the release
 /// cue at 2 s, then 60 fps from just before the release until the ball has landed; every frame with its own timestamp
 /// (a little jitter, and frames the recorder dropped are missing) and exposure motion blur (the ball rendered at
@@ -135,8 +134,10 @@ public final class KitSyntheticDrops {
         /// the slab top's centre over the floor (m)
         public var centreHeight = Units.inches(4.5)
         public var ballDiameter = 0.035
-        /// how the bounce treats the velocity along the surface: the app's tangential share (its impact rule)
-        public var tangential = KitTangentialModel.ratio(BallSpec.ownerTangential)
+        /// how the bounce treats the velocity along the surface (a solid sphere that rolls off, keeping 5/7 of it, with its
+        /// spin: physical, and not the app's own tangential share, so the app's prediction is tested against something
+        /// it does not assume)
+        public var tangential = KitTangentialModel.rolling(mu: 0.4)
         /// the video's size (a real kit's 1440 x 1080) and rate, and the lock frames' rate
         public var width = 1440
         public var height = 1080
@@ -169,7 +170,7 @@ public final class KitSyntheticDrops {
 
     public let options: Options
     public var dish: KitDish { KitDish(spec: options.spec, shape: options.dishShape) }
-    public var ball: BallSpec { BallSpec(diameter: options.ballDiameter, rebound: 0.7, tangential: settings.ball.tangential) }
+    public var ball: BallSpec { BallSpec(diameter: options.ballDiameter, rebound: 0.7) }
 
     public init(options: Options = Options()) { self.options = options }
 

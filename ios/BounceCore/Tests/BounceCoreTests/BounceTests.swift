@@ -209,10 +209,9 @@ final class BounceTests: XCTestCase {
                                  floorBelowCenter: 0.05)
         XCTAssertEqual(new.path.range / old.path.range, 1.07, accuracy: 0.05)
     }
-    /// The setting (n12): the restitution, 0.8 by default, with the impact rule and the owner's tangential share; a
-    /// rebound saved before stands for the restitution sqrt(rebound); recordings and diagnostics made before n12 (no
-    /// restitution) decode to the rule and the rebound they ran, and a ball written before has no tangential share and
-    /// writes none.
+    /// The setting (n12): the restitution, 0.8 by default, with the impact rule and the owner's tangential share; the
+    /// rebound written beside it is always its square; recordings and diagnostics made before n12 (no restitution) decode
+    /// to the rule and the rebound they ran, and a ball written before has no tangential share and writes none.
     func testTheRestitutionSettingAndOlderFiles() throws {
         let s = RecordingSettings()
         XCTAssertEqual(s.restitution, 0.8)
@@ -221,10 +220,16 @@ final class BounceTests: XCTestCase {
         XCTAssertEqual(s.trackerSettings.launchRule, .impact)
         XCTAssertEqual(s.ball.restitution, 0.8, accuracy: 1e-12)
         XCTAssertEqual(s.ball.tangentialFactor, BallSpec.ownerTangential)
-        XCTAssertEqual(s.reboundPercent, 64, accuracy: 1e-9)
+        XCTAssertEqual(s.reboundPercent, 64)
         XCTAssertEqual(s.ball, BallSpec.ownerBall)
-        XCTAssertEqual(RecordingSettings.restitution(reboundPercent: 49), 0.7, accuracy: 1e-12)
-        XCTAssertEqual(RecordingSettings.restitution(reboundPercent: 100), 1, accuracy: 1e-12)
+        // a rebound passed with a restitution cannot disagree with it; without one it is the old rule's
+        let both = RecordingSettings(reboundPercent: 60, restitution: 0.5)
+        XCTAssertEqual(both.reboundPercent, 25)
+        XCTAssertEqual(both.ball.rebound, 0.25, accuracy: 1e-12)
+        let older = RecordingSettings(reboundPercent: 60, restitution: nil)
+        XCTAssertEqual(older.reboundPercent, 60)
+        XCTAssertEqual(older.launchRule, .cornerPlane)
+        XCTAssertEqual(older.ball.rebound, 0.6, accuracy: 1e-12)
         let back = try JSONDecoder().decode(RecordingSettings.self, from: JSONEncoder().encode(s))
         XCTAssertEqual(back, s)
         // an n11 session.json: no restitution, a 70% rebound, the corner plane

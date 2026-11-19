@@ -63,7 +63,8 @@ public struct RecordingSettings: Codable, Equatable {
     public var ballDiameterMm: Double
     public var dropHeightFeet: Double
     /// the rebound (the share of the drop height a straight-up bounce regains: e², percent); the app's setting until n11.
-    /// With `restitution` set it is that restitution's square, kept for older readers
+    /// With `restitution` set it is that restitution's square (`reboundPercent(restitution:)`), kept for older readers;
+    /// the ball is then the restitution's (`ball`)
     public var reboundPercent: Double
     /// launch the ball along the dish's normal where it lands (Settings' "dish bounce"), not the corner plane's; nil in
     /// version 1 recordings (which did not say: the corner plane)
@@ -84,26 +85,28 @@ public struct RecordingSettings: Codable, Equatable {
 
     /// New settings default to the owner's slab and ball (`SlabSpec.ownerSlab`, `BallSpec.ownerBall`: their constants are
     /// the one place to change them), a 3 ft drop, and the owner's restitution (0.8) and tangential share with the impact
-    /// rule (the rebound is then 64%, 0.8²). `restitution: nil` gives the rule of the builds before n12 (the corner plane,
-    /// or `dishBounce`) at `reboundPercent`.
+    /// rule (the rebound is then 64%, 0.8²). With a restitution, `reboundPercent` is set to its square whatever is
+    /// passed, so the two never disagree in a file; `restitution: nil` gives the rule of the builds before n12 (the
+    /// corner plane, or `dishBounce`) at the `reboundPercent` passed.
     public init(sideUInches: Double = SlabSpec.ownerFlatTopInches, sideVInches: Double = SlabSpec.ownerFlatTopInches,
                 thicknessInches: Double = SlabSpec.ownerThicknessInches, dishInches: Double = SlabSpec.ownerDishInches,
                 ballDiameterMm: Double = BallSpec.ownerDiameterMm, dropHeightFeet: Double = 3,
-                reboundPercent: Double = 100 * BallSpec.ownerRestitution * BallSpec.ownerRestitution, dishBounce: Bool? = nil,
+                reboundPercent: Double = RecordingSettings.reboundPercent(restitution: BallSpec.ownerRestitution), dishBounce: Bool? = nil,
                 faceDropInches: Double? = SlabSpec.ownerFaceDropInches, sideRunInches: Double? = SlabSpec.ownerSideRunInches,
                 edgeRadiusInches: Double? = SlabSpec.ownerEdgeRadiusInches, nearFeatureDegrees: Double? = nil,
                 restitution: Double? = BallSpec.ownerRestitution, tangential: Double? = BallSpec.ownerTangential) {
         self.sideUInches = sideUInches; self.sideVInches = sideVInches; self.thicknessInches = thicknessInches; self.dishInches = dishInches
-        self.ballDiameterMm = ballDiameterMm; self.dropHeightFeet = dropHeightFeet; self.reboundPercent = reboundPercent
+        self.ballDiameterMm = ballDiameterMm; self.dropHeightFeet = dropHeightFeet
+        self.reboundPercent = restitution.map { RecordingSettings.reboundPercent(restitution: $0) } ?? reboundPercent
         self.dishBounce = dishBounce
         self.faceDropInches = faceDropInches; self.sideRunInches = sideRunInches; self.edgeRadiusInches = edgeRadiusInches
         self.nearFeatureDegrees = nearFeatureDegrees
         self.restitution = restitution; self.tangential = tangential
     }
 
-    /// The restitution a rebound saved by a build before n12 stands for: e = sqrt(rebound) (the app's Settings moved
-    /// from the rebound percent to the restitution in n12).
-    public static func restitution(reboundPercent: Double) -> Double { max(0, reboundPercent / 100).squareRoot() }
+    /// The rebound percent a restitution gives (100 e²), as written beside it: rounded to 1e-9 so that 0.8 writes 64, not
+    /// 64.00000000000001.
+    public static func reboundPercent(restitution e: Double) -> Double { (100 * e * e * 1e9).rounded() / 1e9 }
 
     /// how often the app searches for the slab while it has none (s): the search costs tens of ms on the phone
     public static let appSearchInterval = 0.12
