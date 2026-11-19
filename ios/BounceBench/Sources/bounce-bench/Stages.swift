@@ -165,7 +165,7 @@ final class StageBench {
     }
 
     func slabFinder() {
-        let spec = SlabSpec.standard
+        let spec = RecordingSettings().slab
         let searchScenes = all.scenes.filter { $0.ballHeight == nil && $0.variant != .hand }
         for s in searchScenes {
             let cf = s.processingImage().colorFrame
@@ -253,7 +253,7 @@ final class StageBench {
     // MARK: the ball finder
 
     func ballFinder() {
-        let spec = SlabSpec.standard, ball = BallSpec()
+        let rs = RecordingSettings(), spec = rs.slab, ball = rs.ball
         for s in all.scenes where s.kind == .slab {
             guard let c = BallImageCrop.plan(slab: s.scene.slab, full: s.full),
                   let img = s.lumaCrop(.rows, x0: c.x0, y0: c.y0, width: c.width, height: c.height, factor: c.factor) else { continue }

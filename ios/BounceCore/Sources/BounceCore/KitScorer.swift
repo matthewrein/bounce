@@ -233,6 +233,8 @@ final class KitScoreRun {
         /// the tilt was settled enough to show (`TrackerOutput.angleSettled`), and the settled normal (world) then
         var settled = false
         var settledNormal: Vec3? = nil
+        /// on a frame whose re-check refreshed the tilt's honest estimate: its normal (world) and covariance (rad^2)
+        var honest: (normal: Vec3, cov: Mat3)? = nil
     }
 
     struct ShotRun {
@@ -260,6 +262,7 @@ final class KitScoreRun {
     /// pooled values for the aggregates
     var tiltErrors: [Double] = [], normalErrors: [Double] = []
     var settledTiltErrors: [Double] = [], settledNormalErrors: [Double] = []
+    var honestRatios: [Double] = []
 
     init(folder: URL, options: KitScorer.Options) { self.folder = folder; self.options = options }
 
@@ -381,13 +384,17 @@ final class KitScoreRun {
             }
             guard let pf = pipeline.frame(image: img, kitFrame: f, tracker: tracker, depth: depth) else { run.unusableFrames += 1; continue }
             (locator as? KitFrameAware)?.prepare(shotId: sh.spec.id, frameIndex: i, time: f.time, view: pf.video)
+            let refreshes = tracker.honestRefreshes
             let out = tracker.process(pf.tracker)
             var r = FrameResult(t: f.time, state: out.state)
             if out.state == .locked, let s = out.slab {
                 lastLock = s
                 if let c = cue, f.time < c { run.lockBeforeCue = s }
-                r.tilt = out.readouts?.tiltDegrees
+                // the lock's tilt (what the outline and the path follow, and what the readouts showed before n11); the
+                // tilt as shown, from the settled normal, is scored apart (settled*)
+                r.tilt = Units.degrees(s.tilt(down: down))
                 r.normal = s.normal
+                if tracker.honestRefreshes != refreshes, let n = tracker.settledNormal, let C = tracker.settledCovariance { r.honest = (n, C) }
                 r.corners = s.topCorners
                 if let q = out.measurement, q.count == 4 {
                     let plane = Plane3(point: s.center, normal: s.normal), v = pf.tracker.view
@@ -500,7 +507,7 @@ final class KitScoreRun {
         }
 
         // tilt, against the flat-phone true tilt
-        var tiltErr: [Double] = [], normalErr: [Double] = []
+        var tiltErr: [Double] = [], normalErr: [Double] = [], honestRatio: [Double] = []
         if expect.slab != .forbidden {
             let reason: String?
             if unmeasured { reason = "the slab's position in this shot has no true tilt (--positions: unmeasured)" }
@@ -526,6 +533,14 @@ final class KitScoreRun {
                     normalErr = locked.compactMap { $0.normal.map { Units.degrees($0.angle(to: n)) } }
                     metrics.append(KitMetric(id: "normalErrorMedian", value: KitStats.median(normalErr), count: normalErr.count))
                     metrics.append(KitMetric(id: "normalErrorP90", value: KitStats.percentile(normalErr, 90), count: normalErr.count))
+                    // the honest estimate's error in its own uncertainty, at each refresh (2-D: across the normal)
+                    honestRatio = locked.compactMap { $0.honest.flatMap { KitScorer.honestRatio(truth: n, estimate: $0.normal, covariance: $0.cov) } }
+                    if honestRatio.isEmpty {
+                        for id in ["honestRatioMedian", "honestRatioP95"] { metrics.append(.na(id, "the tilt's honest estimate never refreshed")) }
+                    } else {
+                        metrics.append(KitMetric(id: "honestRatioMedian", value: KitStats.median(honestRatio), count: honestRatio.count))
+                        metrics.append(KitMetric(id: "honestRatioP95", value: KitStats.percentile(honestRatio, 95), count: honestRatio.count))
+                    }
                 } else {
                     let r = n == nil ? (why ?? "no link") : neverLocked
                     metrics.append(.na("normalErrorMedian", r)); metrics.append(.na("normalErrorP90", r))
@@ -698,6 +713,7 @@ final class KitScoreRun {
         log("\(kitId) \(sh.spec.id): \(res.count) frames, \(lockText)")
         tiltErrors += tiltErr; normalErrors += normalErr
         settledTiltErrors += settledErr; settledNormalErrors += settledNormalErr
+        honestRatios += honestRatio
         return (score, res, tiltErr, normalErr)
     }
 
@@ -864,6 +880,12 @@ final class KitScoreRun {
             out.append(KitMetric(id: "settledNormalErrorMedian", value: KitStats.median(settledNormalErrors), count: settledNormalErrors.count))
             out.append(KitMetric(id: "settledNormalErrorMax", value: settledNormalErrors.max(), count: settledNormalErrors.count))
         }
+        if honestRatios.isEmpty {
+            for id in ["honestRatioMedian", "honestRatioP95"] { out.append(.na(id, "no refresh of the honest estimate with a true normal")) }
+        } else {
+            out.append(KitMetric(id: "honestRatioMedian", value: KitStats.median(honestRatios), count: honestRatios.count))
+            out.append(KitMetric(id: "honestRatioP95", value: KitStats.percentile(honestRatios, 95), count: honestRatios.count))
+        }
         out.append(medianOf("cornerRms", fallback: "no slab shot locked"))
         out.append(medianOf("slabSizeError", abs: true, fallback: "no slab shot locked"))
         // false slabs: frames pooled over the shots where the slab must not be in view
@@ -900,5 +922,16 @@ final class KitScoreRun {
         out.append(medianOf("launchDirectionError", fallback: "no drop scored"))
         out.append(medianOf("impactClearance", abs: true, fallback: "no drop scored"))
         return out
+    }
+}
+
+extension KitScorer {
+    /// How far the tilt's honest estimate lies from the true normal in its own uncertainty: the 2-D Mahalanobis distance
+    /// across the estimate (`HonestTilt`; an honest uncertainty gives a median of 1.18 and a 95th percentile of 2.45).
+    /// nil when it cannot be worked out.
+    static func honestRatio(truth: Vec3, estimate n: Vec3, covariance C: Mat3) -> Double? {
+        let t = truth.normalized, e = t - n * n.dot(t)
+        let m2 = e.dot(HonestTilt.information(C, n) * e)
+        return m2.isFinite && m2 >= 0 ? m2.squareRoot() : nil
     }
 }

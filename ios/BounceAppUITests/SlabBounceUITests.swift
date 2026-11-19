@@ -167,8 +167,8 @@ final class SlabBounceUITests: XCTestCase {
         let lockTime = waitUntil(30) { label(app, "status").contains("Slab locked") }
         screenshot(app, "after launch")
         XCTAssertNotNil(lockTime, "never locked; status: \(label(app, "status"))")
-        // the tilt shows once it has settled (n11: "settling" until then; from the demo's 48 deg view it settles within
-        // about a second of the lock)
+        // the tilt shows once it has settled (n11: "settling" until then; from the demo's 48 deg view it settles once two
+        // re-checks after the lock agree, about 0.6 s after it)
         let shownAfter = waitUntil(30) { number(label(app, "tilt")) != nil }
         XCTAssertNotNil(shownAfter, "the tilt never settled: \(label(app, "tilt")), status \(label(app, "status"))")
         screenshot(app, "locked")
@@ -190,8 +190,15 @@ final class SlabBounceUITests: XCTestCase {
     /// status says so): from there one view cannot pin the tilt to a degree. Lowered to 48 deg, the number shows, matching
     /// the scene's truth, with the landing.
     func testSettlingThenTheTilt() {
-        var d = DemoScript(); d.elevation = 72; d.elevationTo = 48; d.elevationAt = 8
-        let app = launch(["demoTilt": "\(d.tilt)", "demoElevation": "72", "demoElevationTo": "48", "demoElevationAt": "8"])
+        // the steep view lasts 15 s of the demo's own (wall-clock) time: a slow Debug Simulator locks well inside it
+        var d = DemoScript(); d.elevation = 72; d.elevationTo = 48; d.elevationAt = 15
+        let launched = Date()
+        let app = launch(["demoTilt": "\(d.tilt)", "demoElevation": "72", "demoElevationTo": "48", "demoElevationAt": "15"])
+        // the lock first, while the view is steep (the time since before the launch bounds the demo's time from above)
+        let lockedAt = waitUntil(30) { label(app, "status").contains("Slab locked") }
+        let lockedDemoTime = Date().timeIntervalSince(launched)
+        XCTAssertNotNil(lockedAt, "never locked; status: \(label(app, "status"))")
+        XCTAssertLessThan(lockedDemoTime, d.elevationAt, "the lock came only after the demo lowered the camera (at \(d.elevationAt) s)")
         // seen while the view is steep: "settling" in the readouts and the status, with the lock
         var statusSettling = "", tiltSettling = "", landsSettling = ""
         let settlingAt = waitUntil(30) {
@@ -206,8 +213,8 @@ final class SlabBounceUITests: XCTestCase {
         let shownAt = waitUntil(40) { number(label(app, "tilt")) != nil }
         screenshot(app, "settled")
         let tilt = number(label(app, "tilt")), lands = label(app, "lands"), status = label(app, "status")
-        let tr = truth(d, at: 12)
-        summary(String(format: "settling: \"settling\" seen %.1f s after launch (status \"%@\", tilt \"%@\", lands \"%@\"), tilt shown %.1f s after that: %@ (truth %.2f), lands %@, status \"%@\"",
+        let tr = truth(d, at: 20)
+        summary(String(format: "settling: \"settling\" seen %.1f s after the lock (status \"%@\", tilt \"%@\", lands \"%@\"), tilt shown %.1f s after that: %@ (truth %.2f), lands %@, status \"%@\"",
                        settlingAt ?? -1, statusSettling, tiltSettling, landsSettling, shownAt ?? -1, tilt.map { String(format: "%.2f", $0) } ?? "-",
                        tr.tilt, lands, status))
         XCTAssertEqual(tiltSettling, "settling", "the tilt reads settling while steep: \(tiltSettling)")

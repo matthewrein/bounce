@@ -43,8 +43,11 @@ enum ViewSearches {
     static func render(feet: Double, azDeg: Double, elDeg: Double, heading: Double, seed: UInt64)
         -> (frame: ColorFrame, view: CameraView, truth: [Vec2]?, down: Vec3) {
         let K = BenchScene.fullIntrinsics
-        let slab = SyntheticScene.slabPose(tilt: 8, heading: heading, yaw: 20)
-        var sc = SyntheticScene(slab: slab)
+        // the app's own slab (RecordingSettings), as the app's tracker settings expect it
+        let rs = RecordingSettings()
+        let slab = SyntheticScene.slabPose(tilt: 8, heading: heading, yaw: 20, spec: rs.slab)
+        var sc = SyntheticScene(spec: rs.slab, slab: slab)
+        sc.ballRadius = rs.ball.radius
         sc.supersample = 1
         let az = Units.radians(azDeg), el = Units.radians(elDeg)
         let pos = slab.center + Vec3(sin(az) * cos(el), sin(el), cos(az) * cos(el)) * Units.feet(feet)

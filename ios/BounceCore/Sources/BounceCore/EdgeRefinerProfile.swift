@@ -315,6 +315,7 @@ extension EdgeRefiner {
             var e = SideEdge(mode: .silhouette, bandPixels: bandMid / ds, contrast: abs(mu), outerContrast: mu, innerContrast: 0, shift: 0,
                              points: fitL.count, outsideRatio: 0, observed: .silhouette, used: .silhouette)
             e.feature = .outline; e.topSigmaPixels = par / ds; e.turnSigmaPixels = turn / ds; e.fitSigmaPixels = fitSig / ds
+            e.frameSigmaPixels = max(fitSig, j0) / ds
             e.segments = fitL.count; e.twoEdges = false
             return ProfileSideReading(top0: fitL.offset(0) - in0, top1: fitL.offset(len) - in1, edge: e,
                                       state: EdgeChoice.Side(mode: .silhouette, sightings: prev?.sightings ?? 0), observation: nil)
@@ -429,6 +430,7 @@ extension EdgeRefiner {
                          shift: modelPlaced || twoEdges ? 1 : 0, points: L.count, outsideRatio: levels.top > 0 ? levels.far / levels.top : 0,
                          observed: used, used: used)
         e.feature = .departure; e.topSigmaPixels = par / ds; e.turnSigmaPixels = turn / ds; e.fitSigmaPixels = fitSig / ds
+        e.frameSigmaPixels = max(fitSig, j0) / ds
         e.segments = L.count; e.twoEdges = twoEdges; e.modelPlaced = modelPlaced; e.ambiguityShiftPixels = shift / ds
         if !measured.isEmpty { e.measuredBandPixels = measured.map { $0.band }.reduce(0, +) / Double(measured.count) / ds }
         let st = EdgeChoice.Side(mode: used, sightings: (prev?.sightings ?? 0) + (twoEdges ? 1 : 0))
@@ -439,7 +441,8 @@ extension EdgeRefiner {
         var e = SideEdge(mode: .unfitted, bandPixels: band, contrast: 0, outerContrast: 0, innerContrast: 0, shift: 0, points: 0,
                          outsideRatio: 0, observed: .unfitted, used: .unfitted)
         // the line stays where the outline given put it, which may be either edge or neither: its noise is at least a band
-        // (and a pixel), not known better
+        // (and a pixel), not known better; none of it is this frame's own (the line came from the outline given, which
+        // follows earlier frames), so it is carried as the same error in every view (`frameSigmaPixels` 0)
         e.topSigmaPixels = max(1, band); e.turnSigmaPixels = max(1, band)
         return ProfileSideReading(top0: 0, top1: 0, edge: e, state: prev ?? EdgeChoice.Side(mode: .unfitted), observation: nil)
     }

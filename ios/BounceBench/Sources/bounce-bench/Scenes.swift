@@ -186,7 +186,8 @@ struct BenchScene {
     }
 
     private static func key(feet: Double?, ball: Double?, variant: Variant, seed: UInt64) -> String {
-        "scene-v1-" + (variant == .plain ? "" : variant.rawValue + "-")
+        // v2: the app's own slab and ball (v1 files drew the 7 in straight-sided box and a 35 mm ball)
+        "scene-v2-" + (variant == .plain ? "" : variant.rawValue + "-")
             + "\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.3f", $0) } ?? "none")-\(seed)"
     }
 
@@ -200,9 +201,7 @@ struct BenchScene {
     }
 
     static func load(_ dir: URL, feet: Double?, ball: Double?, variant: Variant, seed: UInt64) -> BenchScene? {
-        // (the plain scenes' first cache files named the ball's height to 2 decimals)
         let keys = [key(feet: feet, ball: ball, variant: variant, seed: seed)]
-            + (variant == .plain ? ["scene-v1-\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.2f", $0) } ?? "none")-\(seed)"] : [])
         for k in keys {
             guard let l = try? Data(contentsOf: dir.appendingPathComponent(k + ".luma")),
                   let c = try? Data(contentsOf: dir.appendingPathComponent(k + ".cbcr")),
@@ -218,8 +217,11 @@ struct BenchScene {
     /// The scene's cameras and truth with blank pixels (no rendering).
     static func makeGeometry(feet: Double?, ballHeight: Double?, variant: Variant = .plain) -> BenchScene {
         let K = fullIntrinsics
-        let slab = SyntheticScene.slabPose(tilt: 8, heading: 35, yaw: 20)
-        var sc = SyntheticScene(slab: slab)
+        // the slab and ball the app runs with (RecordingSettings: the owner's 180.2 mm slab with its sloped sides, 30 mm ball)
+        let rs = RecordingSettings()
+        let slab = SyntheticScene.slabPose(tilt: 8, heading: 35, yaw: 20, spec: rs.slab)
+        var sc = SyntheticScene(spec: rs.slab, slab: slab)
+        sc.ballRadius = rs.ball.radius
         sc.supersample = 1
         let view: CameraView
         if let f = feet {

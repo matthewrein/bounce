@@ -126,6 +126,7 @@ extension TrackerSettings: Codable {
         .init("idleBallInterval", \.idleBallInterval),
         .init("settle", \.settle),
         .init("readoutsFromSettledNormal", \.readoutsFromSettledNormal),
+        .init("lockKeepsNewestPerView", \.lockKeepsNewestPerView),
     ]
 
     public init(from decoder: Decoder) throws {

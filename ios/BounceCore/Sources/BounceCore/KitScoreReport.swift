@@ -71,6 +71,8 @@ public struct KitMetric: Codable, Equatable {
         "settledTiltErrorMax": Kind(title: "Tilt error where shown, largest", unit: .degrees, direction: .lower, tolerance: 0.1),
         "settledNormalErrorMedian": Kind(title: "Normal error where shown, median", unit: .degrees, direction: .lower, tolerance: 0.1),
         "settledNormalErrorMax": Kind(title: "Normal error where shown, largest", unit: .degrees, direction: .lower, tolerance: 0.2),
+        "honestRatioMedian": Kind(title: "Honest tilt's error in its own sigma (2-D), median (1.18 if honest)", unit: .count, direction: .info, tolerance: 0.1),
+        "honestRatioP95": Kind(title: "Honest tilt's error in its own sigma (2-D), 95th percentile (2.45 if honest)", unit: .count, direction: .info, tolerance: 0.2),
         "tiltReading": Kind(title: "Tilt read (position unmeasured), median", unit: .degrees, direction: .info, tolerance: 0.05),
         "settledTiltReading": Kind(title: "Tilt shown (position unmeasured), median", unit: .degrees, direction: .info, tolerance: 0.05),
         "cornerRms": Kind(title: "Corner stability (RMS)", unit: .millimetres, direction: .lower, tolerance: 0.5),

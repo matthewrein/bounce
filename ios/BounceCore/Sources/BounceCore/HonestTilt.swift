@@ -39,11 +39,17 @@ public struct SettleSettings: Equatable {
 
 /// The tilt's honest uncertainty, separate from the lock (which keeps its own estimate, gates and history): the lock's
 /// detections grouped by view, each view's newest few averaged with one view's uncertainty (not divided by their number:
-/// one view's errors are mostly the same error), the views' information added, and three safeguards:
+/// one view's errors are mostly the same error), the views combined, and these safeguards:
 ///   - per side, each detection's noise includes the edge's own uncertainty (`SlabTracker` Measurement's side sigmas);
 ///   - a detection whose outline misfits the square beyond what that noise allows is left out;
+///   - the part of a side's noise that is the same error in every view (the edge's definition on the slab, the profile's
+///     uncertainty, a one-edge side's ambiguity: `DetectedOutline.sideFrameSigmas` says which part is the frame's own)
+///     is carried as one error per side of the slab, common to all views, so more views do not shrink it;
+///   - a view's detections that disagree beyond their own noise widen that view's own part by their disagreement;
 ///   - views that disagree beyond their uncertainties widen the result by their disagreement.
-/// The tilt is shown (`settled`) once its standard deviation stays at or under `SettleSettings.settleDegrees`.
+/// The tilt is shown (`settled`) once its standard deviation is at or under `SettleSettings.settleDegrees` on
+/// `settleRefreshes` re-checks in a row: refreshes that added a usable detection after the lock (the lock's own
+/// detections, taken in one moment, and left-out ones do not count).
 struct HonestTilt {
     /// One detection: its normal and covariance (world, rad^2), its view direction, and how it fitted. Its covariance
     /// is `cov` plus `perCornerNoise` times the square of the corner noise (pixels) at the time it is used: the part that
@@ -51,6 +57,7 @@ struct HonestTilt {
     /// detector gives no per-side noise) follows what it has measured since.
     struct Detection {
         var normal: Vec3
+        /// the covariance of the detection's own error (this frame's: the edge points' scatter, blur), world rad^2
         var cov: Mat3
         var perCornerNoise: Mat3 = zero3
         /// unit direction from the slab's centre to the camera (world)
@@ -62,7 +69,15 @@ struct HonestTilt {
         var excluded: Bool
         /// the corner noise it was added with (pixels; 0 when it has no such part)
         var cornerNoise: Double = 0
-        func covariance(cornerNoise s: Double) -> Mat3 { add3(cov, scale3(perCornerNoise, s * s)) }
+        /// Per side of the pose (side i from corner i to i+1): the normal's change (world, radians) for one sigma of the
+        /// side's error that is the same in every view (`DetectedOutline.sideFrameSigmas`), and the side's outward
+        /// direction (world), which tells the same side of the slab in other detections. Empty: no such part.
+        var shared: [Vec3] = []
+        var sideOut: [Vec3] = []
+        /// the covariance of its own error, with the corner-noise part at `s` pixels
+        func ownCovariance(cornerNoise s: Double) -> Mat3 { add3(cov, scale3(perCornerNoise, s * s)) }
+        /// its whole covariance: its own and the shared part
+        func covariance(cornerNoise s: Double) -> Mat3 { shared.reduce(ownCovariance(cornerNoise: s)) { add3($0, outer3($1, $1)) } }
         /// the detection's own standard deviation (degrees), as it was added
         var sigmaDegrees: Double { Units.degrees(max(0, HonestTilt.trace(covariance(cornerNoise: cornerNoise))).squareRoot()) }
     }
@@ -81,6 +96,8 @@ struct HonestTilt {
     private(set) var inflation = 1.0
     private(set) var settled = false
     private var previousOk = 0
+    /// how many refreshes there have been since the estimate was made (not reset; for scoring per refresh)
+    private(set) var refreshCount = 0
 
     init(settings: SettleSettings) { self.settings = settings }
 
@@ -91,12 +108,14 @@ struct HonestTilt {
     /// A detection's covariance and misfit, from its pose (world), its outline (pose order, pixels of `view`), the camera
     /// and its sides' noise (pixels, pose side order): parallel and turn; with `cornerNoise`, also a corner noise of that
     /// many pixels split equally into each side's shift and turn (s^2 / 2 each: the per-corner model), kept apart
-    /// (`Detection.perCornerNoise`). `shift` (pixels outward, pose side order): sides to move before use, a one-edge
-    /// side to the middle of its two possible readings (`Measurement.sideShiftsPixels`); the normal and the misfit
-    /// follow through the linearised fit (a shift of a band's half moves the normal by about a degree, well inside the
-    /// fit's linear range). nil when the fit cannot be linearised.
+    /// (`Detection.perCornerNoise`). `shift` (pixels outward, pose side order): sides to move before use (e.g. a one-edge
+    /// side to the middle of its two possible readings, `DetectedOutline.sideShifts`; the tracker does not, see its
+    /// sideNoise); the normal and the misfit follow through the linearised fit (a shift of a band's half moves the normal
+    /// by about a degree, well inside the fit's linear range). nil when the fit cannot be linearised.
+    /// `shared` (pixels, pose side order): the part of each side's `parallel` noise that is the same error in every view
+    /// (`Detection.shared`); nil: none (all of it the detection's own).
     static func detection(pose: SlabPose, quad: [Vec2], view: CameraView, parallel: [Double], turn: [Double], shift: [Double]? = nil,
-                          cornerNoise: Double? = nil, settings: SettleSettings) -> Detection? {
+                          shared: [Double]? = nil, cornerNoise: Double? = nil, settings: SettleSettings) -> Detection? {
         guard quad.count == 4, parallel.count == 4, turn.count == 4 else { return nil }
         let pc = pose.transformed(by: view.cameraFromWorld)
         guard let ss = PoseSolver.sideSensitivity(pose: pc, corners: quad, intrinsics: view.intrinsics) else { return nil }
@@ -113,10 +132,13 @@ struct HonestTilt {
         var C = zero3, U = zero3
         var Cr = [[Double]](repeating: [Double](repeating: 0, count: 8), count: 8)
         let cn2 = pow(cornerNoise ?? 0, 2) / 2
+        let sh = shared.flatMap { $0.count == 4 ? $0.map { max(0, $0) } : nil }
         for s in 0..<4 {
             let p2 = parallel[s] * parallel[s], t2 = turn[s] * turn[s]
+            // the side's own part (the shared part is carried apart, `Detection.shared`)
+            let own2 = max(0, p2 - pow(sh?[s] ?? 0, 2))
             let gs = outer3(ss.normalPerShift[s], ss.normalPerShift[s]), gt = outer3(ss.normalPerTurn[s], ss.normalPerTurn[s])
-            C = add3(C, add3(scale3(gs, p2), scale3(gt, t2)))
+            C = add3(C, add3(scale3(gs, own2), scale3(gt, t2)))
             if cornerNoise != nil { U = add3(U, scale3(add3(gs, gt), 0.5)) }
             let a = ss.residualPerShift[s], b = ss.residualPerTurn[s]
             for i in 0..<8 { for j in 0..<8 { Cr[i][j] += (p2 + cn2) * a[i] * a[j] + (t2 + cn2) * b[i] * b[j] } }
@@ -136,14 +158,25 @@ struct HonestTilt {
         }
         let v = (view.position - pose.center).normalized, nw = shifted ? R * nc : pose.normal
         guard Cw.m.allSatisfy({ $0.isFinite }), Uw.m.allSatisfy({ $0.isFinite }), chi2.isFinite, v.isFinite, nw.isFinite else { return nil }
-        return Detection(normal: nw, cov: Cw, perCornerNoise: Uw, view: v, chi2: chi2, dof: dof, excluded: chi2 > settings.misfitChi2,
-                         cornerNoise: cornerNoise ?? 0)
+        var d = Detection(normal: nw, cov: Cw, perCornerNoise: Uw, view: v, chi2: chi2, dof: dof, excluded: chi2 > settings.misfitChi2,
+                          cornerNoise: cornerNoise ?? 0)
+        if let sh = sh {
+            let g = (0..<4).map { R * (ss.normalPerShift[$0] * sh[$0]) }
+            let c = pose.topCorners
+            let out = (0..<4).map { (((c[$0] + c[($0 + 1) % 4]) * 0.5) - pose.center).normalized }
+            if g.allSatisfy({ $0.isFinite }) && out.allSatisfy({ $0.isFinite }) { d.shared = g; d.sideOut = out }
+        }
+        return d
     }
 
     /// Add a detection (nil: one that could not be linearised, left out) and refresh, with the corner noise measured so
-    /// far (pixels; for the detections' part that follows it).
-    mutating func add(_ d: Detection?, cornerNoise: Double = 0) {
+    /// far (pixels; for the detections' part that follows it). `counts`: the refresh may count toward settling (a re-check
+    /// after the lock; not the lock's own detections, `SlabTracker` restarting the estimate). A detection left out (or
+    /// nil) never counts, and starts the count again: it is evidence that an outline was off.
+    mutating func add(_ d: Detection?, cornerNoise: Double = 0, counts: Bool = true) {
+        var usable = false
         if let d = d, !d.excluded {
+            usable = true
             let lim = Units.radians(settings.groupDegrees)
             if let i = groups.firstIndex(where: { $0.anchor.angle(to: d.view) < lim }) {
                 groups[i].members.append(d)
@@ -153,45 +186,95 @@ struct HonestTilt {
                 groups.append(Group(anchor: d.view, members: [d]))
             }
         }
-        refresh(cornerNoise: cornerNoise)
+        refresh(cornerNoise: cornerNoise, counts: counts && usable)
     }
 
-    /// Combine the views and update `settled`.
-    mutating func refresh(cornerNoise: Double = 0) {
+    /// Combine the views and update `settled` (`counts`: as in `add`; a refresh that does not count starts the count
+    /// again).
+    ///
+    /// Each view: its detections' normals averaged, its own part of their covariance averaged (one view's errors are
+    /// mostly the same error) and widened by their scatter beyond it (chi-square over 2(k - 1)), and its shared part per
+    /// side of the slab (the members' `Detection.shared` matched to the sides by direction) averaged. The views are
+    /// combined with weights from their whole covariances; the result's covariance carries each view's own part through
+    /// its weight, and the shared parts summed over the views before squaring: an error common to every view does not
+    /// shrink with their number (views of the same side from opposite directions can still cancel it). Views that
+    /// disagree beyond their whole covariances widen the result (chi-square over 2(G - 1)).
+    mutating func refresh(cornerNoise: Double = 0, counts: Bool = true) {
+        refreshCount += 1
         guard !groups.isEmpty else {
             normal = nil; cov = nil; sigmaDegrees = nil; inflation = 1
             previousOk = 0; settled = false
             return
         }
-        var gn: [Vec3] = [], gC: [Mat3] = []
+        // the slab's sides (outward, world) the shared parts are matched to: the first detection's that has them
+        let ref = groups.lazy.flatMap { $0.members }.first(where: { $0.shared.count == 4 && $0.sideOut.count == 4 })?.sideOut
+        func sharedBySide(_ m: Detection) -> [Vec3] {
+            var out = [Vec3](repeating: .zero, count: 4)
+            guard let ref = ref, m.shared.count == 4, m.sideOut.count == 4 else { return out }
+            for s in 0..<4 {
+                let p = (0..<4).max(by: { m.sideOut[s].dot(ref[$0]) < m.sideOut[s].dot(ref[$1]) })!
+                out[p] += m.shared[s]
+            }
+            return out
+        }
+        var gn: [Vec3] = [], gOwn: [Mat3] = [], gSh: [[Vec3]] = [], gC: [Mat3] = []
         for g in groups {
-            var n = Vec3.zero, C = zero3
-            for m in g.members { n += m.normal; C = add3(C, m.covariance(cornerNoise: cornerNoise)) }
-            gn.append(n.normalized); gC.append(scale3(C, 1 / Double(g.members.count)))
+            let k = Double(g.members.count)
+            let msh = g.members.map(sharedBySide)
+            var n = Vec3.zero, C = zero3, sh = [Vec3](repeating: .zero, count: 4)
+            for (m, ms) in zip(g.members, msh) {
+                n += m.normal; C = add3(C, m.ownCovariance(cornerNoise: cornerNoise))
+                for p in 0..<4 { sh[p] += ms[p] }
+            }
+            n = n.normalized; C = scale3(C, 1 / k); sh = sh.map { $0 / k }
+            // the view's detections against each other: what they share cancels, their own errors (and any difference in
+            // their shared parts) should explain the rest
+            if g.members.count >= 2 {
+                var chi = 0.0
+                for (m, ms) in zip(g.members, msh) {
+                    var Cm = m.ownCovariance(cornerNoise: cornerNoise)
+                    for p in 0..<4 { let e = ms[p] - sh[p]; Cm = add3(Cm, outer3(e, e)) }
+                    let d = m.normal - n
+                    chi += d.dot(HonestTilt.information(Cm, n) * d)
+                }
+                C = scale3(C, max(1, chi / (2 * (k - 1))))
+            }
+            gn.append(n); gOwn.append(C); gSh.append(sh)
+            gC.append(sh.reduce(C) { add3($0, outer3($1, $1)) })
         }
         var n0 = Vec3.zero
         for n in gn { n0 += n }
         n0 = n0.normalized
         var J = zero3, b = Vec3.zero
+        var W: [Mat3] = []
         for (n, C) in zip(gn, gC) {
             let I = HonestTilt.information(C, n0)
+            W.append(I)
             J = add3(J, I); b += I * (n - n0)
         }
         let Pn = outer3(n0, n0)
         let Cn = HonestTilt.inverse(add3(J, Pn)).map { add3($0, scale3(Pn, -1)) } ?? scale3(add3(.identity, scale3(Pn, -1)), 1)
         let n = (n0 + Cn * b).normalized
+        // the combined covariance: each view's own part through its weight; the shared parts summed before squaring
+        var Cc = zero3, shc = [Vec3](repeating: .zero, count: 4)
+        for g in gn.indices {
+            let A = Cn * W[g]
+            Cc = add3(Cc, A * gOwn[g] * A.transposed)
+            for p in 0..<4 { shc[p] += A * gSh[g][p] }
+        }
+        Cc = shc.reduce(Cc) { add3($0, outer3($1, $1)) }
         var infl = 1.0
         if gn.count >= 2 {
             var chi = 0.0
             for (g, C) in zip(gn, gC) { let d = g - n; chi += d.dot(HonestTilt.information(C, n) * d) }
             infl = max(1, chi / (2 * Double(gn.count - 1)))
         }
-        let Ct = scale3(HonestTilt.across(Cn, n), infl)
+        let Ct = scale3(HonestTilt.across(Cc, n), infl)
         normal = n; cov = Ct; inflation = infl
         let sig = Units.degrees(max(0, HonestTilt.trace(Ct)).squareRoot())
         sigmaDegrees = sig
         let ok = sig <= settings.settleDegrees
-        previousOk = ok ? previousOk + 1 : 0
+        previousOk = counts && ok ? previousOk + 1 : 0
         settled = settled ? sig <= settings.unsettleDegrees : previousOk >= max(1, settings.settleRefreshes)
     }
 

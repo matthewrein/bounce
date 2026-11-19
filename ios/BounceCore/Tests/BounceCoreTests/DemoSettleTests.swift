@@ -3,7 +3,7 @@ import XCTest
 
 /// The app's demo (what the Simulator UI tests see) through the app's demo path (ARController.demoTick: frames 12.5 a
 /// second, the slab crop cut from the same pixels, the app's tracker settings): after the lock the tilt first reads
-/// "settling", then settles quickly and reads the truth; the UI tests rely on both (SlabBounceUITests.testSettlingThenTheTilt
+/// "settling" (until two re-checks agree), then settles quickly and reads the truth; the UI tests rely on both (SlabBounceUITests.testSettlingThenTheTilt
 /// sees the first, the others read the tilt once it shows).
 final class DemoSettleTests: XCTestCase {
     struct Run {
@@ -66,11 +66,28 @@ final class DemoSettleTests: XCTestCase {
         XCTAssertNotNil(r.lockedAt)
         XCTAssertNotNil(r.settledAt)
         // the demo's view (48 deg elevation, 0.85 m): the detector's own side noise puts one view's honest sigma under
-        // 1 deg, so the tilt shows within a second of the lock (the lock's own detections count as refreshes)
+        // 1 deg, so the tilt shows within a second of the lock; not on the lock itself: the lock's own detections, taken in
+        // one moment, do not count, and two re-checks (0.3 s apart) must agree first
+        XCTAssertGreaterThanOrEqual((r.settledAt ?? 0) - (r.lockedAt ?? 0), 0.3)
         XCTAssertLessThanOrEqual((r.settledAt ?? 99) - (r.lockedAt ?? 0), 1.0)
         XCTAssertEqual(r.unsettledAfterSettle, 0)
         XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.5)
         XCTAssertLessThan(errs.last ?? 99, 1.0)
+    }
+
+    /// The owner's guidance (README: 45-55 deg down at 3-4 ft) pinned at its edge: 4 ft away and 62 deg down, the demo
+    /// locks but stays on "settling" (one view cannot pin the tilt to a degree there). On the live phone's geometry
+    /// (1920x1440 edges, 480x360 frame) the same view settles from one side of the slab and not from the other (sigma
+    /// 0.73 against 1.35-1.6), so the README does not promise a number there.
+    func testFourFeetAt62DegreesStaysSettling() {
+        var d = DemoScript(); d.distance = Units.feet(4); d.elevation = 62
+        let r = run(d, seconds: 5)
+        let sig = r.frames.compactMap { $0.locked ? $0.sigma : nil }
+        print(String(format: "DEMO 4 ft, 62 deg: locked %.2f s, %d locked frames, sigma min %.2f, settled %@", r.lockedAt ?? -1, sig.count,
+                     sig.min() ?? -1, r.settledAt.map { String(format: "%.2f s", $0) } ?? "never"))
+        XCTAssertNotNil(r.lockedAt, "locks")
+        XCTAssertNil(r.settledAt, "settling throughout")
+        XCTAssertGreaterThan(sig.min() ?? 0, 1.0)
     }
 
     /// The demo held steeply over the slab (72 deg elevation at 0.85 m: one view's honest sigma 1.7-4 deg, as the

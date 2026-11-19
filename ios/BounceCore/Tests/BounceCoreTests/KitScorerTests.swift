@@ -223,8 +223,11 @@ final class KitScorerTests: XCTestCase {
         XCTAssertEqual(a.rebound, truth.rebound, accuracy: 0.03)
         XCTAssertEqual(a.velocityIn.length, truth.velocityIn.length, accuracy: 0.05)
         XCTAssertEqual(a.apexHeight, truth.apexHeight, accuracy: 0.005)
-        // (3 mm while the kit rendered the old box; with the owner's sloped sides and 2 mm rounding the effective edge
-        // convention reads the rendered rounding 0.2-0.3 processing px off at 480x360, which moves the lock's plane: 4.3 mm)
+        // (3 mm while the kit rendered the old box. With the owner's slab the near sides are read at their departure, and
+        // this kit's 480x360 video is the only image the edges are read in: there the lit rounding and the face meet within
+        // one pixel and the departure lands 0.24 px inside the flat top's edge (0.02 px at the app's resolution, the full
+        // image's crop: EdgeRefinerProfileTests.testTheOwnersSlabReadAtTheAppsResolutionHasNoEdgeBias). That moves the
+        // lock's plane: 4.3 mm.)
         XCTAssertLessThan(abs(try XCTUnwrap(d.metric("impactHeightError")?.value)), 5, "mm: the lock is good to a few mm")
         XCTAssertLessThan(try XCTUnwrap(d.metric("landingError")?.value), 15)
         XCTAssertNil(r.aggregate("impactPointError"), "the horizontal impact point (always about 0) is no longer scored")
@@ -238,7 +241,7 @@ final class KitScorerTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(d.metric("landingErrorApp")?.value), 15)
         XCTAssertLessThan(try XCTUnwrap(d.metric("launchDirectionError")?.value), 1.5)
         // the ball's gap from the dish at the impact follows the same lock-plane error (4.6 mm with the owner's 180.2 mm
-        // slab and 30 mm ball rendered; 3-4 mm on the old 7 in box with a 35 mm ball)
+        // slab and 30 mm ball rendered, read in the 480x360 video; 3-4 mm on the old 7 in box with a 35 mm ball)
         XCTAssertLessThan(abs(try XCTUnwrap(d.metric("impactClearance")?.value)), 5)
         XCTAssertNotNil(r.aggregate("reboundMeasured")?.value)
         XCTAssertTrue(r.reboundToBakeLine.hasPrefix("rebound to bake into the app: "), r.reboundToBakeLine)
@@ -274,7 +277,8 @@ final class KitScorerTests: XCTestCase {
         let kit = try tinyKit(frames: 6, shots: ["s01-measure", "s08-ball-centre"])
         let r = try KitScorer(kitFolder: kit.folder, options: kit.scorerOptions(truthBall: true)).score()
         let s = try XCTUnwrap(r.shot("s08-ball-centre"))
-        // (8 mm while the kit rendered the old box; with the owner's sloped, rounded sides 10.1 mm: see testADropWithTheTruthBall)
+        // (8 mm while the kit rendered the old box; with the owner's slab 10.1 mm: the near sides' departure read 0.24 px
+        // inside in this kit's 480x360 video moves the lock's plane, see testADropWithTheTruthBall)
         XCTAssertLessThan(abs(try XCTUnwrap(s.metric("ballDistanceError")?.value, "\(s.metrics.compactMap { $0.note })")), 12)
         XCTAssertNotNil(s.metric("ballDetectionRate")?.value, "the truth finder looks for a resting ball")
         // the app's own finder does not look for a ball resting on the slab: its detection rate there is n/a

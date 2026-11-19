@@ -65,6 +65,10 @@ public struct SideEdge: Equatable {
     public var turnSigmaPixels: Double = 0
     /// the edge points' own contribution to `topSigmaPixels` (their scatter about the line / sqrt(n - 2), before the floor)
     public var fitSigmaPixels: Double = 0
+    /// the part of `topSigmaPixels` that is this frame's own: the edge points' scatter, at least the still-frame jitter
+    /// floor (`Options.edgeJitterRadians` x f). The rest (the edge's definition on the slab, the profile, a one-edge
+    /// ambiguity) is the same error from frame to frame and from view to view of this side.
+    public var frameSigmaPixels: Double = 0
     /// how many edge points (with a profile: segment medians) the line was fitted through
     public var segments: Int = 0
     /// a side whose face shows: both its edges (the top's departure and the band's bottom one predicted band further out)
@@ -75,7 +79,8 @@ public struct SideEdge: Equatable {
     public var modelPlaced: Bool = false
     /// on a side whose two edges were not both seen and whose one step could be either of them: how far outward (frame
     /// pixels, negative inward) the middle of the two readings lies from the line placed. Half the band either way; an
-    /// estimate that wants to stay neutral between them centres the side there (its sigma covers both).
+    /// estimate that wants to stay neutral between them could centre the side there (its sigma covers both; the tracker
+    /// keeps the likelier reading).
     public var ambiguityShiftPixels: Double = 0
     /// the band seen between the side's two edges (frame pixels), when both were seen
     public var measuredBandPixels: Double? = nil
@@ -469,6 +474,7 @@ public struct EdgeRefiner {
         for k in sides.indices where sides[k].mode != .unfitted {
             let amb = sides[k].used == .shiftedOuter ? sides[k].bandPixels / 2 : 0
             sides[k].topSigmaPixels = (j0 * j0 + defPx * defPx + amb * amb).squareRoot()
+            sides[k].frameSigmaPixels = j0
             sides[k].turnSigmaPixels = options.turnFloorRadians * K.focal
             sides[k].ambiguityShiftPixels = amb
             sides[k].modelPlaced = sides[k].used == .shiftedOuter

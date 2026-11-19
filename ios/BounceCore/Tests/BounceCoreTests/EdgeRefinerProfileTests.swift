@@ -263,6 +263,51 @@ final class EdgeRefinerProfileTests: XCTestCase {
         }
     }
 
+    /// The owner's slab as the app's demo and the synthetic kits draw it (`SyntheticScene`, r 2 mm, the near departure at
+    /// the rounding's start), read the way the app reads it: the outline in a 480x360 frame, the edges in the full
+    /// 1920x1440 image (here a crop round the slab, as `SlabImageCrop` cuts it). Near sides (read at their departure) and
+    /// far sides (at their outline) land on the true flat-top edge: both kinds' mean signed offsets under 0.1 processing
+    /// pixel (measured 0.02). (Read in the 480x360 frame itself, as the synthetic kits' 480x360 videos are, the near
+    /// sides' departure lands 0.24 px inside: the lit rounding and the face meet within one pixel there, and the image's own
+    /// halfway point between the top's level and the band's lies 0.27-0.41 px inside the edge. That moves those kits'
+    /// lock plane by a few millimetres; KitScorerTests allow for it.)
+    func testTheOwnersSlabReadAtTheAppsResolutionHasNoEdgeBias() throws {
+        let spec = SlabSpec.ownerSlab
+        let full = CameraIntrinsics(fx: 0.78 * 1920, fy: 0.78 * 1920, cx: 960, cy: 720, width: 1920, height: 1440), proc = full.scaled(by: 0.25)
+        var near: [Double] = [], far: [Double] = []
+        for (el, dist, hd) in [(45.0, 0.9, 30.0), (55, 1.0, 210), (40, 1.3, 300), (60, 0.7, 120), (50, 0.6, 30), (45, 1.1, 210)] {
+            let pose = SyntheticScene.slabPose(tilt: 6, heading: hd, yaw: 20, spec: spec)
+            let scene = SyntheticScene(spec: spec, slab: pose)
+            let e = Units.radians(el)
+            let view = SyntheticScene.camera(at: pose.center + Vec3(cos(e), sin(e), 0.3).normalized * dist, lookingAt: pose.center, intrinsics: full)
+            let truth = try XCTUnwrap(scene.corners(in: view))
+            // the crop round the slab, rendered at full resolution
+            let m = 80.0
+            let x0 = max(0, (truth.map { $0.x }.min()! - m).rounded(.down)), y0 = max(0, (truth.map { $0.y }.min()! - m).rounded(.down))
+            let x1 = min(1920, (truth.map { $0.x }.max()! + m).rounded(.up)), y1 = min(1440, (truth.map { $0.y }.max()! + m).rounded(.up))
+            let Kc = full.cropped(x0: x0, y0: y0, scale: 1, width: Int(x1 - x0), height: Int(y1 - y0))
+            let crop = SyntheticScene.ycc(rgb: scene.renderRGB(view: CameraView(worldFromCamera: view.worldFromCamera, intrinsics: Kc)),
+                                          width: Kc.width, height: Kc.height).luma
+            let tp = truth.map { $0 * 0.25 }, c = Geometry.centroid(tp)
+            let down = view.directionToCamera(ARKitConvention.worldDown)
+            guard let r = EdgeRefiner().refine(outline: tp.map { c + ($0 - c) * 1.05 }, intrinsics: proc, luma: crop, lumaIntrinsics: Kc, spec: spec, down: down) else {
+                XCTFail("el \(el) d \(dist): no result"); continue
+            }
+            let off = sideOffsets(r.outline, tp)
+            print(String(format: "  el %.0f, %.1f m: offsets %@ (processing px); %@", el, dist,
+                         off.map { String(format: "%+.2f/%+.2f", $0.0, $0.1) }.joined(separator: " "), describe(r)))
+            for i in 0..<4 {
+                let mid = (off[i].0 + off[i].1) / 2
+                if r.sides[i].feature == .departure { near.append(mid) } else { far.append(mid) }
+            }
+        }
+        let mn = near.reduce(0, +) / Double(max(1, near.count)), mf = far.reduce(0, +) / Double(max(1, far.count))
+        print(String(format: "OWNER SLAB at the app's resolution: near sides %+.3f px (n %d), far sides %+.3f px (n %d)", mn, near.count, mf, far.count))
+        XCTAssertGreaterThan(near.count, 3); XCTAssertGreaterThan(far.count, 3)
+        XCTAssertLessThan(abs(mn), 0.1)
+        XCTAssertLessThan(abs(mf), 0.1)
+    }
+
     /// Every side's sigma is built from measured terms: at least the still-frame jitter floor and the edge's definition
     /// on the slab (0.5 mm at the side's distance), in quadrature with the rest; a turn sigma at least its floor.
     func testSideSigmasHaveTheirMeasuredFloors() {

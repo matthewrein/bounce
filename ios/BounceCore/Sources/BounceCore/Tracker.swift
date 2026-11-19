@@ -48,10 +48,15 @@ public struct DetectedOutline: Equatable, Codable {
     /// the side's middle, as its ends' displacement (`SideEdge.turnSigmaPixels`)
     public var sideSigmas: [Double]
     public var sideTurnSigmas: [Double]
+    /// With a side profile: the part of each side's `sideSigmas` that is this frame's own (`SideEdge.frameSigmaPixels`:
+    /// the edge points' scatter about the line, at least the still-frame jitter); the rest (the edge's definition, the
+    /// profile, a one-edge ambiguity) is the same error from frame to frame and view to view. Empty: not given (all of
+    /// it counts as the frame's own, as before).
+    public var sideFrameSigmas: [Double]
     /// With a side profile: on a side whose face shows but whose two edges were not both seen, how far outward (pixels
     /// like `sideSigmas`, negative inward) the middle of its two possible readings lies from the line given
-    /// (`SideEdge.ambiguityShiftPixels`; 0 elsewhere). The outline keeps the likelier reading; an estimate that must stay
-    /// neutral between them (the tilt's honest estimate) centres the side there, and `sideSigmas` covers both.
+    /// (`SideEdge.ambiguityShiftPixels`; 0 elsewhere). Recorded for diagnostics: the outline and the tilt's honest estimate
+    /// keep the likelier reading, and `sideSigmas` covers both (`SlabTracker` sideNoise says why).
     public var sideShifts: [Double]
     /// the side profile the detector has learned on this slab (`ProfileLearning`: the face's drop and side run, metres);
     /// nil when none was learned or there is no profile
@@ -59,16 +64,17 @@ public struct DetectedOutline: Equatable, Codable {
     public var sideRun: Double?
 
     public init(quad: [Vec2], score: Double = 1, sideModes: [String] = [], sideSigmas: [Double] = [], sideTurnSigmas: [Double] = [],
-                faceDrop: Double? = nil, sideRun: Double? = nil, sideShifts: [Double] = []) {
+                faceDrop: Double? = nil, sideRun: Double? = nil, sideShifts: [Double] = [], sideFrameSigmas: [Double] = []) {
         self.quad = quad; self.score = score; self.sideModes = sideModes
         self.sideSigmas = sideSigmas; self.sideTurnSigmas = sideTurnSigmas; self.faceDrop = faceDrop; self.sideRun = sideRun
-        self.sideShifts = sideShifts
+        self.sideShifts = sideShifts; self.sideFrameSigmas = sideFrameSigmas
     }
 
     // JSON (recordings): {"quad": [[x, y], ...] (pixels of the frame the detector ran on), "score": s, "sideModes": [...],
-    // and with a side profile "sideSigmas", "sideTurnSigmas", "sideShifts": [...], "faceDrop", "sideRun": m}; the later keys
-    // are absent in older recordings (and written only when set, so a detection without them writes what it wrote before)
-    enum CodingKeys: String, CodingKey { case quad, score, sideModes, sideSigmas, sideTurnSigmas, faceDrop, sideRun, sideShifts }
+    // and with a side profile "sideSigmas", "sideTurnSigmas", "sideFrameSigmas", "sideShifts": [...], "faceDrop", "sideRun": m};
+    // the later keys are absent in older recordings (and written only when set, so a detection without them writes what it
+    // wrote before)
+    enum CodingKeys: String, CodingKey { case quad, score, sideModes, sideSigmas, sideTurnSigmas, faceDrop, sideRun, sideShifts, sideFrameSigmas }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         quad = try c.decode([[Double]].self, forKey: .quad).map { Vec2($0[0], $0[1]) }
@@ -79,6 +85,7 @@ public struct DetectedOutline: Equatable, Codable {
         faceDrop = try c.decodeIfPresent(Double.self, forKey: .faceDrop)
         sideRun = try c.decodeIfPresent(Double.self, forKey: .sideRun)
         sideShifts = try c.decodeIfPresent([Double].self, forKey: .sideShifts) ?? []
+        sideFrameSigmas = try c.decodeIfPresent([Double].self, forKey: .sideFrameSigmas) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -90,6 +97,7 @@ public struct DetectedOutline: Equatable, Codable {
         try c.encodeIfPresent(faceDrop, forKey: .faceDrop)
         try c.encodeIfPresent(sideRun, forKey: .sideRun)
         if !sideShifts.isEmpty { try c.encode(sideShifts, forKey: .sideShifts) }
+        if !sideFrameSigmas.isEmpty { try c.encode(sideFrameSigmas, forKey: .sideFrameSigmas) }
     }
 }
 
@@ -344,6 +352,13 @@ public struct TrackerSettings: Equatable {
     /// lock still draws the outline. Off (the default, so older recordings replay as the phone ran them): the lock's pose,
     /// as before. The app's is on (`RecordingSettings.trackerSettings`).
     public var readoutsFromSettledNormal = false
+    /// The lock keeps a view's older detections (views of the slab: directions from it to the camera within
+    /// `SettleSettings.groupDegrees`) only while they agree with the view's newest `SettleSettings.perGroup` (within
+    /// `matchSigmas`): a still view's early detections taken on the wrong edge (before the edges settled on the top) age
+    /// out of the outline and the path within about a second instead of `historySize` re-checks, and detections that
+    /// agree still average the lock's jitter down. Off (the default, so older recordings replay as the phone ran them):
+    /// the newest `historySize`, as before. The app's is on (`RecordingSettings.trackerSettings`).
+    public var lockKeepsNewestPerView = false
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
@@ -575,6 +590,10 @@ public final class SlabTracker {
     public var angleSettled: Bool { state == .locked && unconfirmed == nil && honest.settled }
     /// the honest estimate's normal (world), and how many views of the slab it rests on
     public var settledNormal: Vec3? { state == .locked ? honest.normal : nil }
+    /// the honest estimate's covariance across its normal (world, rad^2) while locked, and how many times it has been
+    /// refreshed (for scoring it once per refresh)
+    var settledCovariance: Mat3? { state == .locked ? honest.cov : nil }
+    var honestRefreshes: Int { honest.refreshCount }
     public var viewGroupCount: Int { state == .locked ? honest.groups.count : 0 }
     /// rectangular slabs: the long side's direction (world) the evidence so far favours
     public private(set) var longSideWorld: Vec3?
@@ -620,9 +639,13 @@ public final class SlabTracker {
         /// given; the honest uncertainty then uses the corner noise the re-checks show (`HonestTilt`).
         var sideSigmasPixels: [Double]? = nil
         var sideTurnSigmasPixels: [Double]? = nil
-        /// a one-edge side's middle between its two readings, outward from its line (pixels of `quad`, pose side order;
-        /// `DetectedOutline.sideShifts`): where the honest estimate puts that side. nil: none given (all 0).
-        var sideShiftsPixels: [Double]? = nil
+        /// the part of `sideSigmasPixels` that is this frame's own (`DetectedOutline.sideFrameSigmas`); nil: not given (all
+        /// of it is)
+        var sideFrameSigmasPixels: [Double]? = nil
+        /// the covariance of the normal's own error in this detection (world, rad^2: what differs from frame to frame of one
+        /// view; `HonestTilt.Detection.ownCovariance`), once the honest estimate has taken it; nil before, or when it
+        /// could not
+        var ownNormalCov: Mat3? = nil
         /// the side profile the detector has learned (`DetectedOutline.faceDrop`, `sideRun`), if any
         var profile: (faceDrop: Double, sideRun: Double)? = nil
         var pose: SlabPose { est.pose }
@@ -896,6 +919,64 @@ public final class SlabTracker {
             out.removeFirst()
         }
         return out
+    }
+
+    /// The lock's history after a new detection joins it: `trimmed`, and with `lockKeepsNewestPerView` a view's older
+    /// detections only while they agree with what that view shows now. A view (as `HonestTilt` groups them: directions
+    /// from the slab to the camera within `SettleSettings.groupDegrees` of the view's newest) shows its newest
+    /// `SettleSettings.perGroup` detections; an older one whose normal is beyond `matchSigmas` of their estimate (the
+    /// tracker's own gate) in the detections' own noise (`Measurement.ownNormalCov`: the detector's per-side noise less
+    /// what every view shares; without it the corner noise the tracker has measured) goes, so a still view's early
+    /// detections on the wrong edge age out within about a second, while detections that agree keep averaging the lock's
+    /// jitter down. Those that went
+    /// come back, newest first, while the rest cannot pin the normal to `maxLockSigmaDegrees`. A measurement without its
+    /// camera is kept.
+    private func trimmedLock(_ ms: [Measurement]) -> [Measurement] {
+        let out = trimmed(ms)
+        let k = max(1, settings.settle.perGroup)
+        guard settings.lockKeepsNewestPerView, out.count > k else { return out }
+        let lim = Units.radians(settings.settle.groupDegrees)
+        var views: [(direction: Vec3, newest: [Int])] = []
+        var viewOf = [Int?](repeating: nil, count: out.count)
+        for i in out.indices.reversed() {
+            guard let c = out[i].camera else { continue }
+            let v = (c.position - out[i].pose.center).normalized
+            guard v.isFinite else { continue }
+            var j = views.firstIndex { $0.direction.angle(to: v) < lim }
+            if j == nil { views.append((v, [])); j = views.count - 1 }
+            viewOf[i] = j
+            if views[j!].newest.count < k { views[j!].newest.append(i) }
+        }
+        let now = views.map { v in SlabTracker.estimate(v.newest.map { out[$0] }) }
+        // what the view's newest show (their mean's own error: theirs averaged, over their number)
+        let nowOwn: [Mat3?] = views.map { v in
+            let cs = v.newest.compactMap { out[$0].ownNormalCov }
+            guard cs.count == v.newest.count, !cs.isEmpty else { return nil }
+            return mscale(cs.reduce(Mat3(rows: [0, 0, 0, 0, 0, 0, 0, 0, 0])) { madd($0, $1) }, 1 / Double(cs.count * cs.count))
+        }
+        let s2 = max(pow(cornerNoiseEstimate, 2), 1e-12), gate = pow(settings.matchSigmas, 2)
+        var keep = [Bool](repeating: true, count: out.count)
+        for i in out.indices {
+            guard let j = viewOf[i], !views[j].newest.contains(i), let e = now[j] else { continue }
+            // against the view's newest, in the two detections' own noise (one view: what they share is the same error),
+            // or without it, in the tracker's corner-noise model
+            let C: Mat3
+            if let a = out[i].ownNormalCov, let b = nowOwn[j] { C = madd(a, b) } else { C = mscale(madd(out[i].est.ncov, e.ncov), s2) }
+            let m2 = SlabTracker.mahalanobis2(out[i].pose.normal, e.pose.normal, C)
+            if !(m2 <= gate) { keep[i] = false }
+        }
+        guard keep.contains(false) else { return out }
+        let s = cornerNoiseEstimate
+        func pinned(_ x: [Bool]) -> Bool {
+            guard let e = SlabTracker.estimate(out.indices.filter { x[$0] }.map { out[$0] }) else { return false }
+            return Units.degrees(e.sigma) * s <= settings.maxLockSigmaDegrees
+        }
+        // those that went come back, newest first, while the rest cannot pin the normal
+        for i in out.indices.reversed() where !keep[i] {
+            if pinned(keep) { break }
+            keep[i] = true
+        }
+        return out.indices.filter { keep[$0] }.map { out[$0] }
     }
 
     // MARK: one frame
@@ -1225,7 +1306,7 @@ public final class SlabTracker {
                             rms: fit.rmsPixels, camera: f.view, blur: frameBlur)
         if o.sideSigmas.count == 4 { m.sideSigmasPixels = fit.sidesInPoseOrder(o.sideSigmas) }
         if o.sideTurnSigmas.count == 4 { m.sideTurnSigmasPixels = fit.sidesInPoseOrder(o.sideTurnSigmas) }
-        if o.sideShifts.count == 4 { m.sideShiftsPixels = fit.sidesInPoseOrder(o.sideShifts) }
+        if o.sideFrameSigmas.count == 4 { m.sideFrameSigmasPixels = fit.sidesInPoseOrder(o.sideFrameSigmas) }
         if let h = o.faceDrop, let r = o.sideRun { m.profile = (h, r) }
         return m
     }
@@ -1315,7 +1396,7 @@ public final class SlabTracker {
     private func lock(_ t: Double, _ events: inout [String]) {
         hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
-        honestRestart(with: hist)
+        hist = honestRestart(with: hist)
         events.append("locked"); bump("locks")
     }
 
@@ -1365,15 +1446,17 @@ public final class SlabTracker {
         if recent.count > max(2, settings.slideWindow) { recent.removeFirst(recent.count - max(2, settings.slideWindow)) }
         // a re-check of the locked slab (agreeing with the lock or not; not a cut-face flip, a band apart, or far off):
         // one more detection for the tilt's honest uncertainty
-        honestAdd(m)
+        let own = honestAdd(m)
         let agreed = agrees(L2, m.est, noise: s)
         if agreed {
             // the detector's noise, from how far agreeing re-checks land from the lock (before this one joins it); not
             // from the others, or a sustained systematic error would widen the gates enough to let itself in
             noiseSamples.append(SlabTracker.mahalanobis2(m.pose.normal, L2.pose.normal, madd(m.est.ncov, L2.ncov)))
             if noiseSamples.count > 60 { noiseSamples.removeFirst(noiseSamples.count - 60) }
-            hist.append(m)
-            hist = trimmed(hist)
+            var mh = m
+            mh.ownNormalCov = own
+            hist.append(mh)
+            hist = trimmedLock(hist)
             refreshLock()
             // a re-check nearer the would-be move than the lock still counts toward it
             if let me = SlabTracker.estimate(movers), m.pose.normal.angle(to: me.pose.normal) < m.pose.normal.angle(to: L2.pose.normal) {
@@ -1423,7 +1506,7 @@ public final class SlabTracker {
         }
         hist = ms; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
-        honestRestart(with: ms)
+        hist = honestRestart(with: ms)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
         ballLocator?.reset(); ballState = nil
         return true
@@ -1570,7 +1653,7 @@ public final class SlabTracker {
                 x.camera = m.camera.map { CameraView(worldFromCamera: $0.worldFromCamera, intrinsics: new) }
                 x.blur = m.blur * r
                 x.sideSigmasPixels = m.sideSigmasPixels?.map { $0 * r }; x.sideTurnSigmasPixels = m.sideTurnSigmasPixels?.map { $0 * r }
-                x.sideShiftsPixels = m.sideShiftsPixels?.map { $0 * r }
+                x.sideFrameSigmasPixels = m.sideFrameSigmasPixels?.map { $0 * r }
                 return x
             }
             hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled)
@@ -1603,22 +1686,28 @@ public final class SlabTracker {
 
     // MARK: the tilt's honest uncertainty
 
-    /// Start the honest estimate again from these detections (a new lock or a re-lock), each one a refresh.
-    private func honestRestart(with ms: [Measurement]) {
+    /// Start the honest estimate again from these detections (a new lock, a re-lock, the sides swapped). They do not
+    /// count toward settling: taken in one moment from one view (or in the search, before the edge memory), they cannot
+    /// show a transient, so the tilt shows only after `SettleSettings.settleRefreshes` re-checks of the lock agree.
+    /// Returns them with their own normal covariance (`Measurement.ownNormalCov`).
+    private func honestRestart(with ms: [Measurement]) -> [Measurement] {
         honest.reset()
-        for m in ms { honestAdd(m) }
+        return ms.map { m in var x = m; x.ownNormalCov = honestAdd(m, counts: false); return x }
     }
 
-    /// Add one detection of the locked slab to the honest estimate (and refresh it).
-    private func honestAdd(_ m: Measurement) {
+    /// Add one detection of the locked slab to the honest estimate (and refresh it); `counts`: a re-check, which may count
+    /// toward settling. Returns the covariance of the detection's own normal error (`Measurement.ownNormalCov`), if it
+    /// could be worked out.
+    @discardableResult
+    private func honestAdd(_ m: Measurement, counts: Bool = true) -> Mat3? {
         var d: HonestTilt.Detection? = nil
         let s = cornerNoiseEstimate
         if let v = m.camera, let sn = sideNoise(m, v) {
-            d = HonestTilt.detection(pose: m.pose, quad: sn.quad, view: v, parallel: sn.parallel, turn: sn.turn, shift: sn.shift,
-                                     cornerNoise: sn.perCorner ? s : nil, settings: settings.settle)
+            d = HonestTilt.detection(pose: m.pose, quad: sn.quad, view: v, parallel: sn.parallel, turn: sn.turn, shared: sn.shared, cornerNoise: sn.perCorner ? s : nil, settings: settings.settle)
         }
-        honest.add(d, cornerNoise: s)
+        honest.add(d, cornerNoise: s, counts: counts)
         honestNote = (m.time, d)
+        return d.map { $0.ownCovariance(cornerNoise: s) }
     }
 
     /// A detection's outline matched corner by corner to its pose (the pose may be its other side assignment), with each
@@ -1627,26 +1716,38 @@ public final class SlabTracker {
     /// re-checks show (`cornerNoiseEstimate`, at least 0.25 px: above the floors at a processing frame's focal length),
     /// which `HonestTilt` splits equally into a shift and a turn of each side (s^2 / 2 each: the same normal covariance as
     /// independent corner noise) and keeps following as the re-checks measure it. The frame's motion blur adds to the
-    /// parallel part (`SettleSettings.blurShare`). `shift`: where the honest estimate puts each side, outward from its line
-    /// (a one-edge side's middle between its two readings, `Measurement.sideShiftsPixels`; nil: every side where it is).
-    private func sideNoise(_ m: Measurement, _ v: CameraView) -> (quad: [Vec2], parallel: [Double], turn: [Double], shift: [Double]?,
+    /// parallel part (`SettleSettings.blurShare`). A one-edge side stays on the detector's likelier reading, as in the lock
+    /// (its sigma, half a band, covers the other): the likelier one was right on 95% of the owner's first kit's sides with a
+    /// band (image-only check), so centring every such side between its two readings (`DetectedOutline.sideShifts`)
+    /// moved the estimate half a band off on most of them. Replayed, centring showed the 4.7 ft room scan 1.1 deg off
+    /// (0.7 without) and left the honest uncertainty overconfident (2-D error in its sigma: median 0.96 and 95th
+    /// percentile 2.43 against 1.17 and 2.18 without; an honest one gives 1.18 and 2.45).
+    /// `shared`: the part of each side's parallel noise that is the same in every view (the detector's sigma less its
+    /// frame's own part, `Measurement.sideFrameSigmasPixels`; nil when not given: all of it the detection's own).
+    private func sideNoise(_ m: Measurement, _ v: CameraView) -> (quad: [Vec2], parallel: [Double], turn: [Double], shared: [Double]?,
                                                                  perCorner: Bool)? {
         guard m.quad.count == 4 else { return nil }
         let st = settings.settle, focal = v.intrinsics.focal
         let j0 = st.parallelFloorRadians * focal, t0 = st.turnFloorRadians * focal, b = st.blurShare * m.blur
-        var par: [Double], turn: [Double], shift: [Double]? = nil
+        var par: [Double], turn: [Double], shared: [Double]? = nil
         let perCorner: Bool
         if let p = m.sideSigmasPixels, p.count == 4 {
             perCorner = false
             par = p.map { (pow(max($0, j0), 2) + b * b).squareRoot() }
             turn = (m.sideTurnSigmasPixels.flatMap { $0.count == 4 ? $0 : nil } ?? [t0, t0, t0, t0]).map { max($0, t0) }
-            if let sh = m.sideShiftsPixels, sh.count == 4, sh.contains(where: { $0 != 0 }) { shift = sh }
+            if let fr = m.sideFrameSigmasPixels, fr.count == 4 {
+                // the whole (floored) less the frame's own (floored the same way, and no more than the whole)
+                shared = (0..<4).map { i in
+                    let whole = max(p[i], j0), own = min(max(fr[i], j0), whole)
+                    return max(0, whole * whole - own * own).squareRoot()
+                }
+            }
         } else {
             perCorner = true
             par = [b, b, b, b]; turn = [0, 0, 0, 0]
         }
         // the outline in the pose's corner order, and its sides with it
-        guard let T = project(m.pose, v) else { return (m.quad, par, turn, shift, perCorner) }
+        guard let T = project(m.pose, v) else { return (m.quad, par, turn, shared, perCorner) }
         var best = (rev: false, k: 0), bd = Double.infinity
         for rev in [false, true] {
             let r = rev ? Array(m.quad.reversed()) : m.quad
@@ -1655,12 +1756,12 @@ public final class SlabTracker {
                 if d < bd { bd = d; best = (rev, k) }
             }
         }
-        guard best.rev || best.k != 0 else { return (m.quad, par, turn, shift, perCorner) }
+        guard best.rev || best.k != 0 else { return (m.quad, par, turn, shared, perCorner) }
         let r = best.rev ? Array(m.quad.reversed()) : m.quad
         let q = (0..<4).map { r[($0 + best.k) % 4] }
         // side i of the matched outline is the original side (i + k) (or, reversed, (2 - i - k)) mod 4
         let side = (0..<4).map { i in best.rev ? ((2 - i - best.k) % 4 + 4) % 4 : (i + best.k) % 4 }
-        return (q, side.map { par[$0] }, side.map { turn[$0] }, shift.map { sh in side.map { sh[$0] } }, perCorner)
+        return (q, side.map { par[$0] }, side.map { turn[$0] }, shared.map { sh in side.map { sh[$0] } }, perCorner)
     }
 
     // MARK: the box model's cut-face flip
@@ -1797,7 +1898,7 @@ public final class SlabTracker {
         if state == .locked && !hist.isEmpty {
             hist = swapped(hist)
             refreshLock(); depthEstimate = nil
-            honestRestart(with: hist)
+            hist = honestRestart(with: hist)
             events.append("relocked"); bump("relocks")
         } else {
             events.append("sides-swapped")

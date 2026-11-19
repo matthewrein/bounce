@@ -170,7 +170,7 @@ final class AppModel: ObservableObject {
 
     /// The demo scene runs instead of the camera when turned on in Settings > Developer, or by launch arguments (UI tests):
     /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3] [-demoSlideTo 3 -demoSlideAt 8]
-    /// [-demoElevation 72 -demoElevationTo 48 -demoElevationAt 8] (the camera held steeply, then lowered)
+    /// [-demoElevation 72 -demoElevationTo 48 -demoElevationAt 15] (the camera held steeply, then lowered)
     nonisolated static func demoScriptRequested(_ d: UserDefaults = .standard) -> Bool { d.bool(forKey: AppSettings.keys.demo) }
 
     nonisolated static func demoScript(_ d: UserDefaults = .standard) -> DemoScript? {

@@ -39,7 +39,7 @@ final class RecordingFormatTests: XCTestCase {
         s.defaultDropHeight = 0.7; s.launchRule = .dishNormal; s.recheckInterval = 0.25; s.searchInterval = 0.12; s.minDetectionGap = 0.05; s.confirmCount = 4
         s.matchDistance = 0.02; s.matchAngleDegrees = 3; s.moveCount = 5; s.lostAfter = 3; s.historySize = 12; s.depthNormalWeight = 0.3
         s.depthCentreWeight = 0.35
-        s.settle.groupDegrees = 6; s.settle.settleDegrees = 0.9; s.readoutsFromSettledNormal = true
+        s.settle.groupDegrees = 6; s.settle.settleDegrees = 0.9; s.readoutsFromSettledNormal = true; s.lockKeepsNewestPerView = true
         s.ballInterval = 0.15; s.shapeLimits.maxMisfitFraction = 0.04; s.shapeLimits.maxNormalSigmaDegrees = nil; s.shapeLimits.minDistance = 0.3
         s.shapeLimits.maxDistance = 2.5; s.shapeLimits.maxTiltDegrees = 20
         s.cornerNoisePixels = 0.8; s.matchSigmas = 2.5; s.maxMatchDistance = 0.07; s.maxMatchAngleDegrees = 9; s.maxLockSigmaDegrees = 1.2
@@ -550,6 +550,18 @@ final class RecordingFormatTests: XCTestCase {
         shifted.sideShifts = [0, 2.5, 0, -1]
         XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(shifted)).sideShifts, [0, 2.5, 0, -1])
         XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(plain)).sideShifts, [])
+        // and each side's own part of its sigma likewise
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(plain), as: UTF8.self).contains("sideFrameSigmas"))
+        var own = plain
+        own.sideFrameSigmas = [0.1, 0.12, 0.1, 0.2]
+        XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(own)).sideFrameSigmas, [0.1, 0.12, 0.1, 0.2])
+        XCTAssertEqual(try JSONDecoder().decode(DetectedOutline.self, from: JSONEncoder().encode(plain)).sideFrameSigmas, [])
+        // the lock keeps each view's newest detections in the app; settings without the key (older recordings) as before
+        XCTAssertTrue(s.trackerSettings.lockKeepsNewestPerView)
+        XCTAssertFalse(TrackerSettings().lockKeepsNewestPerView)
+        var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(s.trackerSettings)) as! [String: Any]
+        old.removeValue(forKey: "lockKeepsNewestPerView")
+        XCTAssertFalse(try JSONDecoder().decode(TrackerSettings.self, from: JSONSerialization.data(withJSONObject: old)).lockKeepsNewestPerView)
     }
 
     /// A diagnostics file from the phone written before the profile existed (BOUNCE_DIAGNOSTICS: a path, e.g. the owner's

@@ -125,6 +125,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.depthNormalWeight = RecordingSettings.appDepthNormalWeight
         t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
         t.readoutsFromSettledNormal = true
+        t.lockKeepsNewestPerView = true
         return t
     }
 

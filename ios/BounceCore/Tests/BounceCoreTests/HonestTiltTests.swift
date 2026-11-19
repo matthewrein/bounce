@@ -42,9 +42,10 @@ final class HonestTiltTests: XCTestCase {
         }
     }
 
-    /// Safeguard 3's placement: a one-edge side is centred between its two readings (`Measurement.sideShiftsPixels`)
-    /// before it counts. A side moved out by half a 5 px band turns the detection's normal as refitting the moved outline
-    /// does (to 5% of the turn), and the misfit follows it; no shift leaves the detection as it was, bit for bit.
+    /// A side moved before it counts (`HonestTilt.detection(shift:)`, e.g. a one-edge side centred between its two
+    /// readings; the tracker keeps the likelier reading, see its sideNoise). A side moved out by half a 5 px band turns
+    /// the detection's normal as refitting the moved outline does (to 5% of the turn), and the misfit follows it; no shift
+    /// leaves the detection as it was, bit for bit.
     func testAOneEdgeSideIsCentredBetweenItsReadings() throws {
         let spec = SlabSpec(sideU: 0.1802, sideV: 0.1802, thickness: 0.0254, dishDepth: 0)
         let view = CameraView(worldFromCamera: .identity, intrinsics: kitK)
@@ -173,6 +174,88 @@ final class HonestTiltTests: XCTestCase {
         XCTAssertLessThan(Units.degrees(a.normal!.angle(to: right)), 1e-6)
     }
 
+    /// The lock's own detections (taken in one moment, added without counting) never show the tilt: it shows once two
+    /// re-checks after them are at or under 1 deg.
+    func testTheLocksOwnDetectionsDoNotSettleIt() {
+        var h = HonestTilt(settings: SettleSettings())
+        let n = Vec3(0, 1, 0), v = Vec3(0, 1, 1)
+        for _ in 0..<3 { h.add(detection(n, sigmaDegrees: 0.6, view: v), counts: false) }
+        XCTAssertEqual(h.sigmaDegrees!, 0.6, accuracy: 1e-6)
+        XCTAssertFalse(h.settled, "the lock's detections alone")
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        XCTAssertFalse(h.settled, "one re-check")
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        XCTAssertTrue(h.settled, "two re-checks at or under 1 deg")
+    }
+
+    /// A detection left out for its misfit (or one that could not be linearised) is evidence an outline was off: it does
+    /// not count toward the two refreshes, and the count starts again.
+    func testALeftOutDetectionDoesNotCount() {
+        var h = HonestTilt(settings: SettleSettings())
+        let n = Vec3(0, 1, 0), v = Vec3(0, 1, 1)
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        var misfit = detection(n, sigmaDegrees: 0.6, view: v); misfit.excluded = true
+        h.add(misfit)
+        XCTAssertFalse(h.settled, "one good detection and one left out")
+        h.add(nil)
+        XCTAssertFalse(h.settled)
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        XCTAssertFalse(h.settled, "the count started again")
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        XCTAssertTrue(h.settled)
+    }
+
+    /// One view whose detections disagree (two right and one 4 deg off, 0.6 deg each) is not one 0.6 deg view: its own
+    /// part widens by their scatter, the tilt goes back to settling, and agreeing detections are not widened.
+    func testAnOutlierInOneViewWidensThatView() {
+        let n = Vec3(0, 1, 0), v = Vec3(0, 1, 1), off = n.rotated(by: Vec3(Units.radians(4), 0, 0))
+        var h = HonestTilt(settings: SettleSettings())
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        h.add(detection(n, sigmaDegrees: 0.6, view: v))
+        XCTAssertTrue(h.settled)
+        h.add(detection(off, sigmaDegrees: 0.6, view: v))
+        XCTAssertGreaterThan(h.sigmaDegrees!, 1.25)
+        XCTAssertFalse(h.settled, "shown 1.3 deg off at 0.6 deg before the view's scatter counted")
+        var first = HonestTilt(settings: SettleSettings())
+        for d in [off, n, n] { first.add(detection(d, sigmaDegrees: 0.6, view: v)) }
+        XCTAssertFalse(first.settled)
+        var agree = HonestTilt(settings: SettleSettings())
+        for _ in 0..<3 { agree.add(detection(n, sigmaDegrees: 0.6, view: v)) }
+        XCTAssertEqual(agree.sigmaDegrees!, 0.6, accuracy: 1e-9)
+    }
+
+    /// The part of the sides' noise that is the same in every view (the edge's definition on the slab, the profile) does
+    /// not shrink with more views of the same sides; a detection's own part does. One view's sigma is the same either way.
+    func testASharedErrorDoesNotShrinkWithViews() throws {
+        let spec = SlabSpec.ownerSlab
+        let pose = SyntheticScene.slabPose(tilt: 6, heading: 30, yaw: 20, spec: spec)
+        let own = [0.15, 0.15, 0.15, 0.15], shared = [0.4, 0.4, 0.4, 0.4], turn = [0.3, 0.3, 0.3, 0.3]
+        let whole = zip(own, shared).map { ($0 * $0 + $1 * $1).squareRoot() }
+        var split = HonestTilt(settings: SettleSettings()), apart = HonestTilt(settings: SettleSettings())
+        var single: Double? = nil
+        for az in stride(from: -37.5, through: 37.5, by: 15) {   // 15 deg of azimuth at 50 deg up: 9.6 deg of view apart
+            let e = Units.radians(50), a = Units.radians(az)
+            let pos = pose.center + Vec3(cos(e) * cos(a), sin(e), cos(e) * sin(a)) * 1.0
+            let view = SyntheticScene.camera(at: pos, lookingAt: pose.center, intrinsics: kitK)
+            let q = pose.topCorners.map { view.project(world: $0)! }
+            let ds = try XCTUnwrap(HonestTilt.detection(pose: pose, quad: q, view: view, parallel: whole, turn: turn, shared: shared, settings: SettleSettings()))
+            let da = try XCTUnwrap(HonestTilt.detection(pose: pose, quad: q, view: view, parallel: whole, turn: turn, settings: SettleSettings()))
+            XCTAssertEqual(ds.sigmaDegrees, da.sigmaDegrees, accuracy: 1e-9 + 1e-9 * da.sigmaDegrees, "one view: the same whole")
+            XCTAssertEqual(ds.shared.count, 4)
+            if single == nil { single = da.sigmaDegrees }
+            split.add(ds); apart.add(da)
+        }
+        let one = try XCTUnwrap(single)
+        print(String(format: "HONEST shared part: one view %.2f deg; six views 9.6 deg apart: %.2f with the shared part, %.2f all independent",
+                     one, split.sigmaDegrees!, apart.sigmaDegrees!))
+        XCTAssertEqual(split.groups.count, 6)
+        // six independent views: about 1/sqrt(6) = 0.41 of one. The shared part (0.4 of each side's 0.43 px) shrinks only
+        // where the views see it turn the normal differently (48 deg of view round the slab: to about 0.7 of one)
+        XCTAssertLessThan(apart.sigmaDegrees!, 0.5 * one, "independent views add up")
+        XCTAssertGreaterThan(split.sigmaDegrees!, 0.6 * one, "an error common to the views does not shrink with them")
+        XCTAssertGreaterThan(split.sigmaDegrees!, 1.4 * apart.sigmaDegrees!)
+    }
+
     /// A detection the fit cannot explain with its sides' noise is left out (and the estimate still refreshes).
     func testAMisfitDetectionIsLeftOut() throws {
         let pose = poseForView(elev: 50, dist: 1.0, az: 20, half: 0.0901)
@@ -215,41 +298,74 @@ final class HonestTiltTests: XCTestCase {
         init(_ w: World, biasedCalls: Int, side: Int = 0, pixels: Double) {
             truth = TruthDetector(w); truth.noise = 0.25; self.biasedCalls = biasedCalls; self.side = side; self.pixels = pixels
         }
+        /// report each side's noise as the app's detector does (`DetectedOutline.sideSigmas`, its own part
+        /// `sideFrameSigmas`): 0.35 px, 0.25 px of it the frame's own (the corners' 0.25 px noise)
+        var reportsNoise = false
         func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
             calls += 1
             truth.corruptSide = calls <= biasedCalls ? (side, pixels) : nil
-            return truth.detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near)
+            var out = truth.detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near)
+            if reportsNoise {
+                for i in out.indices {
+                    out[i].sideSigmas = [0.35, 0.35, 0.35, 0.35]; out[i].sideTurnSigmas = [0.35, 0.35, 0.35, 0.35]
+                    out[i].sideFrameSigmas = [0.25, 0.25, 0.25, 0.25]
+                }
+            }
+            return out
         }
     }
 
     /// The review's s04-still case: a still camera whose first 8 detections have a side on the cut face and the next 10
-    /// on the top. The lock forms on the biased ones and keeps its 15-deep estimate; the honest estimate follows the
-    /// correct ones within a second (its view keeps only its newest 3).
+    /// on the top. The lock forms on the biased ones; the honest estimate follows the correct ones within a second (its
+    /// view keeps only its newest 3). With the app's `lockKeepsNewestPerView` so does the lock (otherwise it keeps its
+    /// newest 15 and stays off for seconds).
     func testBiasedDetectionsAgeOutOfTheHonestEstimate() throws {
-        let w = World(slab: World.slabAt(Vec3(0, 0.06, -0.8), tilt: 6, heading: 70))
-        let det = BiasedDetector(w, biasedCalls: 8, side: 0, pixels: 2)
-        var s = TrackerSettings(); s.recheckInterval = 0.3
-        let tr = SlabTracker(settings: s, detector: det)
-        let v = w.view(from: Vec3(0, 0.75, 0), at: w.slab.center)
-        var t = 0.0, firstCorrect: Double? = nil, followedAt: Double? = nil, lockAt: Double? = nil
-        var lockErrAtFollow = 0.0
-        while det.calls < 18 && t < 10 {
-            det.truth.currentView = v
-            let o = tr.process(TrackerFrame(timestamp: t, view: v, frame: blank))
-            if o.state == .locked && lockAt == nil { lockAt = t }
-            if det.calls == 9 && firstCorrect == nil { firstCorrect = t }
-            if let fc = firstCorrect, followedAt == nil, let n = tr.settledNormal, Units.degrees(n.angle(to: w.slab.normal)) < 0.5 {
-                followedAt = t - fc
-                lockErrAtFollow = Units.degrees(try XCTUnwrap(tr.imageSlab).normal.angle(to: w.slab.normal))
+        func run(perView: Bool, pixels: Double) throws -> (lockAt: Double?, followedAt: Double?, lockErrAtFollow: Double, lockFollowedAt: Double?, state: TrackerState) {
+            let w = World(slab: World.slabAt(Vec3(0, 0.06, -0.8), tilt: 6, heading: 70))
+            let det = BiasedDetector(w, biasedCalls: 8, side: 0, pixels: pixels)
+            det.reportsNoise = true
+            var s = TrackerSettings(); s.recheckInterval = 0.3; s.lockKeepsNewestPerView = perView
+            let tr = SlabTracker(settings: s, detector: det)
+            let v = w.view(from: Vec3(0, 0.75, 0), at: w.slab.center)
+            var t = 0.0, firstCorrect: Double? = nil, followedAt: Double? = nil, lockAt: Double? = nil, lockFollowedAt: Double? = nil
+            var lockErrAtFollow = 0.0
+            while det.calls < 18 && t < 10 {
+                det.truth.currentView = v
+                let o = tr.process(TrackerFrame(timestamp: t, view: v, frame: blank))
+                if o.state == .locked && lockAt == nil { lockAt = t }
+                if det.calls == 9 && firstCorrect == nil { firstCorrect = t }
+                if let fc = firstCorrect, followedAt == nil, let n = tr.settledNormal, Units.degrees(n.angle(to: w.slab.normal)) < 0.5 {
+                    followedAt = t - fc
+                    lockErrAtFollow = Units.degrees(try XCTUnwrap(tr.imageSlab).normal.angle(to: w.slab.normal))
+                }
+                if let fc = firstCorrect, lockFollowedAt == nil, let l = tr.imageSlab, Units.degrees(l.normal.angle(to: w.slab.normal)) < 0.5 {
+                    lockFollowedAt = t - fc
+                }
+                t += 0.05
             }
-            t += 0.05
+            return (lockAt, followedAt, lockErrAtFollow, lockFollowedAt, tr.state)
         }
-        print(String(format: "HONEST biased-then-correct: locked at %.2f s; honest within 0.5 deg %.2f s after the first correct detection; the lock then %.2f deg off",
-                     lockAt ?? -1, followedAt ?? -1, lockErrAtFollow))
-        XCTAssertNotNil(lockAt, "the lock still forms")
-        XCTAssertNotNil(followedAt)
-        XCTAssertLessThanOrEqual(followedAt ?? 99, 1.0)
-        XCTAssertEqual(tr.state, .locked)
+        // (the detector reports its sides' noise, 0.35 px, as the app's does) 2 px: the correct re-checks disagree with the
+        // lock and re-lock it; 1.5 px: they agree with it and join its history, where the biased ones stay unless they age
+        // out (beyond the detections' own noise they do)
+        for (pixels, perView) in [(2.0, false), (2.0, true), (1.5, false), (1.5, true)] {
+            let r = try run(perView: perView, pixels: pixels)
+            print(String(format: "HONEST biased-then-correct, side %.1f px off (lock keeps %@): locked at %.2f s; honest within 0.5 deg %.2f s after the first "
+                         + "correct detection; the lock then %.2f deg off, within 0.5 deg after %.2f s", pixels,
+                         perView ? "a view's older detections while they agree" : "its newest 15",
+                         r.lockAt ?? -1, r.followedAt ?? -1, r.lockErrAtFollow, r.lockFollowedAt ?? -1))
+            XCTAssertNotNil(r.lockAt, "the lock still forms")
+            XCTAssertNotNil(r.followedAt)
+            XCTAssertLessThanOrEqual(r.followedAt ?? 99, 1.0)
+            XCTAssertEqual(r.state, .locked)
+            if perView {
+                // the app's lock (`lockKeepsNewestPerView`): the outline and the path follow too, within one to two seconds
+                // (measured: 1.05 s at 2 px, by a re-lock as before; 1.75 s at 1.5 px, where the lock that keeps its
+                // newest 15 stays 1.1 deg off to the end of the run)
+                XCTAssertNotNil(r.lockFollowedAt)
+                XCTAssertLessThanOrEqual(r.lockFollowedAt ?? 99, 2.0)
+            }
+        }
     }
 
     /// The app's readouts come from the settled normal (with `readoutsFromSettledNormal`), the outline from the lock; a

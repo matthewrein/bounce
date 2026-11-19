@@ -192,7 +192,8 @@ if markdown {
         print("\(r.kitId) (\(r.source)): lock rate \(v("lockRate")), first lock \(v("timeToLock")), "
               + "tilt error \(v("tiltErrorMedian")) median, \(v("tiltErrorP90")) p90 (bias \(v("tiltBias"))), "
               + "normal \(v("normalErrorMedian")), settled \(v("settledRate")) of locked frames from \(v("timeToSettle")) "
-              + "(tilt error shown \(v("settledTiltErrorMedian")) median, \(v("settledTiltErrorMax")) max), "
+              + "(tilt error shown \(v("settledTiltErrorMedian")) median, \(v("settledTiltErrorMax")) max; error in its sigma "
+              + "\(v("honestRatioMedian")) median, \(v("honestRatioP95")) p95), "
               + "corners \(v("cornerRms")), false slab \(v("slabFoundRate")), "
               + "ball \(v("ballDetectionRate")), landing \(v("landingError")); \(r.reboundToBakeLine)")
     }
