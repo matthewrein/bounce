@@ -159,7 +159,11 @@ final class PipelineTests: XCTestCase {
         // Every search finds the ball, so nearly every locked frame uses it. (Until n8 the ball's crop lost the space
         // above the slab whenever the demo camera, 0.6 m over the slab, had every point 1.2 m above the slab's corners
         // behind it: 2.6 s of misses, "BBBB................BBBBBBBBBBBBBBB", 38 of 71 frames, median error 6.6 mm.)
-        XCTAssertFalse(seq.contains("."), seq)
+        // The demo's ball is the owner's titanium lattice (`LatticeBall`) since track D, and the first search finds it
+        // from part of its outline: a partial find is reported from its second scan in a row
+        // (`BallLocator.Options.partialNeedsTwoScans`; with that off, every search reports it): ".BBBB...", 68 of 71
+        // frames, median error 5.8 mm.
+        XCTAssertFalse(seq.dropFirst().contains("."), seq)
         XCTAssertGreaterThan(Double(withBall), 0.9 * Double(frames))
         XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.01)
     }

@@ -12,6 +12,11 @@ public struct SyntheticScene {
     /// a held ball's centre (world), if any
     public var ball: Vec3?
     public var ballRadius: Double = 0.0175
+    /// How the ball is drawn: the owner's open titanium lattice (`LatticeBall`, the default), or a polished solid sphere
+    /// reflecting the sky and the floor (what the renders showed before the owner said what the ball is; kept for the
+    /// tests that test something other than the ball finder on scenes made with it).
+    public enum BallLook: Equatable { case lattice, polished }
+    public var ballLook: BallLook = .lattice
     /// light direction (toward the light), world
     public var light = Vec3(0.3, 1, 0.4).normalized
     /// supersampling per axis (2 gives smooth edges)
@@ -156,7 +161,9 @@ public struct SyntheticScene {
         var rgb = (0.55, 0.62, 0.58)
         let n = g.n
         // ball
-        if let b = ball {
+        if let b = ball, ballLook == .lattice {
+            if case let .solid(t, c)? = LatticeBall(radius: ballRadius).trace(o, d, center: b, light: light), t < bestT { bestT = t; rgb = c }
+        } else if let b = ball {
             let oc = o - b, bb = oc.dot(d), cc = oc.lengthSquared - ballRadius * ballRadius, disc = bb * bb - cc
             if disc > 0 {
                 let t = -bb - disc.squareRoot()
