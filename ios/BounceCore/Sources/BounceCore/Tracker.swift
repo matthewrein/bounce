@@ -2053,8 +2053,15 @@ public final class SlabTracker {
     }
 
     /// Whether a tap at p makes the slab detector run on its frame (`detectionDue(at:tap:)`, `detectorWillRun`): a slab
-    /// tap does; a ball tap or a dismissed ring does not.
-    public func tapSeedsSlab(_ p: Vec2, view: CameraView) -> Bool { tapKind(p, view: view) == .slab }
+    /// tap does, unless it is on the outline being confirmed (with tap hints: the search goes on as it was); a ball tap or
+    /// a dismissed ring does not.
+    public func tapSeedsSlab(_ p: Vec2, view: CameraView) -> Bool { tapKind(p, view: view) == .slab && !tapOnCandidate(p, view) }
+
+    /// With tap hints, while confirming: whether p lies on the outline being confirmed (a quarter of its size to spare).
+    private func tapOnCandidate(_ p: Vec2, _ v: CameraView) -> Bool {
+        guard settings.tapHints, state == .confirming, let e = SlabTracker.estimate(candidates), let q = project(e.pose, v) else { return false }
+        return SlabTracker.contains(q, p, slack: 0.25)
+    }
 
     private func tapMeaning(_ p: Vec2, _ v: CameraView) -> TapMeaning {
         guard settings.tapHints, state == .locked, let s = slab else { return .slab }
@@ -2083,7 +2090,10 @@ public final class SlabTracker {
         seedDepthGuessed = seedHeight(f) == nil
         // with tap hints and no height known, LiDAR's depth under the finger, when the frame has it
         if settings.tapHints, seedDepthGuessed, let w = seedFromDepth(tp, f) { seed = (w, 0); seedDepthGuessed = false }
-        lastCheck = -.infinity
+        // a tap on the outline being confirmed: the search goes on as it was, its schedule too (`tapSeedsSlab`); taking
+        // the next detection now instead would only measure other frames than without the tap
+        let onCandidate = tapOnCandidate(tp, f.view)
+        if !onCandidate { lastCheck = -.infinity }
         guard settings.tapHints else { events.append("tap"); tapResetPending = true; return }
         bump("tapSlab")
         switch state {
@@ -2094,7 +2104,7 @@ public final class SlabTracker {
             }
         case .confirming:
             slabTapTime = f.timestamp
-            if let e = SlabTracker.estimate(candidates), let q = project(e.pose, f.view), SlabTracker.contains(q, tp, slack: 0.25) {
+            if onCandidate {
                 bump("tapSlabOnCandidate"); events.append("tap-slab")
             } else {
                 events.append("tap"); tapResetPending = true
