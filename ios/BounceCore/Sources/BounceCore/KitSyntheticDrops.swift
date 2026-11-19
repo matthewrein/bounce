@@ -392,14 +392,17 @@ public final class KitSyntheticDrops {
         guard disc > 0 else { return c }
         // where the ray meets the ball: the lattice's first strut (none: it sees through), or the polished sphere
         var tb = -bb - disc.squareRoot(), lattice: (Double, Double, Double)? = nil
+        let n = sc.slab.normal, den = d.dot(n)
+        guard abs(den) > 1e-9 else { return c }
+        let tp = (sc.slab.center - o).dot(n) / den
+        // (the lattice is traced, again, only where the corner plane lies in front of the ball's far side: every strut a
+        // ray can meet lies before it leaves the ball's sphere)
+        guard tp > 1e-4, tp < (sc.ballLook == .lattice ? -bb + disc.squareRoot() : tb) else { return c }
         if sc.ballLook == .lattice {
             guard case let .solid(t, col)? = LatticeBall(radius: sc.ballRadius).trace(o, d, center: b, light: sc.light) else { return c }
             tb = t; lattice = col
         }
-        let n = sc.slab.normal, den = d.dot(n)
-        guard tb > 1e-4, abs(den) > 1e-9 else { return c }
-        let tp = (sc.slab.center - o).dot(n) / den
-        guard tp > 1e-4, tp < tb else { return c }
+        guard tb > 1e-4, tp < tb else { return c }
         let ph = sc.slab.toSlab(o + d * tp)
         guard abs(ph.x) <= sc.slab.halfU && abs(ph.y) <= sc.slab.halfV else { return c }
         let p = o + d * tb, q = sc.slab.toSlab(p)

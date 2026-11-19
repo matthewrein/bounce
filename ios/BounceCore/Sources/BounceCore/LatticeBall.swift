@@ -77,26 +77,22 @@ public struct LatticeBall: Equatable {
         guard t3 > 1e-4 else { return nil }
         // the inner sphere: where the ray leaves the near shell and enters the far one
         let ci = oc.lengthSquared - Ri * Ri, di = b * b - ci
-        // samples of the shell along the ray: its entry and exit of the near shell, and of the far one
-        var near: [Double] = [], far: [Double] = []
+        // samples of the shell along the ray: its entry and exit of the near shell, and of the far one (no arrays: this
+        // runs for every ray that meets the ball)
+        func strut(at t: Double, inside: Bool) -> Hit? {
+            guard t > 1e-4 else { return nil }
+            let p = o + d * t - center
+            let pt = pattern(p * (R / max(1e-9, p.length)))
+            return pt.strut ? .solid(t: t, rgb: shade(p, d, lean: pt.lean, light: light, inside: inside)) : nil
+        }
         if di > 0 {
-            let si = di.squareRoot()
-            near = [t0, (t0 + (-b - si)) / 2, -b - si]
-            far = [-b + si, ((-b + si) + t3) / 2, t3]
+            let si = di.squareRoot(), t1 = -b - si, t2 = -b + si
+            if let h = strut(at: t0, inside: false) ?? strut(at: (t0 + t1) / 2, inside: false) ?? strut(at: t1, inside: false) { return h }
+            // the inside of the far side of the shell, seen through a hole
+            if let h = strut(at: t2, inside: true) ?? strut(at: (t2 + t3) / 2, inside: true) ?? strut(at: t3, inside: true) { return h }
         } else {
             // grazing: the ray crosses the shell only, a longer path through it
-            for k in 0...6 { near.append(t0 + (t3 - t0) * Double(k) / 6) }
-        }
-        for t in near where t > 1e-4 {
-            let p = o + d * t - center
-            let pt = pattern(p * (R / max(1e-9, p.length)))
-            if pt.strut { return .solid(t: t, rgb: shade(p, d, lean: pt.lean, light: light, inside: false)) }
-        }
-        for t in far where t > 1e-4 {
-            let p = o + d * t - center
-            let pt = pattern(p * (R / max(1e-9, p.length)))
-            // the inside of the far side of the shell, seen through a hole
-            if pt.strut { return .solid(t: t, rgb: shade(p, d, lean: pt.lean, light: light, inside: true)) }
+            for k in 0...6 { if let h = strut(at: t0 + (t3 - t0) * Double(k) / 6, inside: false) { return h } }
         }
         return .through
     }
