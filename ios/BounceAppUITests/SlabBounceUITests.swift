@@ -120,6 +120,8 @@ final class SlabBounceUITests: XCTestCase {
             let list = app.collectionViews.firstMatch.exists ? app.collectionViews.firstMatch : app.tables.firstMatch
             let target = list.exists ? list : app
             if i < 6 { target.swipeUp() } else { target.swipeDown() }
+            // let the list stop: a tap while it still coasts only stops the scroll (the row's link does not open)
+            Thread.sleep(forTimeInterval: 0.8)
         }
         return e
     }
@@ -530,6 +532,10 @@ final class SlabBounceUITests: XCTestCase {
         openDeveloper(app)
         reveal(app, "preflightRow")
         tap(app, "preflightRow")
+        // the row is the Developer screen's last: a tap that only stopped the list's scrolling is tried once more
+        if !element(app, "preflightRun").waitForExistence(timeout: 5), element(app, "preflightRow").exists {
+            element(app, "preflightRow").tap()
+        }
         XCTAssertTrue(element(app, "preflightRun").waitForExistence(timeout: 10), "no pre-flight screen")
         // nothing runs by itself
         Thread.sleep(forTimeInterval: 1.5)
