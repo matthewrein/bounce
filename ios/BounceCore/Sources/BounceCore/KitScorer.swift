@@ -111,8 +111,23 @@ public struct KitScorer {
         public var source = "kit"
         /// progress lines (kit and shot ids and numbers only)
         public var log: ((String) -> Void)? = nil
+        /// The slab position a shot was taken in, where kit.json has it wrong (the slab was moved without a new position,
+        /// or left where it was): shot id, or the start of shot ids (e.g. "s07" for both s07 shots), to a position id, or
+        /// `KitScorer.unmeasured` for a position with no true tilt (its shots report what they read, no error). The
+        /// longest matching key wins; shots not named keep kit.json's.
+        public var positions: [String: String] = [:]
         public init() {}
+
+        /// The position `positions` gives a shot, if any (a position id or `KitScorer.unmeasured`).
+        public func position(forShot id: String) -> String? {
+            if let p = positions[id] { return p }
+            let keys = positions.keys.filter { id.hasPrefix($0) && (id.count == $0.count || id[id.index(id.startIndex, offsetBy: $0.count)] == "-") }
+            return keys.max { $0.count < $1.count }.flatMap { positions[$0] }
+        }
     }
+
+    /// `Options.positions`' value for a slab position with no true tilt
+    public static let unmeasured = "unmeasured"
 
     public let kitFolder: URL
     public var options: Options
@@ -151,6 +166,17 @@ public struct KitScorer {
         b.options = BallLocator.Options.tracking(b.options)
         b.reset()
         return b
+    }
+
+    /// Parse "s07=p4,s08=unmeasured,..." (bounce-score --positions) into `Options.positions`; nil if malformed.
+    public static func parsePositions(_ spec: String) -> [String: String]? {
+        var out: [String: String] = [:]
+        for part in spec.split(separator: ",") {
+            let kv = part.split(separator: "=", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard kv.count == 2, !kv[0].isEmpty, !kv[1].isEmpty else { return nil }
+            out[kv[0]] = kv[1]
+        }
+        return out.isEmpty ? nil : out
     }
 
     /// Scores every video shot of the kit.
@@ -204,6 +230,9 @@ final class KitScoreRun {
         var ballHeldOver = false
         var ballDistanceError: Double? = nil
         var dropHeight: Double? = nil
+        /// the tilt was settled enough to show (`TrackerOutput.angleSettled`), and the settled normal (world) then
+        var settled = false
+        var settledNormal: Vec3? = nil
     }
 
     struct ShotRun {
@@ -230,6 +259,7 @@ final class KitScoreRun {
     var notes: [String] = []
     /// pooled values for the aggregates
     var tiltErrors: [Double] = [], normalErrors: [Double] = []
+    var settledTiltErrors: [Double] = [], settledNormalErrors: [Double] = []
 
     init(folder: URL, options: KitScorer.Options) { self.folder = folder; self.options = options }
 
@@ -264,6 +294,10 @@ final class KitScoreRun {
         appBallMinHeight = (probe as? BallLocator)?.options.minHeight
         if !hasBallLocator { notes.append("No ball finder in this build (AppDetectors.ball() is nil): the ball and bounce metrics are n/a.") }
         loadShots()
+        if !options.positions.isEmpty {
+            let named = shots.filter { $0.spec.isVideo }.compactMap { sh in options.position(forShot: sh.spec.id).map { "\(sh.spec.id) \($0)" } }
+            notes.append("Slab positions overridden (--positions): " + (named.isEmpty ? "none of the kit's shots matched" : named.joined(separator: ", ")) + ".")
+        }
 
         var scores: [KitShotScore] = []
         var perShotFrames: [String: [FrameResult]] = [:]
@@ -365,6 +399,7 @@ final class KitScoreRun {
                     }
                 }
                 if out.readouts?.dropFromBall == true { r.dropHeight = out.readouts?.dropHeight }
+                if out.angleSettled { r.settled = true; r.settledNormal = tracker.settledNormal }
             }
             if out.ballSearched {
                 r.ballSearched = true
@@ -425,10 +460,13 @@ final class KitScoreRun {
     // MARK: scoring a shot
 
     func scoreShot(_ sh: Shot) -> (KitShotScore, [FrameResult], [Double], [Double]) {
-        let posId = manifest.record(sh.spec.id)?.positionId
+        let override = options.position(forShot: sh.spec.id)
+        let unmeasured = override == KitScorer.unmeasured
+        let posId = unmeasured ? nil : (override ?? manifest.record(sh.spec.id)?.positionId)
         let position = posId.flatMap { manifest.position($0) }
         let truth = position?.groundTruth.flatMap { $0.isUsable ? $0 : nil }
-        var score = KitShotScore(shotId: sh.spec.id, step: sh.spec.step, positionId: posId, trueTiltDegrees: truth?.tiltDegrees)
+        var score = KitShotScore(shotId: sh.spec.id, step: sh.spec.step, positionId: unmeasured ? KitScorer.unmeasured : posId,
+                                 trueTiltDegrees: truth?.tiltDegrees)
         if let e = sh.loadError { score.error = e; log("\(kitId) \(sh.spec.id): not scored"); return (score, [], [], []) }
         guard !sh.frames.isEmpty else { score.error = "frames.jsonl has no frames"; return (score, [], [], []) }
         let c = cue(sh)
@@ -465,12 +503,13 @@ final class KitScoreRun {
         var tiltErr: [Double] = [], normalErr: [Double] = []
         if expect.slab != .forbidden {
             let reason: String?
-            if posId == nil { reason = "the shot belongs to no slab position (taken before the first flat-phone shot)" }
+            if unmeasured { reason = "the slab's position in this shot has no true tilt (--positions: unmeasured)" }
+            else if posId == nil { reason = "the shot belongs to no slab position (taken before the first flat-phone shot)" }
             else if truth == nil { reason = "no true tilt for \(posId!) (its flat-phone shot was skipped or failed)" }
             else if locked.isEmpty { reason = neverLocked }
             else { reason = nil }
             if let r = reason {
-                if expect.slab == .required || posId != nil {
+                if expect.slab == .required || posId != nil || unmeasured {
                     for id in ["tiltErrorMedian", "tiltErrorP90", "tiltBias"] { metrics.append(.na(id, r)) }
                 }
             } else if let tt = truth?.tiltDegrees {
@@ -491,6 +530,43 @@ final class KitScoreRun {
                     let r = n == nil ? (why ?? "no link") : neverLocked
                     metrics.append(.na("normalErrorMedian", r)); metrics.append(.na("normalErrorP90", r))
                 }
+            }
+        }
+
+        // the tilt as the app shows it: only once settled (`TrackerOutput.angleSettled`), from the settled normal
+        var settledErr: [Double] = [], settledNormalErr: [Double] = []
+        if expect.slab != .forbidden && (expect.slab == .required || posId != nil || unmeasured) {
+            let settled = locked.filter { $0.settled }
+            let up = -ARKitConvention.worldDown
+            let settledTilts = settled.compactMap { $0.settledNormal.map { Units.degrees($0.angle(to: up)) } }
+            if locked.isEmpty {
+                metrics.append(.na("settledRate", neverLocked))
+            } else {
+                metrics.append(KitMetric(id: "settledRate", value: Double(settled.count) / Double(locked.count), count: locked.count))
+                metrics.append(settled.first.map { KitMetric(id: "timeToSettle", value: $0.t - t0) } ?? .na("timeToSettle", "the tilt never settled"))
+            }
+            if unmeasured {
+                let reads = locked.compactMap { $0.tilt }
+                metrics.append(reads.isEmpty ? .na("tiltReading", neverLocked) : KitMetric(id: "tiltReading", value: KitStats.median(reads), count: reads.count))
+                metrics.append(settledTilts.isEmpty ? .na("settledTiltReading", locked.isEmpty ? neverLocked : "the tilt never settled")
+                                                    : KitMetric(id: "settledTiltReading", value: KitStats.median(settledTilts), count: settledTilts.count))
+            } else if let tt = truth?.tiltDegrees, !settledTilts.isEmpty {
+                settledErr = settledTilts.map { abs($0 - tt) }
+                metrics.append(KitMetric(id: "settledTiltErrorMedian", value: KitStats.median(settledErr), count: settledErr.count))
+                metrics.append(KitMetric(id: "settledTiltErrorMax", value: settledErr.max(), count: settledErr.count))
+                if let p = position {
+                    let (n, why) = trueNormalWorld(position: p, for: sh)
+                    if let n = n {
+                        settledNormalErr = settled.compactMap { $0.settledNormal.map { Units.degrees($0.angle(to: n)) } }
+                        metrics.append(KitMetric(id: "settledNormalErrorMedian", value: KitStats.median(settledNormalErr), count: settledNormalErr.count))
+                        metrics.append(KitMetric(id: "settledNormalErrorMax", value: settledNormalErr.max(), count: settledNormalErr.count))
+                    } else {
+                        metrics.append(.na("settledNormalErrorMedian", why ?? "no link")); metrics.append(.na("settledNormalErrorMax", why ?? "no link"))
+                    }
+                }
+            } else if truth != nil {
+                let r = locked.isEmpty ? neverLocked : "the tilt never settled"
+                for id in ["settledTiltErrorMedian", "settledTiltErrorMax"] { metrics.append(.na(id, r)) }
             }
         }
 
@@ -621,6 +697,7 @@ final class KitScoreRun {
         let lockText = locked.isEmpty ? "never locked" : String(format: "locked on %.0f%% of frames", 100 * Double(locked.count) / Double(max(1, res.count)))
         log("\(kitId) \(sh.spec.id): \(res.count) frames, \(lockText)")
         tiltErrors += tiltErr; normalErrors += normalErr
+        settledTiltErrors += settledErr; settledNormalErrors += settledNormalErr
         return (score, res, tiltErr, normalErr)
     }
 
@@ -768,6 +845,24 @@ final class KitScoreRun {
         } else {
             out.append(KitMetric(id: "normalErrorMedian", value: KitStats.median(normalErrors), count: normalErrors.count))
             out.append(KitMetric(id: "normalErrorP90", value: KitStats.percentile(normalErrors, 90), count: normalErrors.count))
+        }
+        // the tilt as shown: frames settled, of the locked frames of the slab shots; the error of the frames shown
+        let lockedFrames = ok.filter { $0.metric("settledRate")?.value != nil }.flatMap { (frames[$0.shotId] ?? []).filter { $0.state == .locked } }
+        out.append(lockedFrames.isEmpty ? .na("settledRate", "no slab shot locked")
+                                        : KitMetric(id: "settledRate", value: Double(lockedFrames.filter { $0.settled }.count) / Double(lockedFrames.count),
+                                                    count: lockedFrames.count))
+        out.append(medianOf("timeToSettle", fallback: "no slab shot settled"))
+        if settledTiltErrors.isEmpty {
+            for id in ["settledTiltErrorMedian", "settledTiltErrorMax"] { out.append(.na(id, "no settled frame with a true tilt")) }
+        } else {
+            out.append(KitMetric(id: "settledTiltErrorMedian", value: KitStats.median(settledTiltErrors), count: settledTiltErrors.count))
+            out.append(KitMetric(id: "settledTiltErrorMax", value: settledTiltErrors.max(), count: settledTiltErrors.count))
+        }
+        if settledNormalErrors.isEmpty {
+            for id in ["settledNormalErrorMedian", "settledNormalErrorMax"] { out.append(.na(id, "no settled frame with a true normal")) }
+        } else {
+            out.append(KitMetric(id: "settledNormalErrorMedian", value: KitStats.median(settledNormalErrors), count: settledNormalErrors.count))
+            out.append(KitMetric(id: "settledNormalErrorMax", value: settledNormalErrors.max(), count: settledNormalErrors.count))
         }
         out.append(medianOf("cornerRms", fallback: "no slab shot locked"))
         out.append(medianOf("slabSizeError", abs: true, fallback: "no slab shot locked"))

@@ -65,6 +65,14 @@ public struct KitMetric: Codable, Equatable {
         "tiltBias": Kind(title: "Tilt bias (tracker minus true)", unit: .degrees, direction: .towardZero, tolerance: 0.05),
         "normalErrorMedian": Kind(title: "Normal direction error, median", unit: .degrees, direction: .lower, tolerance: 0.1),
         "normalErrorP90": Kind(title: "Normal direction error, 90th percentile", unit: .degrees, direction: .lower, tolerance: 0.2),
+        "settledRate": Kind(title: "Locked frames with the tilt shown (settled)", unit: .share, direction: .info, tolerance: 0.05),
+        "timeToSettle": Kind(title: "Time to the tilt shown", unit: .seconds, direction: .lower, tolerance: 0.15),
+        "settledTiltErrorMedian": Kind(title: "Tilt error where shown, median", unit: .degrees, direction: .lower, tolerance: 0.05),
+        "settledTiltErrorMax": Kind(title: "Tilt error where shown, largest", unit: .degrees, direction: .lower, tolerance: 0.1),
+        "settledNormalErrorMedian": Kind(title: "Normal error where shown, median", unit: .degrees, direction: .lower, tolerance: 0.1),
+        "settledNormalErrorMax": Kind(title: "Normal error where shown, largest", unit: .degrees, direction: .lower, tolerance: 0.2),
+        "tiltReading": Kind(title: "Tilt read (position unmeasured), median", unit: .degrees, direction: .info, tolerance: 0.05),
+        "settledTiltReading": Kind(title: "Tilt shown (position unmeasured), median", unit: .degrees, direction: .info, tolerance: 0.05),
         "cornerRms": Kind(title: "Corner stability (RMS)", unit: .millimetres, direction: .lower, tolerance: 0.5),
         "slabSizeError": Kind(title: "Slab size error", unit: .millimetres, direction: .towardZero, tolerance: 1),
         "slabFoundRate": Kind(title: "Slab found where there is none", unit: .share, direction: .lower, tolerance: 0.01),
@@ -382,14 +390,22 @@ extension KitScoreReport {
         let slabShots = shots.filter { s in ["lockRate", "tiltErrorMedian", "slabFoundRate"].contains { s.metric($0) != nil } }
         if !slabShots.isEmpty {
             md.append("")
-            md.append("| Shot | Position | Frames | Lock rate | First lock | Tilt error (median / p90) | Normal error | Corners | Size | False slab |")
-            md.append("|---|---|---|---|---|---|---|---|---|---|")
+            md.append("| Shot | Position | Frames | Lock rate | First lock | Tilt error (median / p90) | Normal error | Corners | Size | False slab | Settled (shown, from, error med / max) |")
+            md.append("|---|---|---|---|---|---|---|---|---|---|---|")
             for s in slabShots {
                 func v(_ id: String) -> String { s.metric(id).map { $0.formatted } ?? "" }
                 let tilt = s.metric("tiltErrorMedian") == nil ? "" : "\(v("tiltErrorMedian")) / \(v("tiltErrorP90"))"
                 let falseSlab = s.metric("slabFoundRate") == nil ? "" : "\(v("slabFoundRate")) found, \(v("slabLockedRate")) locked"
+                var settled = ""
+                if s.metric("settledRate")?.value != nil {
+                    settled = v("settledRate") + (s.metric("timeToSettle")?.value != nil ? " from \(v("timeToSettle"))" : "")
+                    if s.metric("settledTiltErrorMedian")?.value != nil { settled += ", \(v("settledTiltErrorMedian")) / \(v("settledTiltErrorMax"))" }
+                    if s.metric("tiltReading")?.value != nil {
+                        settled += ", reads \(v("tiltReading"))" + (s.metric("settledTiltReading")?.value != nil ? " (shown \(v("settledTiltReading")))" : "")
+                    }
+                }
                 md.append("| \(s.shotId) | \(s.positionId ?? "-") | \(s.frames) | \(v("lockRate")) | \(v("timeToLock")) | \(tilt) | "
-                          + "\(v("normalErrorMedian")) | \(v("cornerRms")) | \(v("slabSizeError")) | \(falseSlab) |")
+                          + "\(v("normalErrorMedian")) | \(v("cornerRms")) | \(v("slabSizeError")) | \(falseSlab) | \(settled) |")
             }
         }
         let ballIds = ["ballDetectionRate", "ballFalsePositiveRate", "ballDistanceError", "dropHeightError", "landingError", "apexError", "rebound"]

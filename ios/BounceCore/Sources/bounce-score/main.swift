@@ -1,7 +1,7 @@
 // bounce-score: scores capture kits against their ground truth (ios/CaptureKit.md, "Scoring").
 //
 //   bounce-score <kit folder or a folder of kits> ... [--json out.json] [--markdown] [--compare old.json]
-//                [--fail-on-regression] [--measured]
+//                [--fail-on-regression] [--measured] [--positions s07=p4,s08=unmeasured,...]
 //   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
 //   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--drops-floor] [--truth-ball]
 //                [--markdown]
@@ -25,6 +25,9 @@ options:
   --compare FILE         compare with an earlier --json file: every metric better / worse / same
   --fail-on-regression   exit with status 2 if any metric got worse than in --compare
   --measured             score with the kit's measured slab and ball instead of the app's own settings
+  --positions SPEC       the slab position of shots kit.json has wrong: SHOT=POSITION pairs, comma-separated; SHOT is a
+                         shot id or its start (s07 for both s07 shots), POSITION a position id (p4) or "unmeasured" (no
+                         true tilt: the shots report the tilt they read, and when it was shown, with no error)
   --synthetic            also score the synthetic kit (rendered here, known truth)
   --frames N             synthetic kit: frames per ordinary shot (default 12)
   --video h264|hevc      synthetic kit: encode its frames with ffmpeg and decode them as a kit's video
@@ -54,6 +57,7 @@ var markdown = false, failOnRegression = false, measured = false, synthetic = fa
 var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil, dropsFloor = false
 var frames = 12
 var maxTiltError: Double? = nil
+var positions: [String: String] = [:]
 var args = Array(CommandLine.arguments.dropFirst())
 func value(_ name: String) -> String {
     guard !args.isEmpty else { fail("\(name) needs a value\n\n" + usage) }
@@ -67,6 +71,9 @@ while !args.isEmpty {
     case "--compare": compareWith = value(a)
     case "--fail-on-regression": failOnRegression = true
     case "--measured": measured = true
+    case "--positions":
+        guard let p = KitScorer.parsePositions(value(a)) else { fail("--positions needs SHOT=POSITION pairs, e.g. s07=p4,s08=unmeasured") }
+        positions.merge(p) { _, b in b }
     case "--synthetic": synthetic = true
     case "--frames": guard let n = Int(value(a)), n >= 2 else { fail("--frames needs a number of at least 2") }; frames = n
     case "--video": let v = value(a); guard v == "h264" || v == "hevc" else { fail("--video is h264 or hevc") }; videoCodec = v
@@ -109,6 +116,7 @@ for (i, p) in paths.enumerated() {
     for k in kits(in: p, number: i + 1) {
         var o = KitScorer.Options()
         o.useMeasurements = measured
+        o.positions = positions
         o.log = log
         do { reports.append(try KitScorer(kitFolder: k, options: o).score()) } catch {
             fail("could not score a kit: \(KitScorer.describe(error))")
@@ -183,7 +191,9 @@ if markdown {
         func v(_ id: String) -> String { r.aggregate(id)?.formatted ?? "n/a" }
         print("\(r.kitId) (\(r.source)): lock rate \(v("lockRate")), first lock \(v("timeToLock")), "
               + "tilt error \(v("tiltErrorMedian")) median, \(v("tiltErrorP90")) p90 (bias \(v("tiltBias"))), "
-              + "normal \(v("normalErrorMedian")), corners \(v("cornerRms")), false slab \(v("slabFoundRate")), "
+              + "normal \(v("normalErrorMedian")), settled \(v("settledRate")) of locked frames from \(v("timeToSettle")) "
+              + "(tilt error shown \(v("settledTiltErrorMedian")) median, \(v("settledTiltErrorMax")) max), "
+              + "corners \(v("cornerRms")), false slab \(v("slabFoundRate")), "
               + "ball \(v("ballDetectionRate")), landing \(v("landingError")); \(r.reboundToBakeLine)")
     }
     if let c = comparison {
