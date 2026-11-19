@@ -681,6 +681,15 @@ final class SlabBounceUITests: XCTestCase {
         return json["counts"] as? [String: Int] ?? [:]
     }
 
+    /// Where an invisible marker is (window points): its element's middle, or else the "x,y" its text twin carries
+    /// (`<id>At`); nil when neither is there.
+    func markerPoint(_ app: XCUIApplication, _ id: String) -> CGPoint? {
+        let e = element(app, id)
+        if e.exists { return CGPoint(x: e.frame.midX, y: e.frame.midY) }
+        let xy = label(app, id + "At").split(separator: ",").compactMap { Double($0) }
+        return xy.count == 2 ? CGPoint(x: xy[0], y: xy[1]) : nil
+    }
+
     /// A tap on the screen at a point of the window (points).
     func tapAt(_ app: XCUIApplication, _ p: CGPoint) {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0)).withOffset(CGVector(dx: p.x, dy: p.y)).tap()
@@ -718,18 +727,19 @@ final class SlabBounceUITests: XCTestCase {
     func testTapARingToDismissItAndTapAgainToTakeItBack() throws {
         let app = launch(["demoBall": "0.30"])
         XCTAssertNotNil(waitUntil(40) { label(app, "status").contains("ball in view") }, "the ball never showed")
-        let ring = element(app, "ballRing")
-        XCTAssertTrue(ring.waitForExistence(timeout: 5), "no ball ring marker")
-        let at = CGPoint(x: ring.frame.midX, y: ring.frame.midY)
+        var ringAt: CGPoint? = nil
+        _ = waitUntil(5) { ringAt = markerPoint(app, "ballRing"); return ringAt != nil }
+        guard let at = ringAt else { XCTFail("no ball ring marker"); return }
         tapAt(app, at)
         let gone = waitUntil(3) { !label(app, "status").contains("ball in view") }
         XCTAssertNotNil(gone, "the dismissed ring stayed; status \(label(app, "status"))")
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertFalse(label(app, "status").contains("ball in view"), "the dismissed ball came back: \(label(app, "status"))")
         screenshot(app, "dismissed")
-        let spot = element(app, "dismissedSpot")
-        XCTAssertTrue(spot.waitForExistence(timeout: 3), "no dismissed spot marker")
-        tapAt(app, CGPoint(x: spot.frame.midX, y: spot.frame.midY))
+        var spotAt: CGPoint? = nil
+        _ = waitUntil(3) { spotAt = markerPoint(app, "dismissedSpot"); return spotAt != nil }
+        guard let sp = spotAt else { XCTFail("no dismissed spot marker"); return }
+        tapAt(app, sp)
         let back = waitUntil(8) { label(app, "status").contains("ball in view") }
         screenshot(app, "taken back")
         let c = try counts(app)

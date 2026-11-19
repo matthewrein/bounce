@@ -88,6 +88,13 @@ public struct SlabFinder {
         /// noise at the tapped point above it (`tapNoiseFloor`: the patch's own texture, as the region step measures it).
         public var tapTighter: Double = 0.7
         public var tapNoiseFloor: Double = 3
+        /// A tapped growth passes the sweep's screens that do not depend on the light (smooth like cement, the black base
+        /// beside a side: both measured against the region's own brightness), so a stray tap on the floor (floorboards, a
+        /// play mat's printed roads) does not grow a slab the search itself would not take. The sweep's third screen, a
+        /// clear edge on every side (`minSideEdge` grey levels), is left to the shape checks and the box model's edge step:
+        /// edge steps shrink with the light, and in a dim room it turns down the slab itself (`TapLightTests`). Off: the
+        /// tapped point is trusted, base not required (n11).
+        public var tapScreens = false
         /// move the sides to the top face's edges with the box model (off: the web app's plain outline)
         public var useBoxModel: Bool = true
         /// what an outline must satisfy to be the slab. With the box model the corners fit the slab's square within 1.5%
@@ -302,14 +309,15 @@ final class FinderRun {
 
     // MARK: entry points
 
-    /// A tapped point is trusted: grow from it, base not required. With `tapSearchesAround`, a tapped pixel that grows
-    /// nothing is followed by the smoothest other-coloured points within a fingertip of it (`tapSeeds`).
+    /// A tapped point: grow from it, base not required (n11: the tap is trusted), or with `tapScreens` through the sweep's
+    /// texture and base screens. With `tapSearchesAround`, a tapped pixel that grows nothing is followed by the smoothest other-coloured
+    /// points within a fingertip of it (`tapSeeds`).
     func tapped(_ s: Vec2) -> [SlabCandidate] {
         let p0 = Vec2(s.x - 0.5, s.y - 0.5)
-        if let c = detectSeed(p0, needBase: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
+        if let c = detectSeed(p0, needBase: opt.tapScreens, needEdge: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
         guard opt.tapSearchesAround else { return [] }
         for p in tapSeeds(around: p0) {
-            if let c = detectSeed(p, needBase: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
+            if let c = detectSeed(p, needBase: opt.tapScreens, needEdge: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
         }
         return []
     }
@@ -754,8 +762,9 @@ final class FinderRun {
     /// The regions are grown and screened first (cheap), then refined and checked clearest first until one passes: the
     /// same outline the web app's one-pass ladder keeps (the clearest that passes; the tighter on a tie), with usually
     /// one refinement instead of one per tolerance.
-    func detectSeed(_ p: Vec2, needBase: Bool, roi: ROI, markRegions: Bool, source: SlabCandidate.Source, align: [Vec2]? = nil) -> SlabCandidate? {
-        let minEdge = needBase ? opt.minSideEdge : -1
+    func detectSeed(_ p: Vec2, needBase: Bool, needEdge: Bool? = nil, roi: ROI, markRegions: Bool, source: SlabCandidate.Source,
+                    align: [Vec2]? = nil) -> SlabCandidate? {
+        let minEdge = (needEdge ?? needBase) ? opt.minSideEdge : -1
         guard roi.isUsable else { return nil }
         let (sx, sy) = seedPixel(p, roi: roi)
         let ref = patchMean(Vec2(Double(sx), Double(sy)))

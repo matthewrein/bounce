@@ -147,7 +147,8 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var viewGroups: Int?
     public var settledTiltDegrees: Double?
     /// The owner's taps (`TrackerSettings.tapHints`; how many of each kind: `counts`' "tap..." keys): how long a slab tap
-    /// took to lead to a lock and a ball tap to a ball found where it said (s), and what is in effect now; nil before the
+    /// took to lead to a lock and a ball tap to the first ball found in its box (s; the right ball or not: "tapBallFound"
+    /// counts those taps, "tapBallExpired" the taps whose box found none), and what is in effect now; nil before the
     /// first tap
     public var taps: Taps?
     public struct Taps: Codable, Equatable {

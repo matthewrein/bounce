@@ -10,11 +10,18 @@ import Foundation
 ///     ball, a tap where the ball is (the truth given for the shot: `Options.ballTruth`, a circle in video pixels on one
 ///     frame, held still in the world);
 ///   - `dismiss`: a tap on each ring the lane shows that is false (in a shot that expects no ball, any; else one away
-///     from the truth), up to three.
-/// Per lane: when it locked, how much of the shot it stayed locked, its lock's tilt at the end and how far that is from
-/// the untapped lane's (a tap must not move the lock), the ball scans (true, false, unclassified), when the first true
-/// ball came, and the false balls after the first dismissal. Kits are private: the report holds shot ids and numbers
-/// only.
+///     from the truth), up to three;
+///   - stray taps, where a finger lands by mistake: `floorSearch`, one on the floor beside the slab on the first frame
+///     with the phone's live outline (beside it by 1.1 times its size in the image); `floorConfirm`, the same on the
+///     lane's first confirming frame; `floorLocked`, once locked, 0.5 s on and then every 3 s (up to 4), one on the floor
+///     0.3 m from the lock (toward the phone, or to a side: the first such place the tracker takes for a slab tap);
+///     `slabOnLock`, the same times, one on the locked slab's middle; `ballOff`, the ball lane's tap one ball radius
+///     plus half the finger's slack to the right of the ball's middle.
+/// Per lane: when it locked, how much of the shot it stayed locked (and from the first stray tap on, against the untapped
+/// lane over the same frames), its lock's tilt at the end and how far that is from the untapped lane's (a tap must not
+/// move the lock), the ball scans (true, false, unclassified), the frames that showed a true or a false ball (and
+/// whether a true one was shown in the half second before a drop's release cue), when the first true ball came, and the
+/// false balls after the first dismissal or stray tap. Kits are private: the report holds shot ids and numbers only.
 public enum KitTapBench {
     /// Where the ball is in a shot: its image circle (video pixels) on one frame (`frame`: frames.jsonl's line index).
     public struct BallTruth: Codable, Equatable {
@@ -26,7 +33,9 @@ public enum KitTapBench {
     }
 
     public enum Lane: String, Codable, CaseIterable {
-        case none, slab, slabLate, ball, dismiss
+        case none, slab, slabLate, ball, dismiss, floorSearch, floorConfirm, floorLocked, slabOnLock, ballOff
+        /// the lanes that tap the ball where the truth puts it (run only on shots with a ball truth)
+        var needsBallTruth: Bool { self == .ball || self == .ballOff }
     }
 
     public struct Options {
@@ -44,6 +53,10 @@ public enum KitTapBench {
         public var makeBallLocator: () -> BallLocating? = { AppDetectors.ball() }
         public var settings: TrackerSettings = RecordingSettings().trackerSettings
         public var log: ((String) -> Void)? = nil
+        /// log every frame's tracker events per lane (to `log`), for tracing what a tap did
+        public var traceEvents = false
+        /// called with each shot's result as it is done (so a long run keeps what it has)
+        public var onShot: ((String, ShotResult) -> Void)? = nil
         public init() {}
         func wants(_ id: String) -> Bool { only.map { $0.contains { id == $0 || id.hasPrefix($0) } } ?? true }
     }
@@ -85,10 +98,24 @@ public enum KitTapBench {
         public var noneFalseAfterDismiss: Int? = nil
         /// the tracker's tap counters at the end
         public var counts: [String: Int] = [:]
+        /// frames on which a ball was shown that was true / false (classified as the scans are); whether a true one was
+        /// shown in the half second before a drop's release cue (nil: not a drop)
+        public var shownTrue = 0
+        public var shownFalse = 0
+        public var shownTrueBeforeCue: Bool? = nil
+        /// the stray taps made ("t:kind", s from the shot's first frame and what the tracker took each for)
+        public var strayTaps: [String] = []
+        /// from the first stray tap on: the share of frames locked, and the false balls found (this lane, and the untapped
+        /// lane over the same frames)
+        public var lockedAfterTap: Double? = nil
+        public var noneLockedAfterTap: Double? = nil
+        public var falseAfterTap: Int? = nil
+        public var noneFalseAfterTap: Int? = nil
         enum CodingKeys: String, CodingKey {
             case lane, slabTapAt, ballTapAt, dismissAt, timeToLock, lockRate, endTilt, endNormalVsNone, endCentreVsNoneMm,
                  lockTiltMedian, lockTiltError, settledShare, shownTiltError,
-                 ballScans, ballFound, ballTrue, ballFalse, ballUnclassified, timeToTrueBall, falseAfterDismiss, noneFalseAfterDismiss, counts
+                 ballScans, ballFound, ballTrue, ballFalse, ballUnclassified, timeToTrueBall, falseAfterDismiss, noneFalseAfterDismiss, counts,
+                 shownTrue, shownFalse, shownTrueBeforeCue, strayTaps, lockedAfterTap, noneLockedAfterTap, falseAfterTap, noneFalseAfterTap
         }
     }
 
@@ -107,6 +134,7 @@ public enum KitTapBench {
     public struct Report: Codable, Equatable {
         public var kitId: String
         public var shots: [ShotResult]
+        public init(kitId: String, shots: [ShotResult]) { self.kitId = kitId; self.shots = shots }
 
         public func json() throws -> Data {
             let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -117,21 +145,25 @@ public enum KitTapBench {
         public func markdown() -> String {
             func f(_ v: Double?, _ d: Int = 2) -> String { v.map { String(format: "%.\(d)f", $0) } ?? "-" }
             var out = ["### \(kitId): simulated taps", "",
-                       "| shot | luma | true tilt | lane | taps (s) | lock at (s) | locked | lock tilt (err) | shown: share, err | end vs none (deg / mm) | ball scans true/false/other | first true ball (s) | false after dismiss (none) | tap counts |",
-                       "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+                       "| shot | luma | true tilt | lane | taps (s) | lock at (s) | locked | after stray tap: locked (none), false (none) | lock tilt (err) | shown: share, err | end vs none (deg / mm) | ball scans true/false/other | ball shown true/false (before cue) | first true ball (s) | false after dismiss (none) | tap counts |",
+                       "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
             for s in shots {
                 for l in s.lanes {
                     var taps: [String] = []
                     if let t = l.slabTapAt { taps.append("slab \(f(t))") }
                     if let t = l.ballTapAt { taps.append("ball \(f(t))") }
                     if !l.dismissAt.isEmpty { taps.append("dismiss " + l.dismissAt.map { f($0) }.joined(separator: ",")) }
+                    if !l.strayTaps.isEmpty { taps.append("stray " + l.strayTaps.joined(separator: ",")) }
                     let counts = l.counts.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-                    out.append("| \(s.shotId) | \(f(s.meanLuma, 0)) | \(f(s.trueTilt)) | \(l.lane.rawValue) | \(taps.joined(separator: "; ")) | \(f(l.timeToLock)) | \(f(l.lockRate)) | "
+                    let after = l.lockedAfterTap == nil ? "-" : "\(f(l.lockedAfterTap)) (\(f(l.noneLockedAfterTap))), \(l.falseAfterTap.map(String.init) ?? "-") (\(l.noneFalseAfterTap.map(String.init) ?? "-"))"
+                    let cue = l.shownTrueBeforeCue.map { $0 ? " (yes)" : " (no)" } ?? ""
+                    out.append("| \(s.shotId) | \(f(s.meanLuma, 0)) | \(f(s.trueTilt)) | \(l.lane.rawValue) | \(taps.joined(separator: "; ")) | \(f(l.timeToLock)) | \(f(l.lockRate)) | \(after) | "
                                + "\(f(l.lockTiltMedian)) (\(f(l.lockTiltError))) | \(f(l.settledShare)), \(f(l.shownTiltError)) | "
                                + "\(f(l.endNormalVsNone)) / \(f(l.endCentreVsNoneMm, 0)) | \(l.ballScans): \(l.ballTrue)/\(l.ballFalse)/\(l.ballUnclassified) | "
+                               + "\(l.shownTrue)/\(l.shownFalse)\(cue) | "
                                + "\(f(l.timeToTrueBall)) | \(l.falseAfterDismiss.map(String.init) ?? "-") (\(l.noneFalseAfterDismiss.map(String.init) ?? "-")) | \(counts) |")
                 }
-                if let n = s.note { out.append("| \(s.shotId) | | | note | \(n) | | | | | | | | | |") }
+                if let n = s.note { out.append("| \(s.shotId) | | | note | \(n) | | | | | | | | | | | |") }
             }
             return out.joined(separator: "\n")
         }
@@ -151,6 +183,9 @@ public enum KitTapBench {
         var falseAt: [Double] = []
         /// the lock's tilt on each locked frame, and the shown (settled) tilt
         var lockTilts: [Double] = [], shownTilts: [Double] = []
+        /// stray taps made, when the next may be, when the first was; every frame's time and whether it was locked
+        var strayCount = 0, nextStray: Double? = nil, firstStray: Double? = nil
+        var lockedAt: [(Double, Bool)] = []
         init(_ lane: Lane, settings: TrackerSettings, options: Options) {
             self.lane = lane
             locator = options.makeBallLocator()
@@ -178,6 +213,7 @@ public enum KitTapBench {
                 shots.append(ShotResult(shotId: sh.spec.id, frames: sh.frames.count, meanLuma: nil, hasBallTruth: false, lanes: [],
                                         note: "not run: " + KitScorer.describe(error)))
             }
+            options.onShot?(m.kitId, shots[shots.count - 1])
         }
         return Report(kitId: m.kitId, shots: shots)
     }
@@ -189,7 +225,7 @@ public enum KitTapBench {
         let pipeline = KitFramePipeline(videoWidth: source.width, videoHeight: source.height, cameraFormat: m.cameraFormat)
         let settings = options.settings
         let lanes = options.lanes.compactMap { l -> LaneRun? in
-            if l == .ball && options.ballTruth[sh.spec.id] == nil { return nil }
+            if l.needsBallTruth && options.ballTruth[sh.spec.id] == nil { return nil }
             return LaneRun(l, settings: settings, options: options)
         }
         let t0 = sh.frames[0].time
@@ -245,6 +281,62 @@ public enum KitTapBench {
                        let p = vs.processing.project(world: b.center) {
                         tap = p; l.result.dismissAt.append(t - t0)
                     }
+                case .floorLocked, .slabOnLock:
+                    if locked, let lt = l.lockTime, l.strayCount < 4, t - lt >= 0.5, t >= (l.nextStray ?? 0), let s = l.last?.slab {
+                        var pick: Vec2? = nil
+                        if l.lane == .slabOnLock {
+                            pick = vs.processing.project(world: s.center).flatMap { vs.processing.intrinsics.contains($0, margin: 4) ? $0 : nil }
+                        } else {
+                            // the floor (the slab's top is 52 mm over it when level) 0.3 m from the lock's middle
+                            var fw = vs.processing.position - s.center; fw = Vec3(fw.x, 0, fw.z)
+                            if fw.length > 1e-6 {
+                                fw = fw / fw.length
+                                let side = Vec3(-fw.z, 0, fw.x)
+                                for dir in [fw, side, side * -1, fw * -1] {
+                                    let w = Vec3(s.center.x, s.center.y - 0.052, s.center.z) + dir * 0.30
+                                    guard let q = vs.processing.project(world: w), vs.processing.intrinsics.contains(q, margin: 8) else { continue }
+                                    if let o = l.last?.outline, SlabTracker.contains(o, q, slack: 0.6) { continue }
+                                    if l.tracker.tapKind(q, view: vs.processing) != .slab { continue }
+                                    pick = q; break
+                                }
+                            }
+                        }
+                        if let q = pick {
+                            tap = q; l.strayCount += 1; l.nextStray = t + 3
+                            if l.firstStray == nil { l.firstStray = t }
+                            l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
+                        }
+                    }
+                case .floorSearch, .floorConfirm:
+                    let when = l.lane == .floorSearch || l.last?.state == .confirming
+                    if l.strayCount == 0, !locked, when, let live = f.live?.cornerPoints {
+                        let pq = live.compactMap(toProcessing)
+                        if pq.count == 4 {
+                            let mid = pq.reduce(Vec2.zero) { $0 + $1 } / 4
+                            let xs = pq.map { $0.x }, ys = pq.map { $0.y }
+                            let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+                            for off in [Vec2(0, 1.1 * h + 10), Vec2(1.1 * w + 10, 0), Vec2(-1.1 * w - 10, 0), Vec2(0, -1.1 * h - 10)] {
+                                let q = mid + off
+                                guard vs.processing.intrinsics.contains(q, margin: 8), !SlabTracker.contains(pq, q, slack: 0.6) else { continue }
+                                tap = q; l.strayCount = 1; l.firstStray = t
+                                l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
+                                break
+                            }
+                        }
+                    }
+                case .ballOff:
+                    // the ball lane's tap, a fingertip off the ball's middle
+                    let shown = l.last?.ball.flatMap { classify($0.center, vs.video, t) } == true
+                    if !l.ballTapped, locked, !shown, let lt = l.lockTime, t - lt >= options.ballTapDelay, cue.map({ t < $0 - 0.3 }) ?? true,
+                       let tb = trueBall, let p = vs.processing.project(world: tb),
+                       let r = Bounce.imageRadius(ballCenter: vs.processing.toCamera(tb), intrinsics: vs.processing.intrinsics, ball: settings.ball) {
+                        let K = vs.processing.intrinsics
+                        let q = p + Vec2(r + 0.5 * TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height), 0)
+                        if K.contains(q, margin: 2) {
+                            tap = q; l.ballTapped = true; l.result.ballTapAt = t - t0
+                            l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
+                        }
+                    }
                 }
                 let depth: () -> (DepthMap, CameraIntrinsics)? = {
                     guard let u = f.depthURL(shotFolder: sh.folder), let d = try? Data(contentsOf: u), let k = try? KitDepth(data: d),
@@ -254,6 +346,10 @@ public enum KitTapBench {
                 guard let pf = pipeline.frame(image: img, kitFrame: f, tracker: l.tracker, depth: depth, tap: tap) else { continue }
                 let out = l.tracker.process(pf.tracker)
                 l.last = out
+                if options.traceEvents, !out.events.isEmpty || tap != nil {
+                    options.log?(String(format: "trace %@ %@ t=%.2f %@ seed=%@ ", sh.spec.id, l.lane.rawValue, t - t0, "\(out.state)",
+                                        l.tracker.seedPoint != nil ? "y" : "n") + out.events.joined(separator: ","))
+                }
                 if out.state == .locked {
                     if l.lockTime == nil { l.lockTime = t; l.result.timeToLock = t - t0 }
                     if let s = out.slab {
@@ -264,6 +360,16 @@ public enum KitTapBench {
                     if out.angleSettled, let r = out.readouts { l.shownTilts.append(r.tiltDegrees) }
                 }
                 if t - t0 >= 1 { l.lateFrames += 1; if out.state == .locked { l.lateLocked += 1 } }
+                l.lockedAt.append((t, out.state == .locked))
+                if let b = out.ball {
+                    switch classify(b.center, pf.video, t) {
+                    case .some(true):
+                        l.result.shownTrue += 1
+                        if let c = cue, t >= c - 0.6 { l.result.shownTrueBeforeCue = true }
+                    case .some(false): l.result.shownFalse += 1
+                    case .none: break
+                    }
+                }
                 if out.ballSearched {
                     l.result.ballScans += 1
                     let heldOver = out.ball != nil && ((l.locator as? BallLocator)?.current?.missedUpdates ?? 0) > 0
@@ -305,6 +411,17 @@ public enum KitTapBench {
             }
             if let n = none, l.lane != .none, let a = l.result.endCentre, let b = n.result.endCentre {
                 l.result.endCentreVsNoneMm = a.distance(to: b) * 1000
+            }
+            if cue != nil, l.result.shownTrueBeforeCue == nil { l.result.shownTrueBeforeCue = false }
+            if let fs = l.firstStray {
+                let a = l.lockedAt.filter { $0.0 >= fs }
+                if !a.isEmpty { l.result.lockedAfterTap = Double(a.filter { $0.1 }.count) / Double(a.count) }
+                if let n = none {
+                    let b = n.lockedAt.filter { $0.0 >= fs }
+                    if !b.isEmpty { l.result.noneLockedAfterTap = Double(b.filter { $0.1 }.count) / Double(b.count) }
+                    l.result.noneFalseAfterTap = n.falseAt.filter { $0 >= fs }.count
+                }
+                l.result.falseAfterTap = l.falseAt.filter { $0 >= fs }.count
             }
             if let d0 = l.result.dismissAt.first {
                 let from = t0 + d0

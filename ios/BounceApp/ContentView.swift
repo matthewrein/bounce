@@ -47,6 +47,24 @@ struct ContentView: View {
                                 .accessibilityLabel("Dismissed ball")
                                 .accessibilityIdentifier("dismissedSpot")
                         }
+                        // the same places as text ("x,y", view points), which the UI tests can read whatever the
+                        // accessibility tree does with a nearly transparent shape
+                        if let b = model.overlay.ball {
+                            Text(String(format: "%.0f,%.0f", Double(b.x), Double(b.y)))
+                                .font(.system(size: 2))
+                                .opacity(0.02)
+                                .position(b)
+                                .allowsHitTesting(false)
+                                .accessibilityIdentifier("ballRingAt")
+                        }
+                        if let p = model.overlay.dismissed.first {
+                            Text(String(format: "%.0f,%.0f", Double(p.x), Double(p.y)))
+                                .font(.system(size: 2))
+                                .opacity(0.02)
+                                .position(p)
+                                .allowsHitTesting(false)
+                                .accessibilityIdentifier("dismissedSpotAt")
+                        }
                         if let m = model.overlay.tapMark {
                             Color.white.opacity(0.001)
                                 .frame(width: 2 * m.radius, height: 2 * m.radius)

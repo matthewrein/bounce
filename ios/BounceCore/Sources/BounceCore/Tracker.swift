@@ -22,9 +22,9 @@ public protocol SlabDetecting {
     /// The tracker's settings, at the start and whenever they change: the ones for the detector's own work
     /// (`TrackerSettings.maxSweepRegions`, `sweepSkipsFinds`, `sweepSameOutlinePixels`, `tapHints`). Default: none used.
     func apply(_ settings: TrackerSettings)
-    /// Look for a slab grown from a tapped point (pixels of `frame`) while the tracker follows a lock elsewhere
-    /// (`TrackerSettings.tapHints`), without changing what the detector keeps for the outline it follows. Default: the
-    /// plain `detect` with the seed.
+    /// Look for a slab grown from a tapped point (pixels of `frame`; `TrackerSettings.tapHints`: while the tracker follows
+    /// a lock elsewhere, or where a search found nothing under the finger), without changing what the detector keeps for
+    /// the outline it follows. Default: the plain `detect` with the seed.
     func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline]
 }
 
@@ -320,21 +320,23 @@ public struct TrackerSettings: Equatable {
     /// the search over (n11). On (the app's, `RecordingSettings.trackerSettings`): while the slab is locked, a tap on the
     /// ball's ring dismisses it (`TrackerTapKind.dismissBall`: dropped at once, its spot passed over), a tap where a ball
     /// held over the slab could be looks for the ball there first (`ball`), and any other tap looks for a slab there
-    /// without giving the lock up unless a slab that is not the lock is found there (`slab`). While it is not locked, a
-    /// tap on the outline being confirmed keeps it; any other starts the search over there (as before). A tapped search
-    /// takes the whole view's search's outlines under the finger, and only where it has none grows the slab from the
-    /// tapped point (and the points around it, `SlabFinder.Options.tapSearchesAround`).
+    /// without giving the lock up unless another slab is found there twice in a row (`slab`). While it is not locked, the
+    /// search's outlines under the finger come first, and a candidate being confirmed is given up for one there only when
+    /// it is found twice; only where the search has no outline at all is the slab grown from the tapped point (and the
+    /// points around it, `SlabFinder.Options.tapSearchesAround`), through the search's own light-independent screens
+    /// (`tapScreens`). A slab tap never moves the detections' schedule, and lasts `tapSlabFirstSeconds` unless what is
+    /// being confirmed lies under the finger.
     public var tapHints = false
     /// how far from the finger a tap still counts: this share of the processing frame's shorter side (about a fingertip)
     public var tapSlackFraction: Double = 0.05
-    /// a ball tap looks there first for this long (s), or until a ball is found there
+    /// a ball tap looks there first for this long (s); a ball found there keeps it on that ball (`TapHints.recentred`)
+    /// until this long passes without one found there
     public var tapBallSeconds: Double = 2
     /// a dismissed ring's spot is passed over for this long (s); at most this many spots are kept (the oldest goes first)
     public var tapDismissSeconds: Double = 20
     public var tapDismissMax: Int = 4
-    /// A tapped search looks only under the finger for this long (s of normal tracking): then what the whole view's search
-    /// finds elsewhere counts again, the tapped place still first (a tap on something that is not the slab costs at most
-    /// this, not the seed's whole `seedTimeout`).
+    /// A slab tap lasts this long (s of normal tracking), unless the candidate being confirmed lies under the finger (then
+    /// until the lock, at most `seedTimeout`).
     public var tapSlabFirstSeconds: Double = 1
 
     // LiDAR.
@@ -637,12 +639,14 @@ public final class SlabTracker {
     public private(set) var longSideWorld: Vec3?
     /// where a tap said to look (world), until it locks or times out
     public var seedPoint: Vec3? { seed?.world }
-    /// a ball tap: where along the tapped line of sight a ball is looked for first, until one is found there or it
-    /// expires (`TrackerSettings.tapBallSeconds`); nil: none (`TrackerSettings.tapHints`)
+    /// a ball tap: where along the tapped line of sight a ball is looked for first (once one is found there, along the
+    /// line through it), until `TrackerSettings.tapBallSeconds` pass without a ball found there; nil: none
+    /// (`TrackerSettings.tapHints`)
     public private(set) var ballHint: BallTapHint?
     /// the spots of dismissed rings (world), oldest first, until they expire or the lock changes
     public private(set) var dismissedSpots: [DismissedBallSpot] = []
-    /// how long a slab tap took to lead to a lock, and a ball tap to a ball found where it said (s), for diagnostics
+    /// how long a slab tap took to lead to a lock, and a ball tap to the first ball found in its box (s; the right ball
+    /// or not), for diagnostics
     public private(set) var tapSlabLockSeconds = RunningStats()
     public private(set) var tapBallFoundSeconds = RunningStats()
     /// after a world-frame discontinuity, until the lock is seen again where it should be
@@ -694,6 +698,9 @@ public final class SlabTracker {
         var ownNormalCov: Mat3? = nil
         /// the side profile the detector has learned (`DetectedOutline.faceDrop`, `sideRun`), if any
         var profile: (faceDrop: Double, sideRun: Double)? = nil
+        /// grown from a slab tap (`SlabDetecting.probe`), not found by the search itself: it may confirm and lock the slab,
+        /// but the tilt's honest estimate leaves it out (`honestRestart`)
+        var fromTap = false
         var pose: SlabPose { est.pose }
         mutating func swapSides() { if let a = alt { alt = est; est = a } }
     }
@@ -716,7 +723,8 @@ public final class SlabTracker {
     private var implausible = 0                            // re-locks held back as implausible since the last one
     private var noiseSamples: [Double] = []                // re-checks' squared distances from the lock (see cornerNoiseEstimate)
     private var lastCheck = -Double.infinity, lastGood = -Double.infinity, lastBall = -Double.infinity, lastBallSeen = -Double.infinity
-    /// when the detector last ran (never reset: `minDetectionGap` counts from it whatever happened since)
+    /// when the detector last ran (never reset: `minDetectionGap` counts from it whatever happened since); with tap hints a
+    /// tap's own look on its frame is not counted, so it leaves the schedule as it was
     private var lastDetectionRun = -Double.infinity
     /// the processing frame's intrinsics on the last frame (a change of its size is a discontinuity)
     private var lastProcessing: CameraIntrinsics?
@@ -736,6 +744,14 @@ public final class SlabTracker {
     /// height): as the phone moves it drifts off the tapped thing, so with tap hints it lasts `tapSlabFirstSeconds`
     private var seedDepthGuessed = false
     private var tapResetPending = false
+    /// With tap hints, while a slab tap lasts: the outlines under the finger that disagree with the candidate being
+    /// confirmed, agreeing with each other (`tapChallenge`); and while locked, the probes' finds of another slab under the
+    /// finger, in a row (`probeTappedSlab`). `tapSwitchFinds` of them give up what the tracker has.
+    private var tapChallengers: [Measurement] = []
+    private var probeHits: [Measurement] = []
+    /// how many finds under the finger in a row, agreeing with each other and not with the candidate being confirmed (or
+    /// the lock), a slab tap needs to give that up: one outline grown on the floor that passes the checks is not enough
+    static let tapSwitchFinds = 2
     /// when the slab tap that has not led to a lock yet was made, and when the ball tap
     private var slabTapTime: Double?
     private var ballTapTime: Double?
@@ -840,7 +856,7 @@ public final class SlabTracker {
     public func reset() {
         forget()
         emptySearches = nil; searchIdle = false
-        seed = nil; tapResetPending = false; noiseSamples = []
+        seed = nil; tapResetPending = false; noiseSamples = []; endTapChallenge()
         bump("reset")
         pendingControls.append(TrackerControl(kind: .reset))
     }
@@ -1062,11 +1078,12 @@ public final class SlabTracker {
         // a tap: look for the slab there until it locks; with tracking limited, start over once it is normal again. With
         // tap hints, what is under the finger decides (`tapMeaning`): the ball's ring, the space over the locked slab
         var tapNote: TrackerTap? = nil
+        var tapLooks = false
         if let tp = f.tap {
             switch tapMeaning(tp, f.view) {
             case .slab:
                 tapNote = TrackerTap(kind: .slab, pixel: tp)
-                tapSlab(tp, f, &events)
+                tapLooks = tapSlab(tp, f, &events)
             case .ball(let h):
                 tapNote = TrackerTap(kind: .ball, pixel: tp)
                 tapBall(h, tp, f, &events)
@@ -1080,6 +1097,10 @@ public final class SlabTracker {
         }
 
         let due = detectionDue(at: t)
+        // with tap hints, a slab tap is looked at on its own frame (the app converts the image for it, `tapSeedsSlab`) and
+        // leaves the detections' schedule as it was: the search runs on the same frames as without the tap, so once the
+        // tap is over the tracker can be where it would have been
+        let tapNow = tapLooks && detectionDue(at: t, tap: true)
 
         // the processing frame changed size (the camera's video format changed: ARKit re-ran with another one): what is
         // kept in its pixels is rescaled or dropped, and the lock must be seen again (a discontinuity, below)
@@ -1118,8 +1139,7 @@ public final class SlabTracker {
         if f.trackingNormal, var s = seed {
             s.age += dt
             seed = s
-            let lasts = settings.tapHints && seedDepthGuessed ? min(settings.seedTimeout, settings.tapSlabFirstSeconds) : settings.seedTimeout
-            if s.age > lasts { seed = nil; slabTapTime = nil; events.append("seed-expired") }
+            if s.age > seedLifetime(f.view) { seed = nil; slabTapTime = nil; endTapChallenge(); probeHits = []; events.append("seed-expired") }
         }
 
         // LiDAR's view of the lock's top: for occlusion and re-lock checks, and folded in below
@@ -1130,12 +1150,19 @@ public final class SlabTracker {
         var chk: DepthCheck? = nil, chkFor: SlabPose? = nil
         if state == .locked, let s = imageSlab, f.depth != nil { chk = depthCheck(s); chkFor = s }
 
-        if due && f.trackingNormal {
-            // a slab tap away from the lock: look there first, keeping the lock unless another slab is there
+        if (due || tapNow) && f.trackingNormal {
+            // a slab tap away from the lock: look there first (on the tap's frame and the re-checks while it lasts),
+            // keeping the lock unless another slab is found there twice
             if state == .locked, settings.tapHints, seed != nil { probeTappedSlab(f, downCam, &events) }
-            lastCheck = t; lastDetectionRun = t
-            detectionKind = state == .locked ? .recheck : .search
-            detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
+            // (a look on the tap's own frame does not move the schedule: `lastCheck`, and the gap after a run, count from
+            // the scheduled runs only, so the next one comes on the frame it would have come on without the tap)
+            if due { lastDetectionRun = t }
+            if due || state != .locked {
+                if due { lastCheck = t }
+                lastCheck = t
+                detectionKind = state == .locked ? .recheck : .search
+                detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
+            }
         }
         // a tap, a discontinuity (reported, or noticed here) or a candidate searches at the usual rate again; so does a
         // camera that moved
@@ -1202,11 +1229,15 @@ public final class SlabTracker {
                     ballState = nil; bump("tapDismissPassed")
                 } else {
                     ballState = (f.view.toWorld(b.center), b.circle, b.radius); bump("ballFrames"); lastBallSeen = t
-                    // found where the owner tapped the ball: that search is done
-                    if ballHint != nil, let r = hints.region, r.contains(b.circle) {
-                        ballHint = nil; bump("tapBallFound"); out.events.append("tap-ball-found")
-                        if let t0 = ballTapTime { tapBallFoundSeconds.add(t - t0) }
-                        ballTapTime = nil
+                    // found where the owner tapped the ball (the right ball or not: the owner can dismiss its ring): the
+                    // search stays on it, re-centred on it, until `tapBallSeconds` pass without a find in its box
+                    if let h = ballHint, let r = hints.region, r.contains(b.circle) {
+                        if !h.found {
+                            bump("tapBallFound"); out.events.append("tap-ball-found")
+                            if let t0 = ballTapTime { tapBallFoundSeconds.add(t - t0) }
+                            ballTapTime = nil
+                        }
+                        ballHint = TapHints.recentred(h, on: f.view.toWorld(b.center), from: f.view.position)
                     }
                 }
             } else { ballState = nil }
@@ -1286,13 +1317,11 @@ public final class SlabTracker {
             frameDetail = provide(q)
             if frameDetail != nil { bump("slabCrops") }
         }
-        // A tapped search with tap hints: the whole view's search first, its outlines made as without a tap, keeping
-        // those under the finger; only where it has none, the slab grown from the tapped point (base and edge screens not
-        // needed: the tap says where it is; the shape checks still apply). Its outline can differ from the sweep's (it
-        // grows from another starting point and skips the sweep's screens), so it is used only where the sweep sees no
-        // slab there: confirming on one and then the other would only start over. Under the finger only for the first
-        // `tapSlabFirstSeconds`, then what the search finds elsewhere counts again. Without tap hints, n11's: the grown
-        // slab alone.
+        // A tapped search with tap hints: the whole view's search, its outlines made and counted as without a tap; those
+        // under the finger come first (`choose`). Only where the search has no outline at all, the slab grown from the
+        // tapped point (and around it), through the search's own light-independent screens (`SlabFinder.Options.
+        // tapScreens`): the tap fills in where the search has nothing, and never sets aside what it found elsewhere (a
+        // tap on the floor costs nothing then). Without tap hints, n11's: the grown slab alone.
         let tappedFirst = settings.tapHints && seedPx != nil
         found = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam,
                                 seed: tappedFirst ? nil : seedPx, near: near, detail: frameDetail?.image)
@@ -1300,25 +1329,24 @@ public final class SlabTracker {
         let reference = referenceNormal(t).map { f.view.directionToCamera($0) }
         weakRejections = 0
         var options = found.compactMap { measure($0, f, downCam, reference) }
-        if tappedFirst, let sp = seedPx {
-            let under = options.filter { SlabTracker.contains($0.quad, sp, slack: 0.25) }
-            if under.isEmpty {
-                let grown = detector.detect(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: sp, near: nil,
-                                            detail: nil)
-                bump("tapSlabGrown")
-                found += grown
-                let g = grown.compactMap { measure($0, f, downCam, reference) }.filter { SlabTracker.contains($0.quad, sp, slack: 0.25) }
-                options = !g.isEmpty || (seed?.age ?? 0) < settings.tapSlabFirstSeconds ? g : options
-            } else {
-                options = under
+        // how many the search had seen too nearly face-on, of how many (before any grown from the tap)
+        let sweptCount = found.count, sweptWeak = weakRejections
+        if tappedFirst, options.isEmpty, let sp = seedPx {
+            // (`probe`: the edge memory the search just left is kept)
+            let grown = detector.probe(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: sp)
+            bump("tapSlabGrown")
+            for o in grown {
+                guard var m = measure(o, f, downCam, reference), SlabTracker.contains(m.quad, sp, slack: 0.25) else { continue }
+                m.fromTap = true; options.append(m); found.append(o)
             }
+            if !options.isEmpty { bump("tapSlabGrownUsed") }
         }
         guard var chosen = choose(options, f, seedPx: seedPx) else {
             switch state {
             case .confirming:
                 // an outline seen too nearly face-on to pin the tilt is still the slab: keep what is being confirmed
-                if weakRejections > 0 && weakRejections == found.count { bump("confirmWeak"); break }
-                candidates = []; state = .searching; events.append("candidate-lost")
+                if sweptWeak > 0 && sweptWeak == sweptCount { bump("confirmWeak"); break }
+                candidates = []; state = .searching; events.append("candidate-lost"); endTapChallenge()
             case .locked:
                 miss(f, inView: inView, chk: chk, found: found, lockQ: lockQ, &events)
             case .searching: break
@@ -1348,8 +1376,9 @@ public final class SlabTracker {
             // the refined outline: the first that passes the shape checks and lies where the find was (not another object)
             let tol = max(2, 0.15 * ShapeCheck.meanSide(chosen.quad))
             let found0 = chosen.quad
-            if let m = raw.lazy.compactMap({ self.measure($0, f, downCam, reference, counting: false) })
+            if var m = raw.lazy.compactMap({ self.measure($0, f, downCam, reference, counting: false) })
                 .first(where: { SlabTracker.rmsDistance(SlabTracker.aligned($0.quad, to: found0), found0) <= tol }) {
+                m.fromTap = chosen.fromTap
                 chosen = m; edges = "refined"; bump("slabRefines")
             } else {
                 bump("slabRefineMisses")
@@ -1367,6 +1396,8 @@ public final class SlabTracker {
             candidates = [m]; state = .confirming; events.append("candidate")
             tryLock(t, &events)
         case .confirming:
+            // with tap hints, an outline under the finger that is not the candidate does not restart it at once
+            if settings.tapHints, let sp = seedPx, SlabTracker.contains(chosen.quad, sp, slack: 0.25), tapChallenge(chosen, f, &events) { break }
             confirm(applySideEvidence(chosen, &events), f, &events)
         case .locked:
             recheck(chosen, f, inView: inView, chk: chk, depthCheck: depthCheck, found: found, lockQ: lockQ, &events)
@@ -1428,14 +1459,18 @@ public final class SlabTracker {
     /// with the lock (or is its cut-face flip), else one near the lock, else the detector's best.
     private func choose(_ ms: [Measurement], _ f: TrackerFrame, seedPx: Vec2?) -> Measurement? {
         guard let first = ms.first else { return nil }
-        // with tap hints, of several outlines under the finger (the top, and the top with a side face or the base, say)
-        // the one that agrees with what is being confirmed, as without the tap (taking another would only start over)
-        if settings.tapHints, let sp = seedPx, state == .confirming, let ref = SlabTracker.estimate(candidates) {
+        if settings.tapHints, let sp = seedPx {
+            // with tap hints, the outlines under the finger come first: while searching, one of them; while confirming,
+            // one that agrees with what is being confirmed (as without the tap: taking another would only start over),
+            // else any that agrees, else one under the finger (`tapChallenge` decides on it), else as without the tap
             let under = ms.filter { SlabTracker.contains($0.quad, sp, slack: 0.25) }
-            let s = cornerNoiseEstimate
-            if let m = under.first(where: { agrees(ref, $0.est, noise: s) || cutFlip($0.quad, of: ref.pose, f, noise: s) != nil }) ?? under.first { return m }
-        }
-        if let sp = seedPx, let m = ms.first(where: { SlabTracker.contains($0.quad, sp, slack: 0.25) }) { return m }
+            if state == .searching, let m = under.first { return m }
+            if state == .confirming, let ref = SlabTracker.estimate(candidates) {
+                let s = cornerNoiseEstimate
+                func agreeing(_ m: Measurement) -> Bool { agrees(ref, m.est, noise: s) || cutFlip(m.quad, of: ref.pose, f, noise: s) != nil }
+                if let m = under.first(where: agreeing) ?? ms.first(where: agreeing) ?? under.first { return m }
+            }
+        } else if let sp = seedPx, let m = ms.first(where: { SlabTracker.contains($0.quad, sp, slack: 0.25) }) { return m }
         switch state {
         case .searching: return first
         case .confirming:
@@ -1509,6 +1544,7 @@ public final class SlabTracker {
     private func lock(_ t: Double, _ events: inout [String]) {
         hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
+        endTapChallenge(); probeHits = []
         hist = honestRestart(with: hist)
         events.append("locked"); bump("locks")
         if let t0 = slabTapTime { tapSlabLockSeconds.add(t - t0); bump("tapSlabLocks") }
@@ -1731,7 +1767,7 @@ public final class SlabTracker {
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
         honest.reset()
-        clearTapBall()
+        clearTapBall(); endTapChallenge(); probeHits = []
         events.append("lost"); bump("lost")
     }
 
@@ -1744,7 +1780,7 @@ public final class SlabTracker {
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"; learnedProfile = nil
         honest.reset()
-        clearTapBall()
+        clearTapBall(); endTapChallenge(); probeHits = []
     }
 
     /// The processing frame changed size (ARKit re-ran with another video format; the caller also treats it as a
@@ -1789,7 +1825,7 @@ public final class SlabTracker {
         bump("discontinuities")
         lastMeasured = nil
         seed = nil   // its world point is in the old frame
-        slabTapTime = nil
+        slabTapTime = nil; endTapChallenge(); probeHits = []
         clearTapBall()   // so are the ball tap's line and the dismissed spots
         switch state {
         case .locked:
@@ -1809,9 +1845,13 @@ public final class SlabTracker {
     /// count toward settling: taken in one moment from one view (or in the search, before the edge memory), they cannot
     /// show a transient, so the tilt shows only after `SettleSettings.settleRefreshes` re-checks of the lock agree.
     /// Returns them with their own normal covariance (`Measurement.ownNormalCov`).
+    /// Outlines grown from a slab tap (`Measurement.fromTap`) are left out of it: grown from another starting point than
+    /// the search's, their edges can differ from what the search and the re-checks see, and a view the phone does not
+    /// come back to would keep them in the shown tilt (the owner's second kit: a walk-around tapped one second in showed
+    /// its tilt 1.9 deg off, against 1.1 without the tap).
     private func honestRestart(with ms: [Measurement]) -> [Measurement] {
         honest.reset()
-        return ms.map { m in var x = m; x.ownNormalCov = honestAdd(m, counts: false); return x }
+        return ms.map { m in var x = m; if !m.fromTap { x.ownNormalCov = honestAdd(m, counts: false) }; return x }
     }
 
     /// Add one detection of the locked slab to the honest estimate (and refresh it); `counts`: a re-check, which may count
@@ -2053,14 +2093,32 @@ public final class SlabTracker {
     }
 
     /// Whether a tap at p makes the slab detector run on its frame (`detectionDue(at:tap:)`, `detectorWillRun`): a slab
-    /// tap does, unless it is on the outline being confirmed (with tap hints: the search goes on as it was); a ball tap or
-    /// a dismissed ring does not.
-    public func tapSeedsSlab(_ p: Vec2, view: CameraView) -> Bool { tapKind(p, view: view) == .slab && !tapOnCandidate(p, view) }
+    /// tap does, unless (with tap hints) it is on the outline being confirmed (the search goes on as it was) or on the
+    /// lock's outline (nothing to look for); a ball tap or a dismissed ring does not.
+    public func tapSeedsSlab(_ p: Vec2, view: CameraView) -> Bool {
+        tapKind(p, view: view) == .slab && !tapOnCandidate(p, view) && !tapOnLock(p, view)
+    }
 
     /// With tap hints, while confirming: whether p lies on the outline being confirmed (a quarter of its size to spare).
     private func tapOnCandidate(_ p: Vec2, _ v: CameraView) -> Bool {
         guard settings.tapHints, state == .confirming, let e = SlabTracker.estimate(candidates), let q = project(e.pose, v) else { return false }
         return SlabTracker.contains(q, p, slack: 0.25)
+    }
+
+    /// With tap hints, while locked: whether p lies on the lock's outline (a quarter of its size to spare).
+    private func tapOnLock(_ p: Vec2, _ v: CameraView) -> Bool {
+        guard settings.tapHints, state == .locked, let s = imageSlab, let q = project(s, v) else { return false }
+        return SlabTracker.contains(q, p, slack: 0.25)
+    }
+
+    /// How long the slab tap's seed lasts (s of normal tracking): n11's `seedTimeout`; with tap hints
+    /// `tapSlabFirstSeconds`, or `seedTimeout` while the candidate being confirmed lies under the finger (and the seed's
+    /// place was not guessed): a tap on something that is not the slab costs at most its first second.
+    private func seedLifetime(_ v: CameraView) -> Double {
+        guard settings.tapHints else { return settings.seedTimeout }
+        let first = min(settings.seedTimeout, settings.tapSlabFirstSeconds)
+        guard !seedDepthGuessed, state == .confirming, let sw = seed?.world, let p = v.project(world: sw), tapOnCandidate(p, v) else { return first }
+        return settings.seedTimeout
     }
 
     private func tapMeaning(_ p: Vec2, _ v: CameraView) -> TapMeaning {
@@ -2082,41 +2140,77 @@ public final class SlabTracker {
 
     /// A slab tap. Without tap hints, n11's: look there, starting the search over (once tracking is normal; event "tap",
     /// which also lets the camera's focus and exposure adjust again, `CaptureLockGate`). With them: while locked, a tap on
-    /// the lock's outline only re-checks it; one elsewhere looks there on the next detections (`probeTappedSlab`) and keeps
-    /// the lock (event "tap-slab") unless another slab is found there ("tap" then). While confirming, a tap on the outline
-    /// being confirmed keeps it and searches there ("tap-slab"); any other starts the search over there ("tap").
-    private func tapSlab(_ tp: Vec2, _ f: TrackerFrame, _ events: inout [String]) {
+    /// the lock's outline does nothing; one elsewhere looks there on its own frame and the re-checks while it lasts
+    /// (`probeTappedSlab`, returns true: probe on this frame), the re-checks' schedule left as it was, and keeps the lock
+    /// (event "tap-slab") unless another slab is found there twice in a row ("tap" then). While confirming, a tap on the
+    /// outline being confirmed keeps it and its schedule ("tap-slab"); one elsewhere keeps it too ("tap-slab"), the
+    /// outlines under the finger first from its own frame on, unless another slab is found there twice (`tapChallenge`:
+    /// "tap"). While searching, the search looks there first from the tap's frame on ("tap"). Returns whether to look on
+    /// this frame (a probe while locked, a search otherwise), which never moves the detections' schedule.
+    private func tapSlab(_ tp: Vec2, _ f: TrackerFrame, _ events: inout [String]) -> Bool {
         seed = (seedPoint(for: tp, f), 0)
         seedDepthGuessed = seedHeight(f) == nil
         // with tap hints and no height known, LiDAR's depth under the finger, when the frame has it
         if settings.tapHints, seedDepthGuessed, let w = seedFromDepth(tp, f) { seed = (w, 0); seedDepthGuessed = false }
-        // a tap on the outline being confirmed: the search goes on as it was, its schedule too (`tapSeedsSlab`); taking
-        // the next detection now instead would only measure other frames than without the tap
-        let onCandidate = tapOnCandidate(tp, f.view)
-        if !onCandidate { lastCheck = -.infinity }
-        guard settings.tapHints else { events.append("tap"); tapResetPending = true; return }
+        guard settings.tapHints else { lastCheck = -.infinity; events.append("tap"); tapResetPending = true; return false }
         bump("tapSlab")
+        // (with tap hints nothing here moves the detections' schedule: `process` looks on the tap's frame when this
+        // returns true)
         switch state {
         case .locked:
             events.append("tap-slab")
-            if let s = imageSlab, let q = project(s, f.view), SlabTracker.contains(q, tp, slack: 0.25) {
-                seed = nil; bump("tapSlabOnLock")
-            }
+            probeHits = []
+            if tapOnLock(tp, f.view) { seed = nil; bump("tapSlabOnLock"); return false }
+            return true
         case .confirming:
             slabTapTime = f.timestamp
-            if onCandidate {
-                bump("tapSlabOnCandidate"); events.append("tap-slab")
-            } else {
-                events.append("tap"); tapResetPending = true
+            events.append("tap-slab")
+            // a tap on the outline being confirmed: the search goes on as it was, its schedule too (`tapSeedsSlab`); taking
+            // the next detection now instead would only measure other frames than without the tap
+            if tapOnCandidate(tp, f.view) {
+                bump("tapSlabOnCandidate")
+                return false
             }
+            bump("tapSlabOffCandidate")
+            tapChallengers = []
+            return true
         case .searching:
+            // nothing to start over: the search looks under the finger from this frame on (event "tap" all the same: the
+            // camera's focus and exposure may adjust)
             slabTapTime = f.timestamp
-            events.append("tap"); tapResetPending = true
+            events.append("tap")
+            return true
         }
     }
 
-    /// A ball tap: look along the tapped line of sight first (`ballSearchHints`) for `tapBallSeconds`, at the usual
-    /// scan rate, starting with the next frame; a dismissed spot under the finger is taken back.
+    /// While confirming with a slab tap on, the outline chosen when it lies under the finger: one that agrees with the
+    /// candidate (or is its cut-face flip) confirms it as usual (returns false); another is kept aside, and
+    /// `tapSwitchFinds` of those that agree with each other start the confirmation over on them (event "tap"; the search
+    /// starts over there). Returns whether it took the outline.
+    private func tapChallenge(_ m: Measurement, _ f: TrackerFrame, _ events: inout [String]) -> Bool {
+        guard let ref = SlabTracker.estimate(candidates) else { return false }
+        let s = cornerNoiseEstimate
+        if agrees(ref, m.est, noise: s) || cutFlip(m.quad, of: ref.pose, f, noise: s) != nil { return false }
+        if let e = SlabTracker.estimate(tapChallengers), agrees(e, m.est, noise: s) { tapChallengers.append(m) } else { tapChallengers = [m] }
+        bump("tapSlabChallenges")
+        guard tapChallengers.count >= SlabTracker.tapSwitchFinds else { events.append("tap-slab-find"); return true }
+        candidates = tapChallengers
+        endTapChallenge()
+        lastMeasured = (m.pose.normal, f.timestamp)
+        bump("tapSlabSwitched"); bump("confirmRestarts"); events.append("tap"); events.append("candidate-restart")
+        tryLock(f.timestamp, &events)
+        return true
+    }
+
+    /// The outlines kept aside by `tapChallenge` go (the tap expired, the candidate was lost or locked, the search started
+    /// over).
+    private func endTapChallenge() {
+        tapChallengers = []
+    }
+
+    /// A ball tap: look along the tapped line of sight first (`ballSearchHints`) for `tapBallSeconds` (from the latest
+    /// ball found there), at the usual scan rate, starting with the next frame; a dismissed spot under the finger is taken
+    /// back.
     private func tapBall(_ h: BallTapHint, _ tp: Vec2, _ f: TrackerFrame, _ events: inout [String]) {
         ballHint = h; ballTapTime = f.timestamp
         bump("tapBall"); events.append("tap-ball")
@@ -2146,7 +2240,8 @@ public final class SlabTracker {
         if var h = ballHint {
             h.age += dt
             ballHint = h
-            if h.age > settings.tapBallSeconds { ballHint = nil; ballTapTime = nil; bump("tapBallExpired"); events.append("tap-ball-expired") }
+            // (counted apart: a tap whose box never found a ball, and one whose box lost what it found)
+            if h.age > settings.tapBallSeconds { ballHint = nil; ballTapTime = nil; bump(h.found ? "tapBallLost" : "tapBallExpired"); events.append("tap-ball-expired") }
         }
         guard !dismissedSpots.isEmpty else { return }
         let before = dismissedSpots.count
@@ -2172,24 +2267,40 @@ public final class SlabTracker {
         return h
     }
 
-    /// A slab tap while locked, away from the lock's outline: grow a slab from the tapped point (`SlabDetecting.probe`,
-    /// which leaves the edge memory of the lock's outline alone). If one that passes the shape checks lies under the
-    /// finger and is the lock (or its cut-face flip), the tap is done; if it is another slab, the search starts over on
-    /// it (the seed stays until it locks); if none is found there, the lock is kept and the next re-checks look again
-    /// until the seed times out.
+    /// A slab tap while locked, away from the lock's outline (its frame, and the re-checks while its seed lasts,
+    /// `tapSlabFirstSeconds`): grow a slab from the tapped point through the search's screens (`SlabDetecting.probe`, which
+    /// leaves the edge memory of the lock's outline alone). If one that passes the shape checks lies under the finger and
+    /// is the lock (or its cut-face flip), the tap is done. If it is another slab, and LiDAR (when the frame has depth)
+    /// sees a slab's top where it puts it, it is a find; `tapSwitchFinds` finds in a row that agree with each other give
+    /// the lock up and confirm them (event "tap": the search starts over there). Anything else keeps the lock: one outline
+    /// grown on the floor that passes the checks is not enough.
     private func probeTappedSlab(_ f: TrackerFrame, _ downCam: Vec3, _ events: inout [String]) {
         guard let sw = seed?.world, let sp = f.view.project(world: sw), f.view.intrinsics.contains(sp) else { return }
         bump("tapSlabProbes")
         let found = detector.probe(frame: f.frame, intrinsics: f.view.intrinsics, spec: settings.spec, down: downCam, seed: sp)
-        guard let m = found.lazy.compactMap({ self.measure($0, f, downCam, nil, counting: false) })
-                .first(where: { SlabTracker.contains($0.quad, sp, slack: 0.25) }) else { return }
+        guard var m = found.lazy.compactMap({ self.measure($0, f, downCam, nil, counting: false) })
+                .first(where: { SlabTracker.contains($0.quad, sp, slack: 0.25) }) else { probeHits = []; return }
         let s = cornerNoiseEstimate
         if let L = lockEstimate, agrees(L, m.est, noise: s) || cutFlip(m.quad, of: L.pose, f, noise: s) != nil {
-            seed = nil; bump("tapSlabIsLock"); events.append("tap-slab-is-lock")
+            seed = nil; probeHits = []; bump("tapSlabIsLock"); events.append("tap-slab-is-lock")
             return
         }
+        if let d = f.depth, let dk = f.depthIntrinsics {
+            guard let c = PlaneFit.checkSlabTop(depth: d, depthIntrinsics: dk, view: f.view, slab: m.pose, down: ARKitConvention.worldDown),
+                  depthUsable(c, m.pose, f, maxAngle: settings.depthMaxAngleDegrees) else {
+                probeHits = []; bump("tapSlabProbeDepthRejected")
+                return
+            }
+        }
+        m.fromTap = true
+        if let e = SlabTracker.estimate(probeHits), agrees(e, m.est, noise: s) { probeHits.append(m) } else { probeHits = [m] }
+        bump("tapSlabProbeFinds")
+        guard probeHits.count >= SlabTracker.tapSwitchFinds else { events.append("tap-slab-find"); return }
+        let hits = probeHits
         forget(); bump("reset"); bump("tapSlabElsewhere"); events.append("tap"); events.append("tap-slab-elsewhere")
+        candidates = hits; state = .confirming; lastMeasured = (m.pose.normal, f.timestamp); events.append("candidate")
         slabTapTime = f.timestamp
+        tryLock(f.timestamp, &events)
     }
 
     /// The tapped point in the world: where its ray meets the height of a slab on the floor (or of the current lock),

@@ -25,7 +25,10 @@ final class ReplayPhoneTests: XCTestCase {
     func standard() throws -> (folder: URL, run: AppLoopSim.Run) {
         if let s = ReplayPhoneTests.shared { return s }
         let folder = ReplayPhoneTests.sharedFolder.appendingPathComponent("s.bouncerec")
-        let s = (folder, try sim().run(recordingTo: folder))
+        var x = sim()
+        x.floorTapAt = 1.2
+        x.slabTapAt = 0
+        let s = (folder, try x.run(recordingTo: folder))
         ReplayPhoneTests.shared = s
         return s
     }
@@ -47,9 +50,14 @@ final class ReplayPhoneTests: XCTestCase {
         // the session exercised what it should
         let allEvents = phone.outputs.flatMap { $0.events }
         for e in ["locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
-        // the tap (on the locked slab: with the app's tap hints it looks for the ball there, "tap-ball"; n11 started the
-        // slab search over, "tap")
-        XCTAssertTrue(allEvents.contains { $0 == "tap" || $0.hasPrefix("tap-") }, "a tap in \(allEvents)")
+        // the taps: on the slab on the first frame (a slab tap: the search starts there, its place from LiDAR, "tap"), on
+        // the locked slab (with the app's tap hints it looks for the ball there, "tap-ball"; n11 started the slab search
+        // over, "tap"), and on the floor beside it (a slab tap: looked at, the lock kept, "tap-slab")
+        XCTAssertTrue(allEvents.contains("tap"), "a slab tap before the lock (the search starts over there) in \(allEvents)")
+        XCTAssertTrue(allEvents.contains("tap-ball"), "a ball tap in \(allEvents)")
+        XCTAssertTrue(allEvents.contains("tap-slab"), "a slab tap in \(allEvents)")
+        XCTAssertFalse(allEvents.contains("tap-slab-elsewhere"))
+        XCTAssertGreaterThan(phone.tracker.counts["tapSlabProbes"] ?? 0, 0, "looked at on the replayed frames too")
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .reset } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .settings && $0.settings?.launchRule == .dishNormal } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .worldDiscontinuity } == true })

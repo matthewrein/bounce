@@ -208,8 +208,15 @@ final class TapHintTests: XCTestCase {
         }
         XCTAssertNotNil(found)
         XCTAssertLessThanOrEqual(found ?? 9, 0.05, "on the next scan")
-        XCTAssertNil(tr.ballHint, "done once found")
-        XCTAssertEqual(tr.counts["tapBallFound"], 1)
+        // the search stays on the ball it found (the finder alone would rank the wrong one first again), re-centred on it
+        XCTAssertEqual(tr.ballHint?.found, true)
+        if let h = tr.ballHint { XCTAssertLessThan(Units.degrees(h.direction.angle(to: (real - v.position).normalized)), 0.5) }
+        for _ in 0..<Int(60 * (tr.settings.tapBallSeconds + 0.5)) {
+            let x = step(tr, det, balls, v, Double(k) / 60); k += 1
+            if let b = x.ball { XCTAssertLessThan(b.center.distance(to: real), 0.01, "kept on the tapped ball") }
+        }
+        XCTAssertNotNil(tr.ballHint, "still on it while it is found there")
+        XCTAssertEqual(tr.counts["tapBallFound"], 1, "a tap's box finding a ball counts once")
         // the hint the finder got: the tapped place, at the real ball's size
         let h = balls.given.first { $0.region != nil }!
         let r = Bounce.imageRadius(ballCenter: v.toCamera(real), intrinsics: v.intrinsics, ball: tr.settings.ball)!
@@ -320,30 +327,32 @@ final class TapHintTests: XCTestCase {
         }
     }
 
-    /// A tap on the floor beside the slab before it is found (nothing there): with tap hints the search looks only there
-    /// for `tapSlabFirstSeconds`, then the sweep's slab counts again; n11 held the search to the tapped pixel for the
-    /// seed's whole `seedTimeout`.
-    func testAStrayTapBeforeTheLockCostsAtMostTheFirstSecond() {
+    /// A tap on the floor beside the slab before it is found (nothing there): with tap hints the search goes on as without
+    /// the tap (its outlines elsewhere are never set aside, nothing is grown where it has some, and the tap does not move
+    /// the searches' schedule), so it locks when it would have; n11 held the search to the tapped pixel for the seed's
+    /// whole `seedTimeout`.
+    func testAStrayTapBeforeTheLockCostsNothing() {
         let w = World(slab: slab, lens: .processing)
         let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
         let stray = v.project(world: Vec3(slab.center.x - 0.4, 0, slab.center.z + 0.2))!
         XCTAssertFalse(SlabTracker.contains(w.corners(in: v), stray, slack: 0.25))
-        var lockedAt: [Bool: Double] = [:]
-        for hints in [false, true] {
+        func lockTime(hints: Bool, tap: Bool) -> Double? {
             let inner = SceneDetector(w, noise: 0.3, seed: 6)
             let det = SweepOnly(inner)
             let tr = SlabTracker(settings: settings(hints: hints), detector: det)
             for k in 0..<240 {
                 let t = Double(k) / 60
                 inner.currentView = v
-                _ = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, tap: k == 0 ? stray : nil))
-                if tr.state == .locked && lockedAt[hints] == nil { lockedAt[hints] = t }
+                // (on the first frame, whose search runs anyway: a tap's own search on a later frame is one more look)
+                _ = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, tap: tap && k == 0 ? stray : nil))
+                if tr.state == .locked { return t }
             }
+            return nil
         }
-        XCTAssertNil(lockedAt[false], "n11: nothing for the seed's \(TrackerSettings().seedTimeout) s")
-        let t = lockedAt[true] ?? 9
-        XCTAssertGreaterThanOrEqual(t, TrackerSettings().tapSlabFirstSeconds, "only under the finger at first")
-        XCTAssertLessThan(t, TrackerSettings().tapSlabFirstSeconds + 0.6, "then the slab the sweep finds")
+        XCTAssertNil(lockTime(hints: false, tap: true), "n11: nothing for the seed's \(TrackerSettings().seedTimeout) s")
+        let plain = lockTime(hints: true, tap: false), tapped = lockTime(hints: true, tap: true)
+        XCTAssertNotNil(plain)
+        XCTAssertEqual(tapped ?? 9, plain ?? -9, accuracy: 1e-9, "the stray tap changed nothing")
     }
 
     /// With no floor known yet (ARKit's plane) and nothing found, a slab tap takes its place from LiDAR's depth under the
@@ -387,6 +396,162 @@ final class TapHintTests: XCTestCase {
         XCTAssertEqual(tr.counts["tapSlabOnCandidate"], 1)
         while tr.state != .locked && k < 120 { step(tr, det, nil, v, Double(k) / 60); k += 1 }
         XCTAssertEqual(tr.state, .locked)
+    }
+
+    /// A tap on the floor while locked (nothing there): looked at on its own frame and the re-checks of its first second
+    /// only, the re-checks' schedule as without the tap, the lock kept, the camera's locks too (no "tap" event).
+    func testAFloorTapWhileLockedLooksForASecondAndKeepsTheSchedule() {
+        func run(tap: Bool) -> (rechecks: [Double], tr: SlabTracker, events: [String]) {
+            let (tr, det, v, k0) = lockedTracker()
+            var k = k0, rechecks: [Double] = [], events: [String] = []
+            let floor = v.project(world: Vec3(slab.center.x - 0.4, 0, slab.center.z + 0.2))!
+            XCTAssertEqual(tr.tapKind(floor, view: v), .slab)
+            for i in 0..<150 {
+                let o = step(tr, det, nil, v, Double(k) / 60, tap: tap && i == 10 ? floor : nil)
+                if o.detectionKind == .recheck { rechecks.append(Double(k) / 60) }
+                k += 1
+                events += o.events
+                XCTAssertEqual(o.state, .locked)
+            }
+            return (rechecks, tr, events)
+        }
+        let plain = run(tap: false), tapped = run(tap: true)
+        XCTAssertEqual(tapped.rechecks, plain.rechecks, "the re-checks' schedule as without the tap")
+        let probes = tapped.tr.counts["tapSlabProbes"] ?? 0
+        XCTAssertGreaterThan(probes, 0)
+        XCTAssertLessThanOrEqual(probes, 1 + Int((tapped.tr.settings.tapSlabFirstSeconds / tapped.tr.settings.recheckInterval).rounded(.up)),
+                                 "its frame and the re-checks of its first second")
+        XCTAssertNil(tapped.tr.seedPoint, "over after its first second")
+        XCTAssertTrue(tapped.events.contains("tap-slab"))
+        XCTAssertFalse(tapped.events.contains("tap"), "no new search: the camera's locks stay")
+        XCTAssertEqual(tapped.tr.counts["tapSlabElsewhere"] ?? 0, 0)
+    }
+
+    /// A detector whose tapped growth finds a slab-shaped thing under the finger on its first `finds` probes only (an
+    /// outline grown on the floor that passes the checks once, say).
+    final class ProbeFinds: SlabDetecting {
+        let inner: SceneDetector
+        let thing: SlabPose
+        var finds: Int
+        private(set) var probes = 0
+        init(_ d: SceneDetector, thing: SlabPose, finds: Int) { inner = d; self.thing = thing; self.finds = finds }
+        func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
+            inner.detect(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed, near: near)
+        }
+        func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] {
+            probes += 1
+            guard probes <= finds, let v = inner.currentView, let q = inner.outline(of: thing, in: v) else { return [] }
+            return [DetectedOutline(quad: q)]
+        }
+    }
+
+    /// While locked, one probe that finds another slab under the finger does not give the lock up; it takes
+    /// `SlabTracker.tapSwitchFinds` in a row (`testASlabTapAwayFromTheLockKeepsItUnlessAnotherSlabIsThere`: the real one).
+    func testOneFindUnderTheFingerDoesNotCostTheLock() {
+        let thing = World.slabAt(Vec3(-0.35, 0.066, -0.85), tilt: 0, heading: 0, yaw: 20)
+        let w = World(slab: slab, lens: .processing)
+        let inner = SceneDetector(w, noise: 0.3, seed: 33)
+        let det = ProbeFinds(inner, thing: thing, finds: 1)
+        let tr = SlabTracker(settings: settings(), detector: det)
+        let v = w.view(from: Vec3(0.05, 0.9, 0), at: (slab.center + thing.center) / 2)
+        var k = 0
+        while tr.state != .locked && k < 120 { inner.currentView = v; _ = tr.process(TrackerFrame(timestamp: Double(k) / 60, view: v, frame: image)); k += 1 }
+        XCTAssertEqual(tr.state, .locked)
+        let tapAt = v.project(world: thing.center)!
+        XCTAssertEqual(tr.tapKind(tapAt, view: v), .slab)
+        var events: [String] = []
+        for i in 0..<120 {
+            inner.currentView = v
+            let o = tr.process(TrackerFrame(timestamp: Double(k) / 60, view: v, frame: image, tap: i == 0 ? tapAt : nil)); k += 1
+            events += o.events
+            XCTAssertEqual(o.state, .locked)
+        }
+        XCTAssertTrue(events.contains("tap-slab-find"), "\(events)")
+        XCTAssertFalse(events.contains("tap-slab-elsewhere"))
+        XCTAssertLessThan(tr.slab!.center.distance(to: slab.center), 0.03, "the lock kept")
+        XCTAssertGreaterThan(det.probes, 1, "looked again")
+    }
+
+    /// A detector whose search reports the outlines of `show` (with a little noise), whatever it is asked; its tapped
+    /// growth grows nothing.
+    final class Shown: SlabDetecting {
+        let inner: SceneDetector
+        var show: [SlabPose]
+        init(_ d: SceneDetector, show: [SlabPose]) { inner = d; self.show = show }
+        func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
+            guard let v = inner.currentView else { return [] }
+            return show.compactMap { inner.outline(of: $0, in: v) }.map { q in
+                DetectedOutline(quad: q.map { Vec2($0.x + self.inner.rng.gaussian() * 0.3, $0.y + self.inner.rng.gaussian() * 0.3) })
+            }
+        }
+        func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] { [] }
+    }
+
+    /// A tap on the floor while the slab is being confirmed: what is being confirmed stays, and it locks as without the
+    /// tap; a slab-shaped thing found under the finger once (the slab hidden on that search) does not restart it, and it
+    /// locks one search later; found there twice in a row, the confirmation starts over on it (event "tap").
+    func testAStrayTapWhileConfirmingKeepsTheCandidate() {
+        let thing = World.slabAt(Vec3(-0.35, 0.066, -0.85), tilt: 0, heading: 0, yaw: 20)
+        let w = World(slab: slab, lens: .processing)
+        let v = w.view(from: Vec3(0.05, 0.9, 0), at: (slab.center + thing.center) / 2)
+        let (d, dk) = w.depthMap(v, spec: .standard)
+        func run(tap: Bool, thingFinds: Int) -> (lockedAt: Double?, on: SlabPose?, events: [String], tr: SlabTracker) {
+            let det = Shown(SceneDetector(w, noise: 0.3, seed: 21), show: [slab])
+            let tr = SlabTracker(settings: settings(), detector: det)
+            var k = 0, tapped = false, events: [String] = [], finds = 0
+            while tr.state != .locked && k < 240 {
+                det.inner.currentView = v
+                let tp: Vec2? = tap && !tapped && tr.state == .confirming ? v.project(world: thing.center) : nil
+                if tp != nil { tapped = true }
+                // after the tap, the search sees only the thing for `thingFinds` of its runs
+                if tapped, tr.detectionDue(at: Double(k) / 60, tap: tp != nil) {
+                    det.show = finds < thingFinds ? [thing] : [slab]
+                    finds += 1
+                }
+                // (a tap with LiDAR depth: its place is not guessed)
+                let o = tr.process(TrackerFrame(timestamp: Double(k) / 60, view: v, frame: image, depth: tp != nil ? d : nil,
+                                                depthIntrinsics: tp != nil ? dk : nil, tap: tp)); k += 1
+                events += o.events
+                if tp != nil { XCTAssertTrue(o.events.contains("tap-slab"), "\(o.events)") }
+            }
+            return (tr.state == .locked ? Double(k - 1) / 60 : nil, tr.slab, events, tr)
+        }
+        let plain = run(tap: false, thingFinds: 0)
+        XCTAssertNotNil(plain.lockedAt)
+        for n in [0, 1] {
+            let r = run(tap: true, thingFinds: n)
+            XCTAssertLessThan(r.on!.center.distance(to: slab.center), 0.03, "finds \(n): the slab, not the thing")
+            XCTAssertFalse(r.events.contains("candidate-lost") || r.events.contains("candidate-restart"), "finds \(n): \(r.events)")
+            XCTAssertFalse(r.events.contains("tap"), "finds \(n): the search did not start over")
+            XCTAssertLessThanOrEqual(r.lockedAt! - plain.lockedAt!, Double(n) * r.tr.settings.searchInterval + 0.05, "finds \(n)")
+            if n == 1 { XCTAssertTrue(r.events.contains("tap-slab-find"), "\(r.events)") }
+        }
+        let two = run(tap: true, thingFinds: 99)
+        XCTAssertTrue(two.events.contains("tap") && two.events.contains("candidate-restart"), "\(two.events)")
+        XCTAssertLessThan(two.on!.center.distance(to: thing.center), 0.03, "found twice: confirmed on it")
+        XCTAssertEqual(two.tr.counts["tapSlabSwitched"], 1)
+    }
+
+    /// A slab tap whose place LiDAR gives (not guessed) lasts only `tapSlabFirstSeconds` too, unless what is being
+    /// confirmed lies under the finger (here nothing is found anywhere: the slab is out of sight).
+    func testATapsPlaceFromLiDARLastsTheFirstSecond() {
+        let w = World(slab: slab, lens: .processing)
+        let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
+        let (d, dk) = w.depthMap(v, spec: .standard)
+        let stray = v.project(world: Vec3(slab.center.x - 0.4, 0, slab.center.z + 0.2))!
+        let det = SceneDetector(w, noise: 0.3, seed: 8)
+        det.silent = true
+        let tr = SlabTracker(settings: settings(), detector: det)
+        var expiredAt: Double? = nil
+        for k in 0..<240 {
+            let t = Double(k) / 60
+            det.currentView = v
+            let o = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, depth: k == 0 ? d : nil, depthIntrinsics: k == 0 ? dk : nil,
+                                            tap: k == 0 ? stray : nil))
+            if k == 0 { XCTAssertNotNil(tr.seedPoint) }
+            if expiredAt == nil, o.events.contains("seed-expired") { expiredAt = t }
+        }
+        XCTAssertEqual(expiredAt ?? 99, tr.settings.tapSlabFirstSeconds, accuracy: 0.05)
     }
 
     // MARK: settings

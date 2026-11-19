@@ -37,6 +37,7 @@ public final class SlabFinderDetector: SlabDetecting {
         finder.options.skipSeedsInFinds = settings.sweepSkipsFinds || base.skipSeedsInFinds
         finder.options.sameOutlinePixels = settings.sweepSameOutlinePixels > 0 ? settings.sweepSameOutlinePixels : base.sameOutlinePixels
         finder.options.tapSearchesAround = settings.tapHints || base.tapSearchesAround
+        finder.options.tapScreens = settings.tapHints || base.tapScreens
     }
 
     public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
@@ -61,8 +62,8 @@ public final class SlabFinderDetector: SlabDetecting {
 
     public func forgetPixelMemory() { choice = nil; detail = nil }
 
-    /// A look for the slab grown from a tapped point while the tracker follows a lock elsewhere: the finder's tapped
-    /// search, leaving the edge memory of the outline it follows as it was.
+    /// A look for the slab grown from a tapped point: the finder's tapped search, leaving the edge memory of the outline
+    /// the detector follows (or the sweep's, just found) as it was.
     public func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] {
         finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed).map(SlabFinderDetector.outline)
     }

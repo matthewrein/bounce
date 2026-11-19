@@ -37,8 +37,10 @@ public struct BallTapHint: Equatable {
     /// distances along the line (m) between which the ball's centre can be
     public var near: Double
     public var far: Double
-    /// seconds since the tap
+    /// seconds since the tap, or since the latest ball found in its box
     public var age: Double = 0
+    /// a ball has been found in its box (the search then stays on it: `TapHints.recentred`)
+    public var found = false
     public init(origin: Vec3, direction: Vec3, near: Double, far: Double) {
         self.origin = origin; self.direction = direction; self.near = near; self.far = far
     }
@@ -155,6 +157,18 @@ public enum TapHints {
         guard rLo <= rHi else { return nil }
         let region = box.expanded(by: rHi * 1.2 + slack).clamped(width: K.width, height: K.height)
         return region.isEmpty ? nil : (region, (rLo / 1.2)...(rHi * 1.2))
+    }
+
+    /// A ball tap's search once a ball was found in its box (centre `ball`, world, seen from `camera`): the line of sight
+    /// through that ball, over the distances its size can put it at (a quarter either way, as the finder's own radius
+    /// window), the time counted again from now. So the search keeps the place and the size it found, follows a ball
+    /// that moves a little (held) or falls, and ends `TrackerSettings.tapBallSeconds` after the last find there.
+    public static func recentred(_ h: BallTapHint, on ball: Vec3, from camera: Vec3) -> BallTapHint {
+        let v = ball - camera, d = v.length
+        guard d > 0.05, d.isFinite else { var x = h; x.age = 0; x.found = true; return x }
+        var x = BallTapHint(origin: camera, direction: v / d, near: d / 1.25, far: d * 1.25)
+        x.found = true
+        return x
     }
 
     /// A dismissed spot as seen by a camera (`view`, world): its stretch of line and radii in that camera's image
