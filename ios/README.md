@@ -17,9 +17,9 @@ it: if the badge above is green and Developer says **n11**, it is the one descri
 
 ### Try these first
 
-1. **The angle from a still phone.** Stand 3-4 ft from the slab and hold the phone still, tilted about 45-60° down
-   (the slab seen clearly from the side). Within about a second of "Slab locked" the Tilt should show a number. Then
-   gear > Developer > **Copy diagnostics** and paste it.
+1. **The angle from a still phone.** Stand about 3 ft from the slab (2.5-4 ft is fine) and hold the phone still,
+   tilted about 45-55° down (up to 60° at 3 ft; the slab seen clearly from the side). About half a second after "Slab
+   locked" the Tilt should show a number. Then gear > Developer > **Copy diagnostics** and paste it.
 2. **Settling.** From the same distance, hold the phone steeply over the slab (about 70° down, as in your kit): the
    Tilt and Lands should read "settling". Lower the phone toward 45°: the number should come.
 3. **Your sizes.** Measure the slab's top with a ruler (the flat part and the full width), its thickness, and the
@@ -33,34 +33,42 @@ it: if the badge above is green and Developer says **n11**, it is the one descri
    wide as it really is, and it often took that band, or its bottom, for the top's edge. Now each side's line goes on
    the top's own edge: where the side face shows as a band, on the band's inner edge, where the top's brightness ends;
    where the face is hidden, on the rounded edge's outline. The app also learns your sides' drop and run as it goes,
-   from the sides where both edges of the band show. On your kit, of the sides that show a band, **2.7%** now sit
-   mid-band or on its bottom (**55%** with n10), and 5% sit a little inside the top's edge (bands about as light as the
-   top, where one view cannot tell which edge it sees; the app treats those as uncertain, below). Farther than about 4
-   ft, a side whose face is about as light as the top is still read a little onto the face (see 3).
+   from the sides where both edges of the band show. On your kit, judged from the pictures alone, about **5%** of the
+   near sides that show a band now sit mid-band or on its bottom (about **41%** with n10), and about 3% more sit just
+   inside the top's edge (bands about as light as the top, where one view cannot tell which edge it sees; the app
+   treats those as uncertain, below). Most of the rest that are still off are sides read as a plain outline although
+   their face shows a band, and the fast arc at the 17° position. Farther than about 4 ft, a side whose face is about as
+   light as the top is still read a little onto the face (see 3).
 2. **A poor tilt while the camera is still: it was mostly the side face, and is fixed with it.** With every side on
    the top's edge, a still view reads about right from the first lock: on your level still shot the locked tilt is
    **0.06°** off (its direction 0.45°), where n10 read 7.2° off. Two more changes help. LiDAR no longer turns the tilt:
    on this small raised top its plane was 4-15° off from a standstill; it now only checks the distance, and agrees with
    the picture to about 1%. And the app's new honest estimate of the tilt (below) keeps only a view's newest readings,
-   so a bad start ages out within about a second. Moving the phone is no longer what fixes it.
+   so a bad start ages out within about a second; the outline and the path also drop a view's older readings once its
+   newest ones disagree with them (within one to two seconds). Moving the phone is no longer what fixes it.
 3. **A usable tilt within about a second, without moving: yes, without LiDAR, from a moderate angle; not from steeply
-   above.** From 3-4 ft with the phone tilted no more than about 60° down (the slab clearly seen from the side, not
-   from above), one still view pins the tilt to about 1°, and the app shows it within about a second of finding the
-   slab (shown on the test renders and by the uncertainty model; your kit had no still view that low). From steeper
-   than about 65°, the way you held the phone in the kit (about 70° down, 3.5-4.5 ft), one view cannot pin it that
-   well (its honest uncertainty there is 1.3-1.9°), so the app now says **settling** instead of showing a number that
-   may be a degree or more off. Lower the phone a little or step back, and the number comes.
+   above.** From about 3 ft (2.5-4 ft) with the phone tilted 45-55° down (up to 60° at 3 ft; the slab clearly seen
+   from the side, not from above), one still view pins the tilt to about 1°, and the number shows about half a second
+   after the slab locks: 1-1.3 s after you point the phone (up to 2 s at 4 ft), within 0.35° of the truth, on test
+   pictures of your slab (your kit had no still view that low). The app now waits for two checks after the lock to agree before it shows a
+   number, so a first reading that only looks precise is never shown on its own. At 4 ft and 62° down it shows from
+   some sides of the slab and not from others. From steeper than about 65°, the way you held the phone in the kit
+   (about 70° down, 3.5-4.5 ft), one view cannot pin it that well (its honest uncertainty there is 1.3-1.9°), so the
+   app says **settling** instead of showing a number that may be a degree or more off. Lower the phone a little and
+   the number comes.
    Nearly straight above the slab (within about 20° of looking straight down on it) all four side faces show, which
    the app does not read yet: it says settling there, or does not lock at all.
-   **Beyond about 4 ft it is not right yet.** On test pictures of your slab at 4-6 ft (45° down), the near sides,
-   whose faces are about as light as the top, are read a little too far out: the tilt comes out 1.2-1.9° off, and the
-   app can show that number for the first moment before it goes back to settling. Your kit's room scan, from about
-   4.7 ft, showed a number about 1° off for most of the shot. So for now stand 3-4 ft away; fixing this is next.
+   **Beyond about 4 ft it is not right yet.** On harsher test pictures of your slab (a different look: lighting and
+   texture) at 4 ft and 6 ft (40-45° down), the near sides, whose faces are about as light as the top, are read a
+   little too far out: the outline's tilt comes out 1.2° and 1.9° off. The app now keeps saying settling there (it
+   used to show that number for a moment), but your kit's room scan, from about 4.7 ft, still showed a number for two
+   thirds of the shot, about 0.7° off and at worst 1.3° (its direction at worst 1.4°, which moves the landing about 6
+   cm). So for now stand about 3 ft away; fixing the far sides is next.
 
 ### What you will see
 
-- **settling**: right after the lock, Tilt and Lands may read "settling" (dimmed), the status says **Slab locked ·
-  settling**, and the path is drawn faint and dashed with no landing ring; Apex and Air keep their values (a degree
+- **settling**: right after the lock (for at least half a second: two checks of the lock must agree first), Tilt and
+  Lands read "settling" (dimmed), the status says **Slab locked · settling**, and the path is drawn faint and dashed with no landing ring; Apex and Air keep their values (a degree
   moves them by millimetres). The number appears once the tilt is good to about 1° (1° moves the landing about
   4.5 cm). Gear > Developer shows the honest uncertainty itself ("tilt sigma 1.7° · 1 view group · settling").
 - **The slab and the ball are your measured ones.** The flat top is **180.2 mm** (7.09 in) square: measured from the
@@ -76,20 +84,34 @@ Every video shot of your first kit through the n11 app's own code, each shot fro
 at the 17° position and s08-s12 near level (about 0.5°, not measured). "Shown" is a number on the screen; otherwise it
 said settling.
 
-- **Shown numbers:** never more than 2° off. On the three arcs where the number came (about a third to half of the
-  locked frames, after 6.8-12.6 s), the shown tilt was at most 0.21°, 0.81° and 0.63° off. The fourth arc (17°) and the
-  near-level drop shots stayed on settling, except one drop shot that showed 0.31° on a slab that is level to about a
-  degree. The arcs were filmed fast (15-30° a second), which blurs the edges; a slower arc should settle sooner.
+- **Shown numbers:** never more than 0.6° off in tilt on the shots with a known slab position. On the three arcs
+  where the number came (9-43% of the locked frames, after 12.9-14 s), the shown tilt was at most 0.14°, 0.57° and
+  0.35° off; the slope's direction, which moves the landing (about 4.5 cm a degree), at most 0.32°, 0.94° and 0.37°.
+  The fourth arc (17°) and the near-level drop shots stayed on settling, except one drop shot that showed 0.29° from
+  0.9 s on a slab that is level to about a degree. The room scan (about 4.7 ft, taken before the first flat-phone
+  shot, so scored as if the slab was level) showed a number on two thirds of its locked frames, 0.71° off at the
+  median and 1.27° at worst (direction 1.42°): the one shot where a number more than a degree off was shown. The arcs
+  were filmed fast (15-30° a second), which blurs the edges; a slower arc should settle sooner.
 - **Your still views:** settling throughout, as they should: their single-view errors were up to 1.2°. The level still
-  locked at 0.06° (0.45° in direction) and the 17° view at 3 ft at 1.2°; the 5° and 17° stills from straight-ish
-  above never locked, as in n10.
+  locked at 0.06° (0.45° in direction) and the 17° view at 3 ft at about 1.2° (measured before the last fixes; the
+  scorer does not score that shot); the 5° and 17° stills from straight-ish above never locked, as in n10.
 - **The locked tilt** (what the outline and path follow), median error per shot, n10 then n11: level still 7.19° to
-  0.06°, level arc 2.56° to 1.43°, 5° arc 2.10° to 0.53°, 11° arc 0.98° to 1.28° (the one shot that got worse; it
-  never showed a number more than 0.63° off), 17° arc 0.46° to 0.04°. Over all slab shots n11 reads 0.40° (90% within
-  1.8°).
+  0.06°, level arc 2.56° to 1.43°, 5° arc 2.10° to 0.54°, 11° arc 0.98° to 1.41° (the one shot that got worse; it
+  never showed a number more than 0.35° off), 17° arc 0.46° to 0.04°. Over all slab shots the lock reads 0.71° off at
+  the median (90% within 1.8°).
+- **How honest the uncertainty is:** at each update, the true slope's distance from the app's estimate measured in
+  the app's own uncertainty has a median of 1.11 and a 95th percentile of 2.21 (an exactly honest uncertainty gives
+  1.18 and 2.45; with the room scan 1.17 and 2.18). On the fast 5° arc it is still a little too sure of itself in the
+  tail (2.9 at the 95th percentile), but the numbers it showed there were at most 0.57° off.
+- **The 30 mm ball** (measured on the previous n11 build against 35 mm): more of the drops found (one drop shot 11% to
+  22% of its searches, another 32% to 60%), fewer false balls (3% to 1%), but a ball held at mid height found less
+  often (21% to 10%). Now: the ball found on 45% of searches, 2% false.
 - **LiDAR**: 75 of its 98 checks of the top agreed and were used (77%; 13 were turned away for their angle, 10 for
   their distance). LiDAR's distance to the top is 0.9% longer than the picture's (it reads long by about that much
   against the floor too), so with your measured size the picture's distance is right to within about a percent.
+  LiDAR never changes the tilt; it moves the slab's centre, typically by 0.2-1 cm (up to 3 cm on the room scan), which
+  moves a held ball's height by as much. Whether that is better cannot be checked yet: please enter the drop heights in
+  the next kit.
 - **The learned side shape**: about 19 mm down and 8 mm out (median over the shots), against 19.5-22 mm and 7-8 mm
   measured by hand from the kit. Started from a straight-down face instead, it learns the 8 mm run but only about 14 mm
   of the drop, so the measured starting point matters.
@@ -101,17 +123,20 @@ said settling.
 - **The honest tilt and "settling"**: the app works out how well it knows the tilt from each side's own uncertainty
   (how sharp the edge is, how far the side's shape could be off, motion blur, and half the band when one view cannot
   tell which edge of it it sees), counts the same view seen again as one view, leaves out readings that do not fit the
-  square, and widens the result when views disagree. It shows the tilt at 1.0° or better on two updates in a row, and
-  goes back to settling above 1.25°. The lock and the outline work as before.
+  square, widens a view when its own readings disagree and the result when views disagree, and does not let the part
+  of the error that every view shares (the edge's sharpness, the side's shape) shrink as views add up. It shows the
+  tilt at 1.0° or better on two checks in a row after the lock (the lock's own first readings do not count, nor do
+  readings it left out), and goes back to settling above 1.25°. The outline keeps a view's older readings only while
+  they agree with its newest.
 - **Your slab and ball** (above), in one place in the code.
 - **Developer**: the tilt line, LiDAR's check counts in Copy diagnostics, the demo can start steep and lower the
   camera, and the kit scorer can be told where the slab really was (`--positions`).
 
 ### Verified by tests, and only compiled
 
-- **Verified:** 478 tests of the slab, edges, tilt, settling, ball, bounce, tracking, recording, capture kit and
-  hand-off code on Linux, optimised (477 in the unoptimised build GitHub's Linux check runs; in both, three wait for
-  files or settings from you), all passing;
+- **Verified:** 484 tests of the slab, edges, tilt, settling, ball, bounce, tracking, recording, capture kit and
+  hand-off code on Linux, optimised (483 in the unoptimised build GitHub's Linux check runs; in both, three
+  wait for files or settings from you), all passing;
   your kit replayed through the n11 code (in private, nothing from it in the repository); the synthetic kit; the harsh
   test scenes.
 - **Only compiled, never run on a phone:** the settling display (the dimmed readouts, the faint dashed path, the status
@@ -129,17 +154,21 @@ said settling.
   does not lock. Whether a degree is reachable there is not known yet.
 - **The settling numbers are from one kit.** The constants (how sharp an edge is, how much blur costs, when two views
   count as one) were measured on your one slab, phone and floor; the next kit checks them. On your kit the honest
-  uncertainty was a little cautious (errors were 0.70 of it at the median, 1.44 at the 95th percentile).
+  uncertainty is about right (see "Your kit, replayed"); on the fast 5° arc it is still a little too sure in the tail.
 - **Test scenes (the harsh scenes, which still draw the old straight-sided 7 in slab and a 35 mm ball).** At 2 ft
   the tilt went from 1.5-1.6° off to 0.13-0.24°, and at 3 ft from 6° to 1.5° (the app no longer takes that slab's cut
   face for its top either). But on that slab the app now expects your sloped sides: at 3 ft the held ball's height is
   24-35 mm off (it was 0-11), at 6 ft the tilt 1.8-1.9° (it was 0.03°), and in mixed lamp and window light at 3 ft
-  2.2° (it was 0.7°). 13 of the 76 scenes pass, against 19 for n9; the 6 that no longer pass are all at 6 ft. Drawn
-  with your slab and ball, the plain scenes read 0.04-0.19° at 2-3 ft, but 1.2° at 4 ft and 1.9° at 6 ft (the
-  problem above).
+  2.2° (it was 0.7°). 13 of the 76 scenes passed (before the last review fixes, which were checked on the plain scenes
+  only), against 19 for n9; the 6 that no longer pass are all at 6 ft. Drawn
+  with your slab and ball, the plain scenes read 0.04-0.19° at 2-3 ft (the number shown from 0.9 s at 3 ft, 0.19°
+  off), but 1.2° at 4 ft and 1.9° at 6 ft (the problem above); there the app now stays on settling throughout.
 - **The held ball's height on the synthetic kit** (your slab and ball drawn) is 11 mm off (three shots: +16, +11 and
-  -9 mm) where n10 was 2 mm off on its own drawn slab; the same n11 code without the side shape reproduces n10's
-  numbers exactly, so it follows the new edges' lock, or the smaller ball. Your next kit's held-ball heights will tell.
+  -9 mm) where n10 was 2 mm off on its own drawn slab. That kit's pictures are small (480 x 360, the only image its
+  edges are read in): there the near sides' edge is read a quarter of a pixel inside the top, which moves the lock's
+  plane by a few millimetres. In the app the edges are read in the camera's full picture, where the same reading is
+  0.02 px off (a new test checks this), so the phone should not have this error; your next kit's held-ball heights
+  will tell.
 - **The bounce itself.** The app launches the ball along the slab's normal. A real ball dropped on a tilted surface
   also keeps some of its downhill speed, which on an 8° slab sends it off at nearly twice that angle. Your recorded
   drops will show which is right; I will change the app only if they agree.
@@ -239,8 +268,8 @@ Then press **Run** in Xcode. If you chose the team in Xcode instead of `Local.xc
 
 ## Using it
 
-Open the app and point the phone at the slab, from about 2-4 ft away (in build n11 the tilt is not yet right from
-farther: see the morning brief). That is all: there is nothing to set up.
+Open the app and point the phone at the slab, from about 2-4 ft away, best about 3 ft (in build n11 the tilt is not
+yet right from farther: see the morning brief). That is all: there is nothing to set up.
 
 - When the outline turns yellow and the label says **Slab locked**, the slab is pinned. Focus, exposure and white balance
   are then held too, once the camera has stopped adjusting them (within about 2.5 s).
@@ -249,13 +278,14 @@ farther: see the morning brief). That is all: there is nothing to set up.
   perpendicular to the plane through the four top corners. The cyan arc is the bounce, with the apex and where it
   lands. The readouts at the bottom give the slab's tilt, the apex height, how far away the ball lands and its time in
   the air.
-- **settling**: right after the lock, and for as long as the app cannot yet pin the tilt to within about a degree, Tilt
-  and Lands read "settling" (dimmed), the label says **Slab locked · settling**, and the path is drawn faint and dashed
-  with no landing ring. Apex and Air keep their values (a degree moves them by millimetres). The tilt appears once
-  it is good to about 1° (1° moves the landing about 4.5 cm). From 3-4 ft, with the phone tilted no more than about
-  60° down (the slab seen clearly from the side, not from above), that is within about a second. From straight above
-  or steeper than about 65°, one view cannot pin the tilt that well, so the app keeps saying "settling" rather than
-  show a number that may be degrees off: lower the phone or step back a little.
+- **settling**: right after the lock (at least half a second: two checks of the lock must agree first), and for as
+  long as the app cannot yet pin the tilt to within about a degree, Tilt and Lands read "settling" (dimmed), the label
+  says **Slab locked · settling**, and the path is drawn faint and dashed with no landing ring. Apex and Air keep their
+  values (a degree moves them by millimetres). The tilt appears once it is good to about 1° (1° moves the landing about
+  4.5 cm). From about 3 ft (2.5-4 ft), with the phone tilted 45-55° down (up to 60° at 3 ft; the slab seen clearly
+  from the side, not from above), that is about a second after you point the phone. From straight above or steeper
+  than about 65°, one view cannot pin the tilt that well, so the app keeps saying "settling" rather than show a number
+  that may be degrees off: lower the phone a little.
 - Hold the ball above the slab: its height sets the drop height, shown as "(ball)", and the label says **Slab locked ·
   ball in view**. Without a ball, the drop height from Settings is used.
 - If you slide the slab to change its angle, the app notices after about a second and locks onto the new position.
@@ -304,7 +334,7 @@ opens them by itself.
   the main screen never shows. While locked, a "tilt sigma 1.7° · 1 view group · settling" row gives the tilt's honest
   uncertainty (both directions together), how many distinct views of the slab it rests on (views more than 7.5° apart
   add up; the same view seen again does not), and whether the tilt is shown ("settled", at 1.0° or less on two
-  updates in a row; back to "settling" above 1.25°). **Copy diagnostics** has the same (`tiltSigmaDegrees`,
+  checks in a row after the lock; back to "settling" above 1.25°). **Copy diagnostics** has the same (`tiltSigmaDegrees`,
   `angleSettled`, `viewGroups`, `settledTiltDegrees`) and, on a LiDAR phone, `depthChecks`: how many LiDAR checks of
   the slab's top were used and why the others were not, with LiDAR's range over the picture's. Its "frames:" row sums up the last 10 seconds and is refreshed every second, e.g.
   "frames: 58.9/s in, 3% dropped busy, held 2, wait 4/12 ms, 1% late from ARKit, delegate 1 ms p95, 0 gaps, 0 pauses,
