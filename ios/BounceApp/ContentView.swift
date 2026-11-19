@@ -27,7 +27,38 @@ struct ContentView: View {
                             ARFeedView(session: model.controller.session)
                         }
                         OverlayView(overlay: model.overlay)
-                        // tapping the slab guides the search (silently: the app never asks for it)
+                        // where the ball's ring and a tap's mark are, for the UI tests (invisible, under the tap layer)
+                        if let b = model.overlay.ball {
+                            let r = max(model.overlay.ballRadius, 6)
+                            Color.white.opacity(0.001)
+                                .frame(width: 2 * r, height: 2 * r)
+                                .position(b)
+                                .allowsHitTesting(false)
+                                .accessibilityElement()
+                                .accessibilityLabel("Ball")
+                                .accessibilityIdentifier("ballRing")
+                        }
+                        ForEach(Array(model.overlay.dismissed.enumerated()), id: \.offset) { _, p in
+                            Color.white.opacity(0.001)
+                                .frame(width: 24, height: 24)
+                                .position(p)
+                                .allowsHitTesting(false)
+                                .accessibilityElement()
+                                .accessibilityLabel("Dismissed ball")
+                                .accessibilityIdentifier("dismissedSpot")
+                        }
+                        if let m = model.overlay.tapMark {
+                            Color.white.opacity(0.001)
+                                .frame(width: 2 * m.radius, height: 2 * m.radius)
+                                .position(m.center)
+                                .allowsHitTesting(false)
+                                .accessibilityElement()
+                                .accessibilityLabel(m.kind.rawValue)
+                                .accessibilityIdentifier("tapMark")
+                        }
+                        // Taps are optional hints, decided by what is under the finger (BounceCore's SlabTracker.tapKind):
+                        // tapping the slab makes the search look there first, tapping the ball looks for it there first,
+                        // and tapping a ball ring that is wrong dismisses it. Silent: the app never asks for a tap.
                         Color.clear
                             .contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { v in model.tap(at: v.location) })

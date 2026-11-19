@@ -46,7 +46,10 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(rec.frames.count, phone.outputs.count, "a line for every processed frame")
         // the session exercised what it should
         let allEvents = phone.outputs.flatMap { $0.events }
-        for e in ["tap", "locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
+        for e in ["locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
+        // the tap (on the locked slab: with the app's tap hints it looks for the ball there, "tap-ball"; n11 started the
+        // slab search over, "tap")
+        XCTAssertTrue(allEvents.contains { $0 == "tap" || $0.hasPrefix("tap-") }, "a tap in \(allEvents)")
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .reset } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .settings && $0.settings?.launchRule == .dishNormal } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .worldDiscontinuity } == true })

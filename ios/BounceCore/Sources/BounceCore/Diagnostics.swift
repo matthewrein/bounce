@@ -146,6 +146,16 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var angleSettled: Bool?
     public var viewGroups: Int?
     public var settledTiltDegrees: Double?
+    /// The owner's taps (`TrackerSettings.tapHints`; how many of each kind: `counts`' "tap..." keys): how long a slab tap
+    /// took to lead to a lock and a ball tap to a ball found where it said (s), and what is in effect now; nil before the
+    /// first tap
+    public var taps: Taps?
+    public struct Taps: Codable, Equatable {
+        public var slabTapToLockSeconds: RunningStats
+        public var ballTapToBallSeconds: RunningStats
+        public var dismissedSpots: Int
+        public var ballTapSearching: Bool
+    }
 
     /// The frame and units of every field, as written into `frames`.
     public static let fieldFrames: [String: String] = [
@@ -211,6 +221,10 @@ public struct DiagnosticsReport: Codable, Equatable {
             angleSettled = tracker.angleSettled
             viewGroups = tracker.viewGroupCount
             settledTiltDegrees = tracker.settledNormal.map { DiagnosticsReport.r2(Units.degrees($0.angle(to: -ARKitConvention.worldDown))) }
+        }
+        if tracker.counts.keys.contains(where: { $0.hasPrefix("tap") }) {
+            taps = Taps(slabTapToLockSeconds: tracker.tapSlabLockSeconds.rounded, ballTapToBallSeconds: tracker.tapBallFoundSeconds.rounded,
+                        dismissedSpots: tracker.dismissedSpots.count, ballTapSearching: tracker.ballHint != nil)
         }
         if let v = view {
             camera = Camera(view: v, slab: tracker.slab)

@@ -5,6 +5,8 @@
 //   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
 //   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--drops-floor] [--truth-ball]
 //                [--markdown]
+//   bounce-score --taps <kit folder or a folder of kits> ... [--taps-truth FILE] [--taps-only ID,ID] [--taps-lanes L,L]
+//                [--taps-json out.json]
 //
 // Kits are private: it prints kit ids, shot ids and numbers, never paths or anything from the pictures.
 import BounceCore
@@ -39,6 +41,12 @@ options:
   --drop-shrink N        render the drops at 1/N of 1440x1080 (default 1)
   --drops-json FILE      write the drops' report as JSON
   --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)
+  --taps                 instead of scoring: run the kits' shots with simulated taps (KitTapBench: none, slab, slabLate,
+                         ball, dismiss) and print what each changed (Markdown)
+  --taps-truth FILE      the balls' true places: {"<kit id>": {"<shot id>": {"frame": N, "x": X, "y": Y, "r": R}}} (video px)
+  --taps-only IDS        only these shots (comma-separated ids, or prefixes such as s09)
+  --taps-lanes LANES     only these lanes (comma-separated)
+  --taps-json FILE       write the taps' reports as JSON
   --max-tilt-error DEG   exit with status 3 if the synthetic kit's median tilt error is above DEG, or missing
   --scorer LABEL         record who scored it (e.g. a git hash) in the JSON
   --quiet                no progress lines
@@ -56,6 +64,7 @@ var jsonOut: String? = nil, compareWith: String? = nil, scorerLabel: String? = n
 var markdown = false, failOnRegression = false, measured = false, synthetic = false, truthBall = false, quiet = false
 var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil, dropsFloor = false
 var frames = 12
+var taps = false, tapsTruth: String? = nil, tapsOnly: [String]? = nil, tapsLanes: [KitTapBench.Lane]? = nil, tapsJson: String? = nil
 var maxTiltError: Double? = nil
 var positions: [String: String] = [:]
 var args = Array(CommandLine.arguments.dropFirst())
@@ -86,6 +95,14 @@ while !args.isEmpty {
     case "--drops-floor": dropsFloor = true; drops = true
     case "--max-tilt-error": guard let d = Double(value(a)), d > 0 else { fail("--max-tilt-error needs degrees") }; maxTiltError = d
     case "--scorer": scorerLabel = value(a)
+    case "--taps": taps = true
+    case "--taps-truth": tapsTruth = value(a); taps = true
+    case "--taps-only": tapsOnly = value(a).split(separator: ",").map { String($0) }; taps = true
+    case "--taps-lanes":
+        let ls = value(a).split(separator: ",").map { KitTapBench.Lane(rawValue: String($0)) }
+        guard !ls.isEmpty, ls.allSatisfy({ $0 != nil }) else { fail("--taps-lanes takes none, slab, slabLate, ball, dismiss") }
+        tapsLanes = ls.compactMap { $0 }; taps = true
+    case "--taps-json": tapsJson = value(a); taps = true
     case "--quiet": quiet = true
     case "-h", "--help": print(usage); exit(0)
     default:
@@ -112,6 +129,37 @@ func kits(in path: String, number: Int) -> [URL] {
 
 var reports: [KitScoreReport] = []
 let log: ((String) -> Void)? = quiet ? nil : progress
+
+if taps {
+    if paths.isEmpty { fail("--taps needs a kit folder or a folder of kits") }
+    var truth: [String: [String: KitTapBench.BallTruth]] = [:]
+    if let t = tapsTruth {
+        guard let d = try? Data(contentsOf: URL(fileURLWithPath: t)),
+              let x = try? JSONDecoder().decode([String: [String: KitTapBench.BallTruth]].self, from: d) else { fail("the --taps-truth file is not a truth file") }
+        truth = x
+    }
+    var all: [KitTapBench.Report] = []
+    for (i, p) in paths.enumerated() {
+        for k in kits(in: p, number: i + 1) {
+            var o = KitTapBench.Options()
+            o.only = tapsOnly
+            if let l = tapsLanes { o.lanes = l }
+            o.log = log
+            let id = (try? Data(contentsOf: k.appendingPathComponent(KitStore.manifestFile))).flatMap { try? KitJSON.decode(KitManifest.self, from: $0) }?.kitId
+            o.ballTruth = id.flatMap { truth[$0] } ?? [:]
+            do {
+                let r = try KitTapBench.run(kitFolder: k, options: o)
+                all.append(r)
+                print(r.markdown()); print("")
+            } catch { fail("could not run the taps on a kit: \(KitScorer.describe(error))") }
+        }
+    }
+    if let j = tapsJson {
+        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do { try e.encode(all).write(to: URL(fileURLWithPath: j), options: .atomic) } catch { fail("could not write the --taps-json file") }
+    }
+    exit(0)
+}
 for (i, p) in paths.enumerated() {
     for k in kits(in: p, number: i + 1) {
         var o = KitScorer.Options()

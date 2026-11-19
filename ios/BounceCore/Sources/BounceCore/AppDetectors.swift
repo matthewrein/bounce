@@ -36,6 +36,7 @@ public final class SlabFinderDetector: SlabDetecting {
         finder.options.maxSweepRegions = settings.maxSweepRegions ?? base.maxSweepRegions
         finder.options.skipSeedsInFinds = settings.sweepSkipsFinds || base.skipSeedsInFinds
         finder.options.sameOutlinePixels = settings.sweepSameOutlinePixels > 0 ? settings.sweepSameOutlinePixels : base.sameOutlinePixels
+        finder.options.tapSearchesAround = settings.tapHints || base.tapSearchesAround
     }
 
     public func detect(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2?, near: [Vec2]?) -> [DetectedOutline] {
@@ -60,6 +61,12 @@ public final class SlabFinderDetector: SlabDetecting {
 
     public func forgetPixelMemory() { choice = nil; detail = nil }
 
+    /// A look for the slab grown from a tapped point while the tracker follows a lock elsewhere: the finder's tapped
+    /// search, leaving the edge memory of the outline it follows as it was.
+    public func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] {
+        finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed).map(SlabFinderDetector.outline)
+    }
+
     /// The tracker's view of a find: with a side profile (the refiner's sides say which feature they rest on), each
     /// side's line noise (and its frame's own part), a one-edge side's middle between its two readings and the profile learned so far go with it
     /// (`DetectedOutline.sideSigmas`, `sideShifts`); without one, as before.
@@ -82,4 +89,5 @@ extension BallLocator: BallLocating {
     public func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
         update(luma: image, intrinsics: intrinsics, slab: slab, spec: spec, ball: ball, down: down).map { ($0.center, $0.circle.center, $0.circle.radius) }
     }
+    public func setSearchHints(_ hints: BallSearchHints) { searchHints = hints }
 }

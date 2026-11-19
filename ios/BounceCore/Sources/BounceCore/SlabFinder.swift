@@ -75,6 +75,19 @@ public struct SlabFinder {
         /// things pass the screening at all four tolerances with nearly the same outline, and each refinement costs
         /// several ms). 0: every screened region is refined until one passes.
         public var sameOutlinePixels: Double = 0
+        /// A tapped point that grows no slab is not the end of a tapped search (`TrackerSettings.tapHints`): a fingertip
+        /// covers a patch of the screen, and the pixel under its centre may sit on a speck, the dish's glint, or just off
+        /// the top. The smoothest points of other colours within `tapReach` of it (a share of the frame's shorter side,
+        /// about a fingertip) are grown too, smoothest first, at most `tapTries`. Off: the tapped pixel alone (n11).
+        public var tapSearchesAround = false
+        public var tapReach: Double = 0.05
+        public var tapTries: Int = 3
+        /// With `tapSearchesAround`, a tapped growth whose tightest match already covers most of the view (in poor light
+        /// the slab and the floor differ by less than the tightest tolerance: colour differences shrink with the light)
+        /// tries tighter matches, each `tapTighter` times the last, while the match stays this many times the colour
+        /// noise at the tapped point above it (`tapNoiseFloor`: the patch's own texture, as the region step measures it).
+        public var tapTighter: Double = 0.7
+        public var tapNoiseFloor: Double = 3
         /// move the sides to the top face's edges with the box model (off: the web app's plain outline)
         public var useBoxModel: Bool = true
         /// what an outline must satisfy to be the slab. With the box model the corners fit the slab's square within 1.5%
@@ -289,10 +302,53 @@ final class FinderRun {
 
     // MARK: entry points
 
-    /// A tapped point is trusted: grow from it, base not required.
+    /// A tapped point is trusted: grow from it, base not required. With `tapSearchesAround`, a tapped pixel that grows
+    /// nothing is followed by the smoothest other-coloured points within a fingertip of it (`tapSeeds`).
     func tapped(_ s: Vec2) -> [SlabCandidate] {
-        guard let c = detectSeed(Vec2(s.x - 0.5, s.y - 0.5), needBase: false, roi: fullROI, markRegions: false, source: .tapped) else { return [] }
-        return [canonical(c)]
+        let p0 = Vec2(s.x - 0.5, s.y - 0.5)
+        if let c = detectSeed(p0, needBase: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
+        guard opt.tapSearchesAround else { return [] }
+        for p in tapSeeds(around: p0) {
+            if let c = detectSeed(p, needBase: false, roi: fullROI, markRegions: false, source: .tapped) { return [canonical(c)] }
+        }
+        return []
+    }
+
+    /// Other starting points for a tap whose own pixel (pixel-index coordinates) grew nothing: points within `tapReach`
+    /// of it (a ring of eight at half the reach and eight at the full reach) that are smooth like cement (texture under
+    /// `maxTexture`) and not dark like the base, whose colour differs from the tapped pixel's by more than the tightest
+    /// match (the same colour would grow the same region again) and from each other's; smoothest first, at most
+    /// `tapTries`.
+    func tapSeeds(around p: Vec2) -> [Vec2] {
+        let reach = max(3, opt.tapReach * Double(min(w, h)))
+        let tight = Float(opt.tolerance * (opt.toleranceLadder.min() ?? 1)), tight2 = tight * tight
+        // dark like the base: the sweep's own threshold (under 45% of the view's median luma)
+        var smp: [Float] = []
+        smp.reserveCapacity(n / 11 + 1)
+        var i = 0
+        while i < n { smp.append(Y[i]); i += 11 }
+        smp.sort()
+        let dark = max(30, 0.45 * smp[smp.count / 2])
+        let tapped = patchMean(p)
+        var options: [(p: Vec2, texture: Float, ref: [Float])] = []
+        for (radius, count) in [(0.5 * reach, 8), (reach, 8)] {
+            for k in 0..<count {
+                let a = 2 * Double.pi * (Double(k) + (radius < reach ? 0 : 0.5)) / Double(count)
+                let q = Vec2(p.x + radius * cos(a), p.y + radius * sin(a))
+                guard q.x >= 2, q.y >= 2, q.x <= Double(w - 3), q.y <= Double(h - 3) else { continue }
+                let ref = patchMean(q)
+                let texture = ref[3] / (ref[0] + 10)
+                guard ref[0] >= dark, texture <= Float(opt.maxTexture), FinderRun.colourDistance(ref, tapped) >= tight2 else { continue }
+                options.append((q, texture, ref))
+            }
+        }
+        options.sort { $0.texture < $1.texture }
+        var out: [Vec2] = [], refs: [[Float]] = []
+        for o in options where out.count < max(0, opt.tapTries) {
+            if refs.contains(where: { FinderRun.colourDistance($0, o.ref) < tight2 }) { continue }
+            out.append(o.p); refs.append(o.ref)
+        }
+        return out
     }
 
     /// Tracking: follow the predicted outline's edges (the steadiest path), and grow a colour region from its middle as a
@@ -704,7 +760,22 @@ final class FinderRun {
         let (sx, sy) = seedPixel(p, roi: roi)
         let ref = patchMean(Vec2(Double(sx), Double(sy)))
         fillColourDistance(ref: ref, roi: roi)
-        let ladder = opt.toleranceLadder.sorted()
+        var ladder = opt.toleranceLadder.sorted()
+        // a tapped growth whose tightest match leaks over most of the view (poor light: the slab and the floor differ by
+        // less than it): tighter matches, down to a few times the colour noise at the tapped point. The match measure's
+        // noise there: the patch's texture (the 7 x 7 luma deviation, `Tx`) through the 3 x 3 blur (a third) and the luma
+        // weight (0.6), in luma and, about as much, in colour (so times sqrt 2).
+        if source == .tapped, opt.tapSearchesAround, let m0 = ladder.first, opt.tapTighter > 0, opt.tapTighter < 1 {
+            let noise = Double(ref[3]) / 3 * 0.6 * 2.0.squareRoot()
+            let floor = max(1, opt.tapNoiseFloor * noise) / opt.tolerance
+            regionsTried += 1
+            if detectAt(sx: sx, sy: sy, ref: ref, tol: opt.tolerance * m0, roi: roi, markRegion: false) == nil, lastRegionTooBig {
+                var m = m0 * opt.tapTighter, tighter: [Double] = []
+                while m >= floor && tighter.count < 6 { tighter.append(m); m *= opt.tapTighter }
+                trace?("seed (\(sx), \(sy)): the tightest match covers most of the view; tighter: \(tighter.map { String(format: "%.2f", $0) })")
+                ladder = tighter.reversed() + ladder
+            }
+        }
         var screened: [(edge: Double, m: Double, region: Region, quad: [Vec2], base: Double)] = []
         for m in ladder {
             regionsTried += 1

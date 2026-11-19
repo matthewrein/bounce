@@ -82,6 +82,22 @@ struct OverlayState: Equatable {
     /// the tilt is not settled yet (`TrackerOutput.angleSettled`): the launch line and path are drawn faint and dashed,
     /// and the landing ring and its label are left out (1 deg of tilt moves the landing about 4.5 cm)
     var settling = false
+    /// the brief mark a tap leaves (`TapMark`), while it lasts
+    var tapMark: TapMark? = nil
+    /// where dismissed balls are (the near ends of the tracker's dismissed spots: nothing is drawn there; the UI tests
+    /// read them)
+    var dismissed: [CGPoint] = []
+}
+
+/// The brief mark a tap leaves on the overlay (about 0.8 s, fading): a ring where the finger was for a slab or a ball tap
+/// (the search looks there first), the dismissed ball's ring crossed out. Nothing to read: taps are optional hints.
+struct TapMark: Equatable {
+    enum Kind: String, Equatable { case slab, ball, dismissed }
+    var kind: Kind
+    var center: CGPoint
+    var radius: CGFloat
+    /// 1 when new, down to 0 when it goes
+    var fade: Double
 }
 
 /// What the main screen shows: a passive status and the readouts. (No hints or instructions: those are developer-only.)

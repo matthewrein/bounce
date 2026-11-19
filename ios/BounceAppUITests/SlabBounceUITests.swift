@@ -669,4 +669,75 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")
         closeSettings(app)
     }
+
+    // MARK: tap hints (optional: the app is point and go without them)
+
+    /// Settings > Developer > Copy diagnostics: the tracker's counters (the tap counters among them), back on the main
+    /// screen afterwards.
+    func counts(_ app: XCUIApplication) throws -> [String: Int] {
+        openDeveloper(app)
+        let json = try readDiagnostics(app)
+        closeSettings(app)
+        return json["counts"] as? [String: Int] ?? [:]
+    }
+
+    /// A tap on the screen at a point of the window (points).
+    func tapAt(_ app: XCUIApplication, _ p: CGPoint) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0)).withOffset(CGVector(dx: p.x, dy: p.y)).tap()
+    }
+
+    /// A tap on the floor near a corner of the screen, away from the demo's slab and the space over it, at once after
+    /// launch: taken for the slab (a slab tap: the search looks there first), it never keeps the app from locking the
+    /// slab, nor, once locked, from keeping it (nothing is found there). The main screen shows no instructions for taps.
+    func testAStrayTapNeverCostsTheLock() throws {
+        let app = launch()
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 20))
+        let frame = app.windows.firstMatch.frame
+        tapAt(app, CGPoint(x: frame.width * 0.1, y: frame.height * 0.88))
+        let mark = element(app, "tapMark").waitForExistence(timeout: 2)
+        let locked = waitUntil(30) { label(app, "status").contains("Slab locked") }
+        XCTAssertNotNil(locked, "never locked after a stray tap; status \(label(app, "status"))")
+        // once locked, another stray tap: the lock stays
+        tapAt(app, CGPoint(x: frame.width * 0.9, y: frame.height * 0.85))
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(label(app, "status").contains("Slab locked"), "the lock went after a stray tap: \(label(app, "status"))")
+        screenshot(app, "stray taps")
+        let c = try counts(app)
+        summary("stray taps: locked \(String(format: "%.1f", locked ?? -1)) s after the first, mark seen \(mark), "
+                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        // (at least the second: the demo may have started its tracker after the first tap)
+        XCTAssertGreaterThanOrEqual(c["tapSlab"] ?? 0, 1, "the taps were taken for the slab")
+        XCTAssertEqual(c["tapBall"] ?? 0, 0)
+        XCTAssertEqual(c["tapDismiss"] ?? 0, 0)
+    }
+
+    /// The demo's held ball: a tap on its ring dismisses it (the ring goes at once and stays gone while the camera
+    /// drifts: its spot is passed over), and a tap where it is takes that back (a ball tap: the ball is looked for there
+    /// first and shown again). The diagnostics count both. (Where the dismissed ball is comes from an invisible marker,
+    /// "dismissedSpot"; BounceCore's DemoTapTests runs the same on the demo's frames.)
+    func testTapARingToDismissItAndTapAgainToTakeItBack() throws {
+        let app = launch(["demoBall": "0.30"])
+        XCTAssertNotNil(waitUntil(40) { label(app, "status").contains("ball in view") }, "the ball never showed")
+        let ring = element(app, "ballRing")
+        XCTAssertTrue(ring.waitForExistence(timeout: 5), "no ball ring marker")
+        let at = CGPoint(x: ring.frame.midX, y: ring.frame.midY)
+        tapAt(app, at)
+        let gone = waitUntil(3) { !label(app, "status").contains("ball in view") }
+        XCTAssertNotNil(gone, "the dismissed ring stayed; status \(label(app, "status"))")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(label(app, "status").contains("ball in view"), "the dismissed ball came back: \(label(app, "status"))")
+        screenshot(app, "dismissed")
+        let spot = element(app, "dismissedSpot")
+        XCTAssertTrue(spot.waitForExistence(timeout: 3), "no dismissed spot marker")
+        tapAt(app, CGPoint(x: spot.frame.midX, y: spot.frame.midY))
+        let back = waitUntil(8) { label(app, "status").contains("ball in view") }
+        screenshot(app, "taken back")
+        let c = try counts(app)
+        summary("dismiss and take back: gone after \(String(format: "%.1f", gone ?? -1)) s, back after \(String(format: "%.1f", back ?? -1)) s, "
+                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        XCTAssertNotNil(back, "the ball never came back after the second tap; status \(label(app, "status"))")
+        XCTAssertEqual(c["tapDismiss"] ?? 0, 1)
+        XCTAssertGreaterThanOrEqual(c["tapBall"] ?? 0, 1)
+        XCTAssertEqual(c["tapDismissLifted"] ?? 0, 1)
+    }
 }
