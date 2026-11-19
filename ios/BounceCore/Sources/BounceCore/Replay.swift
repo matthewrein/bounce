@@ -117,8 +117,10 @@ public struct ReplayRunner {
             }
 
             // The processing image, converted (as the app does) only when the tracker will run the detector on it: on a
-            // tap or when a detection is due. Other frames get a blank, as in the app.
-            let detects = tracker.detectionDue(at: f.timestamp, tap: f.tapPoint != nil)
+            // tap taken for the slab (`SlabTracker.tapSeedsSlab`) or when a detection is due. Other frames get a blank, as
+            // in the app.
+            let slabTap = f.tapPoint.map { tracker.tapSeedsSlab($0, view: f.view) } ?? false
+            let detects = tracker.detectionDue(at: f.timestamp, tap: slabTap)
             let wantImage = f.hasImage && ((detects && options.detections == .run) || (f.ballIntrinsics != nil && f.ballFile == nil)
                                            || (options.ballFromProcessingFrame && f.output == nil))
             let img: YCCImage? = wantImage ? try reader.image(for: f) : nil
@@ -305,6 +307,14 @@ final class ReplaySlabDetector: SlabDetecting {
             return inner.refine(outline: outline, frame: frame, intrinsics: intrinsics, spec: spec, down: down, detail: detail)
         }
         return recordedRefined ?? []
+    }
+
+    /// a slab tap's growth (`SlabDetecting.probe`) on the recorded image, as on the phone (it leaves the real detector's
+    /// edge memory alone there too); without the image, nothing (the phone's probes are not recorded)
+    func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] {
+        if !useRecorded && hasImage { return inner.probe(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed) }
+        if !useRecorded { note = "probe: none (no image recorded for the tap's growth)" }
+        return []
     }
 
     func forgetPixelMemory() { inner.forgetPixelMemory() }

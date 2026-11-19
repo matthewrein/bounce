@@ -127,7 +127,10 @@ final class TrackerAppPathTests: XCTestCase {
         let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
         let w = World(slab: slab, lens: .processing)
         let det = BlankCountingDetector(SceneDetector(w, noise: 0.3, seed: 42))
-        let tr = SlabTracker(settings: appSettings(), detector: det)
+        // the slab tap that starts the search over (n11's, and older recordings'): with the app's tap hints a tap on the
+        // locked slab looks for the ball there instead (TapHintTests)
+        var settings = appSettings(); settings.tapHints = false
+        let tr = SlabTracker(settings: settings, detector: det)
         let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
         det.inner.currentView = v
         var events: [String] = []

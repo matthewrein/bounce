@@ -273,7 +273,9 @@ final class SpeedupIdentityTests: XCTestCase {
             let tap: Vec2? = rng.next() < 0.01 ? Vec2(240, 180) : nil
             if !normal { limited += 1 }
             if tap != nil { taps += 1 }
-            let will = tr.detectorWillRun(at: t, tap: tap != nil, trackingNormal: normal)
+            // (as the app asks: only a tap taken for the slab makes the detector run, `SlabTracker.tapSeedsSlab`; with the
+            // app's tap hints a tap on the locked slab looks for the ball there instead)
+            let will = tr.detectorWillRun(at: t, tap: tap.map { tr.tapSeedsSlab($0, view: v) } ?? false, trackingNormal: normal)
             let out = tr.process(TrackerFrame(timestamp: t, view: v, frame: will ? image : blank, tap: tap, trackingNormal: normal))
             XCTAssertEqual(will, out.detectionKind != nil, "frame \(k) (\(out.state.rawValue), tap \(tap != nil), normal \(normal))")
             if out.detectionKind != nil { ran += 1 }
