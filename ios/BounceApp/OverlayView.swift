@@ -17,7 +17,8 @@ struct OverlayView: View {
                 for p in o.outline { ctx.fill(Path(ellipseIn: CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)), with: .color(.yellow)) }
             }
             // while the tilt settles the launch line and the path are faint and dashed, and there is no landing spot
-            let faint = o.settling ? 0.4 : 1.0
+            let faint: Double = o.settling ? 0.4 : 1.0
+            let pathDash: [CGFloat] = o.settling ? [6, 5] : []
             // the launch direction (perpendicular to the slab)
             if let s = o.start, let t = o.normalTip {
                 var p = Path(); p.move(to: s); p.addLine(to: t)
@@ -36,7 +37,7 @@ struct OverlayView: View {
             if o.path.count > 1 {
                 var p = Path(); p.addLines(o.path)
                 ctx.stroke(p, with: .color(.cyan.opacity(faint)),
-                           style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: o.settling ? [6, 5] : []))
+                           style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: pathDash))
             }
             if let a = o.apex {
                 ctx.fill(Path(ellipseIn: CGRect(x: a.x - 5, y: a.y - 5, width: 10, height: 10)), with: .color(.cyan))
