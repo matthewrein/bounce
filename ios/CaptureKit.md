@@ -605,10 +605,10 @@ square root, which is the app's setting since n12 (`KitDropAnalysis.reboundToBak
 Since n12 the app's own model is a real impact (`Bounce.LaunchRule.impact`): the falling ball touches the dish (the
 measured spherical cap) where it first meets it, and leaves with its velocity along the dish's normal there reversed and
 scaled by the restitution, and along the surface scaled by the ball's tangential share (`BallSpec.ownerTangential`).
-The synthetic kit's drops bounce that way, so the rebound measured on them is the restitution squared (0.64 for the
-app's 0.8); the rendered drops below stay physical (a solid ball that rolls off), so the app's prediction is tested on
-them against a bounce it does not assume (with the true rebound it lands 8 mm to 16 cm short of those let go from rest, down the dish's
-local slope, as it keeps 0.4 of the speed along the surface and they keep 5/7). Recordings made before n12 (no restitution in
+The synthetic kit's drops bounce that way, so the rebound measured on them is the restitution squared (0.81 for the
+app's 0.9); the rendered drops below stay physical (a solid ball that rolls off), so the app's prediction is tested on
+them against a bounce it does not assume (with the true rebound it lands 13 mm to 26 cm short of those let go from rest, down the dish's
+local slope, as it keeps 0.2 of the speed along the surface and they keep 5/7). Recordings made before n12 (no restitution in
 their settings) replay with the rule they ran: out along the corner plane's normal at sqrt(rebound) of the speed in,
 which measured this way has e = sqrt(rebound) / cos(tilt).
 
@@ -694,10 +694,11 @@ free flight (no drag: under 0.2% of g) to the next contact: the dish while the b
 outline, the slab's top edges and 1 in cut faces while it is outside (a ball overhanging the edge), the black base under
 the slab (5% wider than it and 2 mm under it, as rendered) and the floor (both rebound 0.3), and so on (no drop of the
 standard set touches an edge or the base: the tests check that, and the edge and base contacts themselves). The standard
-set (rendered with `KitSyntheticDrops.Options.tangential = .ratio(0.4)`, the app's own share, instead, the analysis refuses
+set (rendered with `KitSyntheticDrops.Options.tangential = .ratio(0.4)`, n12's share, instead, the analysis refuses
 d07, the 6 in drop: the app's finder loses the ball over the bounce's apex above the dish, 0.11-0.24 s after the impact,
-and the analysis takes the descent after that gap for the fall, "too little of the fall was seen (9 mm of 105 mm)";
-open): 12 drops at the centre and about 1, 2 and 3 in from it on several sides (the 3 in ones toward the corners: toward
+and the analysis takes the descent after that gap for the fall, "too little of the fall was seen (9 mm of 105 mm)"; with
+`.ratio(0.2)`, the share since n13, it refuses d02 instead, "too little of the fall was seen (26 mm of 219 mm)", and
+reads d07 at 77% for 85%; open): 12 drops at the centre and about 1, 2 and 3 in from it on several sides (the 3 in ones toward the corners: toward
 the middle of an edge a contact point stays more than the ball's radius inside it only within 2.8 in of the centre) and
 one 3.3 in out, 10 mm inside the downhill edge (measured, but left out of the rebound to bake), so the dish leans
 0.1-3.9° where they land; rebounds 0.5-0.85, tilts 0-12°, heights 6-36 in, cameras from the side, at 45°, from behind

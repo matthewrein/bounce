@@ -2,6 +2,33 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n13 (19 November 2026): restitution 0.9
+
+Small build on top of n12; everything below still holds except the restitution and the along-surface share it starts
+with. Developer shows **n13**.
+
+**What changed**
+- Settings' **Restitution** now starts at **0.90** (n12: 0.80), and the ball keeps **0.2** of its speed along the
+  surface (n12: 0.4). The 0.9 is measured on your first kit: its drops' first bounces came back with 0.896, 0.912,
+  0.903 and 0.917, the later bounces 0.917-0.924. The 0.2 is not measured; it is the share that, with 0.9, keeps the
+  distance you saw with Rebound at 100% in n11 (the predicted distance is 0.94-1.00 of n11's at 100%).
+- The scorer (track E): the "false slab" numbers on the ball-on-the-floor shots were the real slab, left in view a few
+  inches from the ball, in both kits. The scorer now counts a find on the real slab as the real slab. On the phone, the
+  kit's note after those shots no longer says the app saw a slab that isn't there; it says a slab still in the picture
+  is the real one. The app itself is otherwise unchanged.
+
+**Checked on your real clips**: on your first kit's 4 drops (n12's careful tracker) the predicted landings move by 3 mm
+or less from n12's (4.0-7.1 cm off, the drop near the edge 2.6 cm). Those drops are on a nearly level slab, where the
+pair hardly matters; it shows on a tilted slab.
+
+**Only compiled**: the Settings screen with 0.90 compiles in GitHub's checks but has not run on a phone. The share of
+0.2 is still a choice, not a measurement.
+
+**Try**: after updating, check that Developer says n13 and Settings shows Restitution 0.90 (if it shows 0.80, n12 saved
+it when you moved the slider or tapped Restore defaults: tap Restore defaults). Drop the ball from about 1 ft: does it land nearer the drawn ring than in n12?
+For the next kit, do the drops with the slab tilted (8 or 12 degrees, not moved after its flat-phone step): they
+measure the along-surface share. In the ball-on-the-floor shots, turn so the slab is out of the picture.
+
 ## Build n12 (19 November 2026): the bounce model
 
 Small build on top of n11; everything below about n11 still holds. Developer shows **n12**.
@@ -23,7 +50,7 @@ Small build on top of n11; everything below about n11 still holds. Developer sho
   and fell back to its 3 ft default. That is the ball finder's problem; the lattice-ball build deals with it.
 - Your drops come back with a restitution of about **0.9** (the first kit; the second kit's falls were not tracked
   well enough). If your 0.8 meant "it comes back to 80% of the height", the better pair is 0.9 with an along-surface
-  share of about 0.2; tell me and I will set that.
+  share of about 0.2; build n13 (above) sets that.
 - Left-right: in the kits the ball went right of the old prediction, not left, so your leftward miss is not reproduced
   yet; the slab was nearly level in every drop, which tests the dish's curve, not the tilt direction.
 

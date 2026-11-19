@@ -231,9 +231,9 @@ final class KitScorerTests: XCTestCase {
         XCTAssertLessThan(abs(try XCTUnwrap(d.metric("impactHeightError")?.value)), 5, "mm: the lock is good to a few mm")
         XCTAssertLessThan(try XCTUnwrap(d.metric("landingError")?.value), 15)
         XCTAssertNil(r.aggregate("impactPointError"), "the horizontal impact point (always about 0) is no longer scored")
-        // measured on the dish: this kit's drops follow the app's own model (n12's impact rule: the restitution 0.8 about
-        // the dish's normal where the ball touches it), so the rebound measured is 0.8², the app's own; its prediction from
-        // a good lock lands where the ball does
+        // measured on the dish: this kit's drops follow the app's own model (n12's impact rule: the owner's restitution,
+        // 0.9 since n13, about the dish's normal where the ball touches it), so the rebound measured is 0.9², the app's own;
+        // its prediction from a good lock lands where the ball does
         let drop = try XCTUnwrap(d.drop, "\(d.metrics.compactMap { $0.note })")
         XCTAssertEqual(try XCTUnwrap(drop.rebound), BallSpec.ownerRestitution * BallSpec.ownerRestitution, accuracy: 0.03)
         XCTAssertEqual(try XCTUnwrap(d.metric("reboundMeasured")?.value), try XCTUnwrap(drop.rebound), accuracy: 1e-12)

@@ -78,11 +78,12 @@ final class KitSyntheticDropsTests: XCTestCase {
     /// the analysis's own level, no floor), for two of the drops it measures: the 6 in drop 2 in out (its rebound within
     /// 5 points: 89% for 85%) and the drop 1 in downhill (within 8 points: it reads 75% for 70%). A change that loses
     /// either, or reads it worse, fails here; `bounce-score --drops` has the whole set. (With the app's own tangential
-    /// share in the render instead of the rolling ball, `Options.tangential = .ratio(0.4)`, the analysis refuses the 6 in
-    /// drop, "too little of the fall was seen (9 mm of 105 mm)": the finder loses the ball from 0.11 s to 0.24 s after
-    /// the impact, over the bounce's apex above the dish (31 samples against 38), and the analysis then takes the
-    /// descent after that gap, onto the next contact at 0.32 s, for the fall. Open: the finder near the apex, and a fall
-    /// that a gap in the track can move.)
+    /// share in the render instead of the rolling ball, `Options.tangential = .ratio(...)`, the analysis refuses one of
+    /// the two. At n12's 0.4 it is the 6 in drop, "too little of the fall was seen (9 mm of 105 mm)": the finder loses
+    /// the ball from 0.11 s to 0.24 s after the impact, over the bounce's apex above the dish (31 samples against 38), and
+    /// the analysis then takes the descent after that gap, onto the next contact at 0.32 s, for the fall. At the 0.2 of
+    /// n13 on it is the drop 1 in downhill, "too little of the fall was seen (26 mm of 219 mm)", and the 6 in drop reads
+    /// 77% for 85%. Open: the finder near the apex, and a fall that a gap in the track can move.)
     func testTheAppsBallFinder() throws {
         let maker = KitSyntheticDrops()
         XCTAssertEqual(maker.options.spec, SlabSpec.standard)

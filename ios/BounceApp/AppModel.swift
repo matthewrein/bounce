@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n12"
+let appBuild = "n13"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the ball's
 /// restitution (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
@@ -24,7 +24,7 @@ struct AppSettings: Equatable {
     // MARK: the user's settings (Settings)
 
     static let defaultDropFeet = 3.0
-    /// the owner's ball on the slab (BounceCore's `BallSpec.ownerRestitution`: 0.8)
+    /// the owner's ball on the slab (BounceCore's `BallSpec.ownerRestitution`: 0.9, measured on the owner's first kit)
     static let defaultRestitution = BallSpec.ownerRestitution
     static let dropRange: ClosedRange<Double> = 0.5...10
     static let restitutionRange: ClosedRange<Double> = 0...1
@@ -39,8 +39,9 @@ struct AppSettings: Equatable {
     static let keys = (drop: "dropFeet", restitution: "restitution", demo: "demo")
     /// Keys of the builds before n12 that are removed, not read (`load`): the rebound percent ("reboundPercent") tuned the
     /// old launch along the slab's normal, which had no speed along the surface, so it stood in for that missing speed
-    /// as well as for the bounce (the owner's 100% matched the distance); read as a restitution it would make the new
-    /// bounce land a third too far. Settings starts at the owner's restitution instead. The developer's dish-normal switch
+    /// as well as for the bounce (the owner's 100% matched the distance); read as a restitution (e = 1.00) it would make
+    /// the new bounce land 1.15-1.21 x as far as n11 at 100% on 0.5-12° slabs (with n13's tangential share, 0.2).
+    /// Settings starts at the owner's restitution instead. The developer's dish-normal switch
     /// ("devDishNormalLaunch") is gone: the bounce always leaves about the dish's own normal where the ball hits.
     static let retiredKeys = ["reboundPercent", "devDishNormalLaunch"]
 

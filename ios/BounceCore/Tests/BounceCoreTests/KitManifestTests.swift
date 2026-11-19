@@ -47,8 +47,8 @@ final class KitManifestTests: XCTestCase {
         XCTAssertEqual(slab.thickness, 1.05 * 0.0254, accuracy: 1e-12)
         XCTAssertEqual(slab.dishDepth, 0.125 * 0.0254, accuracy: 1e-12)
         XCTAssertEqual(m.ball().diameter, 0.035, accuracy: 1e-12)
-        // the app's rebound: its restitution (0.8, n12's setting) squared
-        XCTAssertEqual(m.ball().rebound, 0.64, accuracy: 1e-12)
+        // the app's rebound: its restitution (0.9, the setting since n13) squared
+        XCTAssertEqual(m.ball().rebound, 0.81, accuracy: 1e-12)
         XCTAssertEqual(m.ball(rebound: 0.5).rebound, 0.5)
         let base = RecordingSettings(sideUInches: 5, sideVInches: 5, thicknessInches: 2, dishInches: 0.3, ballDiameterMm: 40, dropHeightFeet: 2,
                                      restitution: 0.7, tangential: 0.3)

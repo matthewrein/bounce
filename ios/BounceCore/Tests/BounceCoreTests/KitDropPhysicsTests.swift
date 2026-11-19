@@ -132,8 +132,8 @@ final class KitDropPhysicsTests: XCTestCase {
     /// still misses (the model). The rendered ball rolls off, keeping 5/7 of its speed along the dish, and leaves at about
     /// lean + atan(5/7 tan(lean) / e) from vertical, lean the local normal's tilt; the app's impact rule leaves about the
     /// same local normal (the same contact, for a drop let go from rest) keeping its tangential share
-    /// (`BallSpec.ownerTangential`, 0.4), at lean + atan(0.4 tan(lean) / e). So where the dish leans the ball goes
-    /// further than the app says, down the local slope (on a level slab's middle the two would agree).
+    /// (`BallSpec.ownerTangential`, 0.2 since n13), at lean + atan(0.2 tan(lean) / e). So where the dish leans the ball
+    /// goes further than the app says, down the local slope (on a level slab's middle the two would agree).
     func testDropTruth() throws {
         let maker = KitSyntheticDrops()
         XCTAssertEqual(maker.options.spec, SlabSpec.standard, "the owner's slab")
@@ -153,8 +153,8 @@ final class KitDropPhysicsTests: XCTestCase {
             XCTAssertLessThan(off, maker.dish.rimRadius, "\(shot.id): on the dish, inside its rim")
             let app = try XCTUnwrap(t.trueRebound, shot.id)
             let lean = Units.degrees(t.localNormal.angle(to: Vec3(0, 1, 0)))
-            // (every drop of the set lands on a lean of 2° or more: on the slab's tilt, or off the dish's middle; 8 mm to
-            // 16 cm further, the most on the steepest)
+            // (every drop of the set lands on a lean of 2° or more: on the slab's tilt, or off the dish's middle; 13 mm to
+            // 26 cm further, the most on the 12° slab)
             if shot.releaseVelocity == .zero && shot.releaseSpin == .zero && lean > 2 {
                 XCTAssertGreaterThan(app.rangeError, 0.005, "\(shot.id): the ball goes further than the app says"); further += 1
             }

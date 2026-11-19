@@ -310,9 +310,9 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 5))
     }
 
-    /// Settings: changing the restitution from 0.80 to about 0.50 changes the apex as the app's bounce says (about
-    /// (0.5/0.8)², a little less on the tilted demo slab, where part of the ball's speed runs along it); Restore defaults
-    /// puts it back.
+    /// Settings: changing the restitution from 0.90 (the default since n13) to about 0.50 changes the apex as the app's
+    /// bounce says (about (0.5/0.9)², a little less on the tilted demo slab, where part of the ball's speed runs along it);
+    /// Restore defaults puts it back.
     func testRestitutionChangesTheApex() {
         let d = DemoScript()
         let app = launch(["demoTilt": "\(d.tilt)"])
@@ -323,11 +323,11 @@ final class SlabBounceUITests: XCTestCase {
         tap(app, "settings")
         XCTAssertTrue(element(app, "restitutionValue").waitForExistence(timeout: 10))
         let start = number(label(app, "restitutionValue"))
-        XCTAssertEqual(start ?? -1, 0.80, accuracy: 0.005, "restitution did not start at 0.80: \(label(app, "restitutionValue"))")
+        XCTAssertEqual(start ?? -1, 0.90, accuracy: 0.005, "restitution did not start at 0.90: \(label(app, "restitutionValue"))")
         let slider = app.sliders["restitutionSlider"]
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
         slider.adjust(toNormalizedSliderPosition: 0.5)
-        let e = number(label(app, "restitutionValue")) ?? 0.8
+        let e = number(label(app, "restitutionValue")) ?? 0.9
         screenshot(app, "settings")
         tap(app, "settingsDone")
         waitGone(app, "settingsDone")
@@ -340,14 +340,14 @@ final class SlabBounceUITests: XCTestCase {
         let after = number(label(app, "apex"))
         let ratio = (after ?? 0) / max(1e-6, before ?? 0)
         screenshot(app, "restitution changed")
-        // Restore defaults: back to 0.80
+        // Restore defaults: back to 0.90
         tap(app, "settings")
         tap(app, "restoreDefaults")
         let restored = number(label(app, "restitutionValue"))
         tap(app, "settingsDone")
         waitGone(app, "settingsDone")
-        if restored.map({ abs($0 - 0.8) < 0.005 }) ?? false { appToRestore = nil }
-        summary(String(format: "settings: restitution 0.80 -> %.2f: apex %@ -> %@ in (ratio %.3f, expected %.3f; truth %.1f in), shown after %.1f s; "
+        if restored.map({ abs($0 - 0.9) < 0.005 }) ?? false { appToRestore = nil }
+        summary(String(format: "settings: restitution 0.90 -> %.2f: apex %@ -> %@ in (ratio %.3f, expected %.3f; truth %.1f in), shown after %.1f s; "
                        + "Restore defaults -> %@", e, before.map { String(format: "%.1f", $0) } ?? "-",
                        after.map { String(format: "%.1f", $0) } ?? "-", ratio, expected, tr.apexInches, t ?? -1,
                        restored.map { String(format: "%.2f", $0) } ?? "?"))
@@ -355,7 +355,7 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertNotNil(t, "the apex did not follow the restitution: \(label(app, "apex")), wanted about \(want) in")
         XCTAssertEqual(ratio, expected, accuracy: 0.06, "apex \(before ?? -1) -> \(after ?? -1) in at restitution \(e)")
         XCTAssertEqual(after ?? -99, tr.apexInches, accuracy: max(1.5, tr.apexInches * 0.06), "apex readout \(label(app, "apex"))")
-        XCTAssertEqual(restored ?? -1, 0.8, accuracy: 0.005, "Restore defaults did not put the restitution back to 0.80")
+        XCTAssertEqual(restored ?? -1, 0.9, accuracy: 0.005, "Restore defaults did not put the restitution back to 0.90")
     }
 
     /// The capture kit (Settings > Developer > Capture kit), at a quarter of its real timings (-kitFast YES) on the demo:

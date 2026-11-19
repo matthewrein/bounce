@@ -209,18 +209,19 @@ final class BounceTests: XCTestCase {
                                  floorBelowCenter: 0.05)
         XCTAssertEqual(new.path.range / old.path.range, 1.07, accuracy: 0.05)
     }
-    /// The setting (n12): the restitution, 0.8 by default, with the impact rule and the owner's tangential share; the
-    /// rebound written beside it is always its square; recordings and diagnostics made before n12 (no restitution) decode
-    /// to the rule and the rebound they ran, and a ball written before has no tangential share and writes none.
+    /// The setting (n12): the restitution, 0.9 by default (0.8 in n12), with the impact rule and the owner's tangential
+    /// share (0.2; 0.4 in n12); the rebound written beside it is always its square; recordings and diagnostics made before
+    /// n12 (no restitution) decode to the rule and the rebound they ran, one made by n12 to its own restitution and share,
+    /// and a ball written before has no tangential share and writes none.
     func testTheRestitutionSettingAndOlderFiles() throws {
         let s = RecordingSettings()
-        XCTAssertEqual(s.restitution, 0.8)
+        XCTAssertEqual(s.restitution, 0.9)
         XCTAssertEqual(s.tangential, BallSpec.ownerTangential)
         XCTAssertEqual(s.launchRule, .impact)
         XCTAssertEqual(s.trackerSettings.launchRule, .impact)
-        XCTAssertEqual(s.ball.restitution, 0.8, accuracy: 1e-12)
+        XCTAssertEqual(s.ball.restitution, 0.9, accuracy: 1e-12)
         XCTAssertEqual(s.ball.tangentialFactor, BallSpec.ownerTangential)
-        XCTAssertEqual(s.reboundPercent, 64)
+        XCTAssertEqual(s.reboundPercent, 81)
         XCTAssertEqual(s.ball, BallSpec.ownerBall)
         // a rebound passed with a restitution cannot disagree with it; without one it is the old rule's
         let both = RecordingSettings(reboundPercent: 60, restitution: 0.5)
@@ -239,6 +240,12 @@ final class BounceTests: XCTestCase {
         XCTAssertEqual(o.launchRule, .cornerPlane)
         XCTAssertEqual(o.ball, BallSpec(diameter: 0.03, rebound: 0.7))
         XCTAssertNil(o.ball.tangential)
+        // an n12 session.json: its own restitution and tangential share (0.8 and 0.4), not today's defaults
+        let n12 = #"{"sideUInches":7.094,"sideVInches":7.094,"thicknessInches":1,"dishInches":0.125,"ballDiameterMm":30,"dropHeightFeet":3,"reboundPercent":64,"restitution":0.8,"tangential":0.4}"#
+        let o12 = try JSONDecoder().decode(RecordingSettings.self, from: Data(n12.utf8))
+        XCTAssertEqual(o12.launchRule, .impact)
+        XCTAssertEqual(o12.ball, BallSpec(diameter: 0.03, restitution: 0.8, tangential: 0.4))
+        XCTAssertEqual(o12.trackerSettings.ball.tangentialFactor, 0.4)
         // an old tracker's ball: no tangential share, and none written back
         let ballJSON = #"{"diameter":0.035,"rebound":0.7}"#
         let b = try JSONDecoder().decode(BallSpec.self, from: Data(ballJSON.utf8))

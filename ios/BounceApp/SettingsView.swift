@@ -11,7 +11,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(footer: Text("With a ball held over the slab, its height is the drop height; otherwise this one is used. Restitution is how much of its speed into the slab the ball keeps coming off it: at 0.8 a straight-up bounce regains 64% of the drop height.")) {
+                Section(footer: Text("With a ball held over the slab, its height is the drop height; otherwise this one is used. Restitution is how much of its speed into the slab the ball keeps coming off it: at 0.9 a straight-up bounce regains 81% of the drop height.")) {
                     VStack(alignment: .leading) {
                         Text(String(format: "Drop height: %.2f ft", dropFeet)).accessibilityIdentifier("dropValue")
                         Slider(value: $dropFeet, in: AppSettings.dropRange, step: 0.25).accessibilityIdentifier("dropSlider")

@@ -84,8 +84,8 @@ public struct RecordingSettings: Codable, Equatable {
     public var nearFeatureDegrees: Double?
 
     /// New settings default to the owner's slab and ball (`SlabSpec.ownerSlab`, `BallSpec.ownerBall`: their constants are
-    /// the one place to change them), a 3 ft drop, and the owner's restitution (0.8) and tangential share with the impact
-    /// rule (the rebound is then 64%, 0.8²). With a restitution, `reboundPercent` is set to its square whatever is
+    /// the one place to change them), a 3 ft drop, and the owner's restitution (0.9) and tangential share (0.2) with the
+    /// impact rule (the rebound is then 81%, 0.9²). With a restitution, `reboundPercent` is set to its square whatever is
     /// passed, so the two never disagree in a file; `restitution: nil` gives the rule of the builds before n12 (the
     /// corner plane, or `dishBounce`) at the `reboundPercent` passed.
     public init(sideUInches: Double = SlabSpec.ownerFlatTopInches, sideVInches: Double = SlabSpec.ownerFlatTopInches,

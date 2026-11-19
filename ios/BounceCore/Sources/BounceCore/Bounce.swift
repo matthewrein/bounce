@@ -28,27 +28,26 @@ public struct BallSpec: Equatable, Codable {
     /// owner's word ("I used a 30mm ball"), and measured on the owner's first kit as 30.1 ± 0.6 mm (its outline fitted
     /// as a cone from the camera on the floor at 3 ft and at 5 ft: 30.10 and 30.12 mm). The app had assumed 35 mm (16%
     /// too big, which put the held ball 16% too far away and its drop height off by centimetres). It bounces with the
-    /// owner's restitution and the tangential share measured on the kits (`ownerRestitution`, `ownerTangential`).
+    /// restitution measured on the owner's first kit and the tangential share that keeps the distance the owner matched
+    /// (`ownerRestitution`, `ownerTangential`).
     public static let ownerBall = BallSpec(diameter: ownerDiameterMm / 1000, restitution: ownerRestitution, tangential: ownerTangential)
     /// the owner's ball's diameter (mm): change it here
     public static let ownerDiameterMm = 30.0
-    /// The owner's ball's restitution on the slab: 0.8, the owner's word for the titanium lattice ball; the app's setting
-    /// starts here (`RecordingSettings.restitution`). The drops on the owner's kits bounce higher: about 0.90-0.92 on the
-    /// first kit (its four first bounces 0.90-0.92 one by one, 0.86-0.96 fitted without assuming the ball was let go
-    /// from rest; the flight times between its bounces 0.90-0.94), while the second kit's are not measured well (one
-    /// usable first bounce, seen for 4 frames of its fall). That is a height ratio of about 0.83, so if the owner's 0.8
-    /// was the height ratio the restitution is about 0.9, and the tangential share then about 0.2, to keep the distance
-    /// the owner matched (`ownerTangential`).
-    public static let ownerRestitution = 0.8
-    /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t), chosen so that
-    /// with the owner's restitution the bounce goes about as far as the old launch along the slab's normal at a rebound
-    /// of 100%, which the owner found matched the distance: on a tilted slab the new bounce's range over the old one's is
-    /// about e (e + k_t), 0.8 x 1.2 = 0.96 (0.90-0.97 on 0.5-12° slabs from 1 and 3 ft). It is not measured: the kits'
-    /// drops, all on a near-level slab, fit it only loosely, 0.39 ± 0.21 over both kits with a poor fit (chi²/dof 122/11
-    /// and 33/7; single bounces from -1.9 to 2.8), and on their landings anything from 0 to 0.6 does about as well. With
-    /// e = 0.9, about 0.2 keeps the owner's distance (0.94-1.00 of the old rule's). (A solid ball that rolls off keeps
-    /// 5/7, a thin shell 0.6.) A drop on a tilted slab measures it.
-    public static let ownerTangential = 0.4
+    /// The owner's ball's restitution on the slab: 0.9, measured on the owner's first kit (its drops' first bounces
+    /// 0.896, 0.912, 0.903 and 0.917 one by one, its later bounces 0.917-0.924; the second kit's are not measured well:
+    /// one usable first bounce, seen for 4 frames of its fall). The owner had said about 0.8 and does not have an exact
+    /// figure ("whatever you calculate is probably good"); n12 used 0.8. The app's setting starts here
+    /// (`RecordingSettings.restitution`, AppSettings.defaultRestitution).
+    public static let ownerRestitution = 0.9
+    /// The share of the along-surface velocity the owner's ball keeps through a bounce off the slab (k_t): 0.2. It is not
+    /// measured. It is the share that, with the restitution 0.9 (`ownerRestitution`), keeps the owner's finding that n11's
+    /// Rebound at 100% (the old launch along the slab's normal, with no speed along the surface) matched the real
+    /// distance: on a tilted slab the new bounce's range over that one's is about e (e + k_t), 0.9 x 1.1 = 0.99 (the
+    /// predicted distance 0.94-1.00 x n11's at 100% on 0.5-12° slabs from 1 and 3 ft). n12 used 0.4 with e 0.8 (0.96).
+    /// The kits' drops, all on a near-level slab, fit it only loosely, 0.39 ± 0.21 over both kits with a poor fit
+    /// (chi²/dof 122/11 and 33/7; single bounces from -1.9 to 2.8), and on their landings anything from 0 to 0.6 does
+    /// about as well. (A solid ball that rolls off keeps 5/7, a thin shell 0.6.) A drop on a tilted slab measures it.
+    public static let ownerTangential = 0.2
 }
 
 /// Where a ball held above the slab would land if let go, and from how high.
