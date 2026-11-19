@@ -2,6 +2,38 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n12 (19 November 2026): the bounce model
+
+Small build on top of n11; everything below about n11 still holds. Developer shows **n12**.
+
+**What changed**
+- The ball now bounces the way a real ball does. It hits the dish where it first touches it; its speed straight into the
+  surface comes back scaled by the **restitution**, and it keeps part of its speed along the surface (a share of 0.4).
+  Before, it always shot straight out of the slab and lost that along-the-surface speed, which is why "Rebound 100%"
+  matched your distance.
+- The dish is a round cap. Your first kit's pictures show it curves about twice as much near the middle as the app had
+  assumed, so an off-centre hit now bends the bounce toward the middle.
+- Settings has **Restitution** (starts at 0.80) instead of Rebound. The old Rebound value is not carried over: it was
+  standing in for the missing along-surface speed and would make the bounce land about a third too far.
+
+**Checked on your real clips** (a separate, careful tracker measured 6 of your 8 drops, all on a nearly level slab)
+- First kit, 4 drops: the predicted landing moved from about 8 cm off to about 5 cm; the drop near the edge from 10 cm
+  to 3 cm.
+- Second kit, 2 drops: worse (17 and 20 cm off), because the app read the lattice ball as held off the side of the slab
+  and fell back to its 3 ft default. That is the ball finder's problem; the lattice-ball build deals with it.
+- Your drops come back with a restitution of about **0.9** (the first kit; the second kit's falls were not tracked
+  well enough). If your 0.8 meant "it comes back to 80% of the height", the better pair is 0.9 with an along-surface
+  share of about 0.2; tell me and I will set that.
+- Left-right: in the kits the ball went right of the old prediction, not left, so your leftward miss is not reproduced
+  yet; the slab was nearly level in every drop, which tests the dish's curve, not the tilt direction.
+
+**Only on test scenes or only compiled**: the share of 0.4 is not measured (drops on a tilted slab would measure it); the
+Settings screen and the app's bounce drawing compile in GitHub's checks but have not run on a phone.
+
+**Try**: point at the slab as before, check that Settings shows Restitution 0.80, and drop the ball from about 1 ft:
+does it land nearer the drawn landing ring than in n11? For the next kit, do the drops with the slab tilted (8 or 12
+degrees) and do not move it after its flat-phone step.
+
 ## Morning brief: build n11 (19 November 2026)
 
 Build n11 answers your three priorities from the first kit. It reaches `native-ios` only after GitHub's checks pass on

@@ -54,10 +54,18 @@ jobs:
     timeout-minutes: 45
     steps:
       # git before the checkout, so the checkout is a real clone (the scripts ask git for the repository's root)
+      # GitHub's package mirror once stalled this step for 30 minutes with no output: each apt call now gives up after a
+      # few minutes and the whole install is tried three times, so a stall costs minutes, not the job.
       - name: Tools the hand-off needs
+        timeout-minutes: 12
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null
+          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          for i in 1 2 3; do
+            if timeout 180 apt-get $A update -qq && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get $A install -y -qq \
+                 --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null; then break; fi
+            echo "apt attempt $i did not finish; trying again"; sleep 15
+          done
+          command -v git && command -v unzip
           ffmpeg -hide_banner -version | head -1
       - uses: actions/checkout@v4
       - name: Dry run of the hand-off (quarter-length kit)
@@ -81,10 +89,19 @@ jobs:
     container: swift:6.1-noble
     timeout-minutes: 30
     steps:
+      # GitHub's package mirror once stalled this step for 30 minutes with no output: each apt call now gives up after a
+      # few minutes and the whole install is tried three times, so a stall costs minutes, not the job.
       - name: Tools the hand-off needs
+        timeout-minutes: 12
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null
+          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          for i in 1 2 3; do
+            if timeout 180 apt-get $A update -qq && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get $A install -y -qq \
+                 --no-install-recommends git ffmpeg unzip gzip ca-certificates > /dev/null; then break; fi
+            echo "apt attempt $i did not finish; trying again"; sleep 15
+          done
+          command -v git && command -v unzip
+          ffmpeg -hide_banner -version | head -1
       - uses: actions/checkout@v4
       # A path relative to the workspace: in a container job `${{ runner.temp }}` is the host's path, not the
       # container's ($RUNNER_TEMP), so the two must not be mixed. The parts match .gitignore's slab-kit-*.
