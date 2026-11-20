@@ -24,9 +24,15 @@ final class DemoCueTests: XCTestCase {
         let a = run(&c, from: 0, to: 3, locked: false)
         XCTAssertTrue(a.filter { $0.0 <= 2.0 }.allSatisfy { $0.1 == nil }, "nothing for the first 2 s")
         XCTAssertEqual(a.last?.1, MainScreenCue.pointAtSlab)
-        // the slab being confirmed is far
+        // the slab being confirmed is far: "Step closer" (no angle, or the phone low over it), "Lower the phone" (high
+        // over it: 1.6 m at 35 deg is 1.31 m up, chest height)
         XCTAssertEqual(c.update(time: 3.1, locked: false, settling: false, slabDistance: 1.6, viewAngleDegrees: nil, events: []), MainScreenCue.stepCloser)
-        XCTAssertEqual(c.update(time: 3.2, locked: false, settling: false, slabDistance: 1.0, viewAngleDegrees: nil, events: []), MainScreenCue.pointAtSlab)
+        XCTAssertEqual(c.update(time: 3.15, locked: false, settling: false, slabDistance: 1.6, viewAngleDegrees: 55, events: []), MainScreenCue.stepCloser)
+        XCTAssertEqual(c.update(time: 3.17, locked: false, settling: false, slabDistance: 1.6, viewAngleDegrees: 35, events: []), MainScreenCue.lowerPhone)
+        // a slab being confirmed within 1.25 m: hold steady (it is about to lock), not "Point at the slab"
+        XCTAssertEqual(c.update(time: 3.2, locked: false, settling: false, slabDistance: 1.0, viewAngleDegrees: 45, events: []), MainScreenCue.holdSteady)
+        // no slab at all
+        XCTAssertEqual(c.update(time: 3.25, locked: false, settling: false, slabDistance: nil, viewAngleDegrees: nil, events: []), MainScreenCue.pointAtSlab)
         // locked and settled: nothing
         XCTAssertNil(c.update(time: 3.3, locked: true, settling: false, slabDistance: 1.0, viewAngleDegrees: 45, events: []))
     }
@@ -38,7 +44,19 @@ final class DemoCueTests: XCTestCase {
             XCTAssertTrue(a.filter { $0.0 <= 1.5 }.allSatisfy { $0.1 == nil }, "nothing for the first 1.5 s")
             return a.last?.1
         }
-        XCTAssertEqual(reason(distance: 1.5, angle: 45), MainScreenCue.stepCloser)
+        // far, the phone about 0.86 m over the slab: "Step closer"
+        XCTAssertEqual(reason(distance: 1.5, angle: 55), MainScreenCue.stepCloser)
+        // far, the phone high over the slab (1.6 m at 35 deg: 1.31 m up, chest height; 1.5 m at 45 deg: 1.06 m up):
+        // "Lower the phone", since stepping closer never brings it within 1.25 m
+        XCTAssertEqual(reason(distance: 1.6, angle: 35), MainScreenCue.lowerPhone)
+        XCTAssertEqual(reason(distance: 1.5, angle: 45), MainScreenCue.lowerPhone)
+        // standing at chest height (1.3 m up) right over the slab, or 4 ft back: never "Step closer"
+        for back in [0.0, 0.3, 0.6, 0.9, 1.2, 1.5] {
+            let d = (1.3 * 1.3 + back * back).squareRoot(), a = atan2(back, 1.3) * 180 / .pi
+            XCTAssertEqual(reason(distance: d, angle: a), MainScreenCue.lowerPhone, "\(back) m back at chest height")
+        }
+        // crouching (0.46 m up, 0.56 m back, n14's pose that settled): no far cue
+        XCTAssertEqual(reason(distance: 0.726, angle: 50.5), MainScreenCue.moveSlowly)
         XCTAssertEqual(reason(distance: 1.0, angle: 65), MainScreenCue.holdHigher)
         XCTAssertEqual(reason(distance: 0.8, angle: 18), MainScreenCue.lowerPhone)
         XCTAssertEqual(reason(distance: 0.9, angle: 45), MainScreenCue.moveSlowly)
@@ -50,10 +68,11 @@ final class DemoCueTests: XCTestCase {
         XCTAssertNil(c.update(time: 10.1, locked: true, settling: false, slabDistance: 1.1, viewAngleDegrees: 40, events: []))
     }
 
-    func testABallTapThatSetsNothingSaysTapTheBallForTwoSeconds() {
+    func testABallTapThatSetsNothingSaysHoldTheBallOverTheSlabForTwoSeconds() {
         var c = MainScreenCue()
         let a = run(&c, from: 0, to: 3, locked: true, settling: false, distance: 1, angle: 45, events: ["tap-ball-set-none"])
-        XCTAssertTrue(a.filter { $0.0 <= 2.0 }.allSatisfy { $0.1 == MainScreenCue.tapTheBall })
+        XCTAssertTrue(a.filter { $0.0 <= 2.0 }.allSatisfy { $0.1 == MainScreenCue.ballOverSlab })
+        XCTAssertEqual(MainScreenCue.ballOverSlab, "Hold the ball over the slab")
         XCTAssertTrue(a.filter { $0.0 > 2.05 }.allSatisfy { $0.1 == nil })
     }
 
@@ -67,6 +86,9 @@ final class DemoCueTests: XCTestCase {
         let s = World.slabAt(Vec3(0, 0, -1), tilt: 0, heading: 0)
         XCTAssertEqual(MainScreenCue.viewAngleDegrees(slab: s, camera: s.center + Vec3(0, 1, 0))!, 0, accuracy: 1e-6)
         XCTAssertEqual(MainScreenCue.viewAngleDegrees(slab: s, camera: s.center + Vec3(0, 1, 1))!, 45, accuracy: 1e-6)
+        // a slab being confirmed: its centre and world up
+        XCTAssertEqual(MainScreenCue.viewAngleDegrees(center: s.center, normal: -ARKitConvention.worldDown, camera: s.center + Vec3(0, 1, 1))!,
+                       45, accuracy: 1e-6)
     }
 
     // MARK: the ball tap's reach

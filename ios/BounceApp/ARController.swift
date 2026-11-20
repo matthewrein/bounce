@@ -814,7 +814,7 @@ final class ARController: NSObject, ARSessionDelegate {
         let msg = "Camera stopped: \(error.localizedDescription)"
         Task { @MainActor [weak model] in
             guard let m = model else { return }
-            var h = m.live.hud; h.status = msg; h.locked = false
+            var h = m.live.hud; h.status = msg; h.locked = false; h.cue = nil
             m.publish(overlay: OverlayState(), hud: h, developer: m.live.developer, background: nil)
         }
     }
@@ -1004,8 +1004,12 @@ final class ARController: NSObject, ARSessionDelegate {
         }
         h.demo = isDemo
         let centre = out.slab?.center ?? tracker.candidateCenter
+        // the view angle: from the lock, or for a slab being confirmed from its centre with world up (the slab is on the
+        // floor; a few degrees of tilt do not matter for telling a phone held high from one held far)
+        let angle: Double? = out.slab.flatMap { MainScreenCue.viewAngleDegrees(slab: $0, camera: camera) }
+            ?? centre.flatMap { MainScreenCue.viewAngleDegrees(center: $0, normal: -ARKitConvention.worldDown, camera: camera) }
         h.cue = cue.update(time: t, locked: h.locked, settling: h.settling, slabDistance: centre.map { $0.distance(to: camera) },
-                           viewAngleDegrees: out.slab.flatMap { MainScreenCue.viewAngleDegrees(slab: $0, camera: camera) }, events: out.events)
+                           viewAngleDegrees: angle, events: out.events)
         return h
     }
 

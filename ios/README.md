@@ -9,21 +9,30 @@ Small build on top of n16 for the live demo: the slab search, the tilt's settlin
 
 **A short cue under the status chip.** The main screen now shows one short orange line, only when you can do something
 about what the app is waiting for, and nothing otherwise (the developer hints stay in Settings > Developer):
-- not locked for more than 2 s: **"Point at the slab"**, or **"Step closer"** when the slab it is checking is more than
-  1.25 m (about 4 ft) from the phone;
-- locked but the tilt still "settling" for more than 1.5 s, the most useful reason: more than 1.25 m away **"Step
-  closer"** (the honest tilt uncertainty grows with distance and stays above the 1 degree threshold beyond about 4 ft,
-  so the number would never show); line of sight more than 60 degrees from straight down onto the slab (phone held low)
+- not locked for more than 2 s: **"Point at the slab"** when it sees no slab, **"Hold the phone steady"** when the
+  slab it is checking is within 1.25 m (about 4 ft) of the phone, and the far cue below when it is farther;
+- locked but the tilt still "settling" for more than 1.5 s, the most useful reason: more than 1.25 m away, the far cue
+  (the honest tilt uncertainty grows with distance and stays above the 1 degree threshold beyond about 4 ft, so the
+  number would never show): **"Lower the phone"** when the phone is more than about 1.0 m above the slab (standing with
+  the phone at chest height it is about 1.3 m above a slab on the floor, so stepping closer never helps: crouch),
+  otherwise **"Step closer"**; line of sight more than 60 degrees from straight down onto the slab (phone held low)
   **"Hold the phone higher"**; less than 25 degrees (looking almost straight down, where n11 measured slow or no
   settling) **"Lower the phone"**; otherwise **"Move the phone slowly"** (a second view of the slab, a few degrees
   away, lets the tilt settle);
-- for 2 s after a ball tap that set nothing: **"Tap the ball"**.
+- for 2 s after a ball tap that set nothing: **"Hold the ball over the slab"** (the tap found no ball over the slab at a
+  drop height: it missed the ball, or the ball was off the slab, too low or too high).
 So "settling" never sits there alone for more than 1.5 s.
 
 **A larger tap target for the ball.** A ball the finder sees within a 44 pt fingertip of your tap (on the iPhone 17
 Pro's screen; at least four of the ball's radii) is taken as the ball you tapped, and the tap's search area is padded
 by at least as much (n16: about 33 pt plus half again the ball's radius). n15's place checks still apply to it. If the
 finder sees no ball there, the ball is set at the tap as in n16. Slab taps are unchanged.
+
+**Where to hold the phone for the tilt number (n17):** crouch or kneel, the phone about 1.5 ft above the floor and
+about 2 ft back from the slab, looking down at it about 35-40 degrees from straight down (your n14 test that settled:
+0.73 m from the slab, 50 degrees from its normal, the phone about 0.46 m up). Standing with the phone at chest height,
+at any distance, the phone is more than 1.25 m from the slab and the tilt number will not show in n17 (the cue says
+"Lower the phone"). This is worked out from the geometry and the n14 numbers, not replayed on your kits.
 
 **Not in this build:** showing an approximate tilt ("≈X.X°") while settling was considered and left out: it could not
 be checked on your recordings in time.

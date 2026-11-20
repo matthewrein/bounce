@@ -129,8 +129,8 @@ struct HUDState: Equatable {
     /// `HUDState.settlingText`, dimmed; Apex and Air keep their values (a degree moves them by at most 6 mm and 4 ms)
     var settling = false
     /// n17: one short line under the status chip, only when the owner can do something about what the app waits for
-    /// (BounceCore's MainScreenCue: "Point at the slab", "Step closer", "Hold the phone higher", "Lower the phone", "Move
-    /// the phone slowly", "Tap the ball"); nil otherwise
+    /// (BounceCore's MainScreenCue: "Point at the slab", "Hold the phone steady", "Step closer", "Hold the phone higher",
+    /// "Lower the phone", "Move the phone slowly", "Hold the ball over the slab"); nil otherwise
     var cue: String? = nil
 
     /// what Tilt and Lands read while the tilt settles

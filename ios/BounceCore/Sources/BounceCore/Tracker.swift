@@ -725,7 +725,7 @@ public final class SlabTracker {
     /// re-lock (a move), a world-frame discontinuity or losing the lock starts it again.
     public var angleSettled: Bool { state == .locked && unconfirmed == nil && honest.settled }
     /// While confirming: the newest candidate detection's centre (world); nil otherwise (n17: the main screen's cue says
-    /// "Step closer" when the slab being confirmed is far, `MainScreenCue`)
+    /// "Step closer" or "Lower the phone" when the slab being confirmed is far, `MainScreenCue`)
     public var candidateCenter: Vec3? { state == .confirming ? candidates.last?.pose.center : nil }
     /// the honest estimate's normal (world), and how many views of the slab it rests on
     public var settledNormal: Vec3? { state == .locked ? honest.normal : nil }
