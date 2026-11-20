@@ -58,12 +58,21 @@ public struct BallCircle: Equatable, CustomStringConvertible {
     /// A lower half's reading that replaced a whole reading that is not one circle (a level disc's ellipse is not) is.
     /// `BallLocator` holds a partial find to stricter rules (two scans in a row, a least height).
     public var partial: Bool
+    /// The inside of the outline passed the lattice test (`BallFinder.looksLikeLattice`): dark, and varied the way the
+    /// owner's titanium lattice is, not as a print, a ring or a plain disc is. A find from part of its outline with this
+    /// evidence is held to the whole outline's least height (`BallLocator.Options.minLatticePartialHeight`).
+    public var lattice: Bool
+    /// Read from the arcs the fingers leave of the outline (`BallFinder.Reading.Mode.arc`: half the rim or more, all
+    /// round it), not from one half of it, or from one half where such a reading agrees: held, as `lattice` is, to the
+    /// whole outline's least height.
+    public var arc: Bool
 
-    public init(center: Vec2, radius: Double, support: Int, partial: Bool) {
-        self.center = center; self.radius = radius; self.support = support; self.partial = partial
+    public init(center: Vec2, radius: Double, support: Int, partial: Bool, lattice: Bool = false, arc: Bool = false) {
+        self.center = center; self.radius = radius; self.support = support; self.partial = partial; self.lattice = lattice; self.arc = arc
     }
     public var description: String {
-        String(format: "(%.2f, %.2f) r %.2f, %d spokes%@", center.x, center.y, radius, support, partial ? ", partial" : "")
+        String(format: "(%.2f, %.2f) r %.2f, %d spokes%@%@%@", center.x, center.y, radius, support, partial ? ", partial" : "", lattice ? ", lattice" : "",
+               arc ? ", arc" : "")
     }
 }
 
@@ -115,6 +124,19 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 /// - Edge thresholds rise with the picture's noise (`Options.gradientPerNoise`), and the fixed ones scale with its
 ///   exposure (`Options.referenceLuma`): with fixed thresholds a darker picture of the same scene loses the ball's
 ///   outline before the stronger reflections inside it, and an inner ring was then reported as the ball.
+/// - The owner's ball is a mildly polished titanium lattice (`LatticeBall`), not a mirror (`Options.lattice`): dark metal
+///   full of small holes, held in the fingertips. On the kits' clips it is darker than every floor, slab and hand it was
+///   seen against, so its highlights seldom stand the mirror test's 40 levels over a white play mat; and the thumb and
+///   two fingers hide a third to a half of its outline, so no half of it is whole either. A whole outline's reading may
+///   pass the lattice test instead of the mirror test (`looksLikeLattice`: darker than the background on most spokes
+///   and much darker right at its edges, dark for the exposure or finely varied inside, and not concentrically, as a
+///   printed ring is), and the outline is also read from the arcs the fingers leave (`Reading.Mode.arc`: half the rim or
+///   more, no gap wider than 120 degrees, one tight circle, the lattice inside or the mirror test all round with the
+///   inside darker than the background, and not shown to be an arc of a print lying on the floor, `arcLooksLevel`; an
+///   arc that passes the mirror test only confirms a half reading of the same circle). An arc's find, and that of a
+///   half reading an arc confirms, is partial, held to the whole outline's least height (`BallCircle.arc`,
+///   `BallLocator.Options.minLatticePartialHeight`); a half outline's reading takes the mirror test alone, as before.
+///   Up to `maxLatticeCandidates` more vote peaks come from votes toward each edge's darker side.
 public enum BallFinder {
     public struct Options {
         /// edge pixels that vote: central-difference gradient magnitude (luma levels across 2 px)
@@ -133,8 +155,12 @@ public enum BallFinder {
         public var minFullSupport: Int = 39
         /// upper spokes that must agree on the radius to start a partial find, and that must lie on its circle
         public var minUpperSeed: Int = 13
-        /// No longer used: a partial find from part of the outline other than its upper half now needs its whole lower
-        /// half (`minLowerShare`).
+        /// An arc reading (`Options.lattice`: the lattice's outline with the fingers over part of it) needs the outline on
+        /// at least this many of the 48 spokes (half the rim: as many as the upper outline's reading rests on, out of a
+        /// whole rim's instead of a half's), on one tight circle (`maxUpperRms`), its edges running across the spokes,
+        /// with no gap wider than `maxArcGap` spokes, and its inside passing the lattice test or the mirror test all round
+        /// (`Reading.standsAlone`). (Before the lattice it was not used: a partial find from part of the outline other
+        /// than its upper half needs its whole lower half, `minLowerShare`.)
         public var minArcSupport: Int = 24
         /// a partial find from the lower outline (not in the web app) needs at least this share of the lower spokes on
         /// a tight circle: the share the whole outline needs (39 of 48 spokes, the web app's rule)
@@ -178,6 +204,61 @@ public enum BallFinder {
         /// plain printed disc (a sticker, a coaster) is plain throughout. (The web app tested partial finds only, on
         /// their upper half, as is still done.)
         public var mirrorTestAll = true
+        /// The owner's ball is a mildly polished titanium lattice (`LatticeBall`), not a mirror: dark metal full of small
+        /// holes, held in the fingers. With this on, a reading that fails the mirror test may pass the lattice test
+        /// instead (`looksLikeLattice`), and the outline the fingers break is also read from the arcs that show
+        /// (`Reading.Mode.arc`: `minArcSupport`, `maxArcGap`; the lattice test inside, or the mirror test all round and
+        /// darker than the background, `Reading.standsAlone`; the mirror test alone only confirms a half reading of the
+        /// same circle). A half outline's reading still takes the mirror test alone. Off: the polished ball's rules alone
+        /// (n11).
+        public var lattice = true
+        /// The lattice test: on a spoke, the inside (the mirror test's samples) is darker than the background just outside
+        /// it by this factor at least; on at least `minLatticeDarkShare` of the spokes (the fingers cover some, and some
+        /// can lie over a black print). Titanium seen through its holes is darker than every floor, slab and hand in the
+        /// kits (inside 43-88 luma against 70-152 around it).
+        public var latticeDarkness: Float = 0.85
+        public var minLatticeDarkShare = 0.6
+        /// The lattice test: the inside's standard deviation over its mean at least this (struts, holes and glints: 0.25-0.75
+        /// on the kits' balls; a black print, a plain disc, a smooth toy ball are plainer).
+        public var minLatticeVariation: Float = 0.25
+        /// The lattice test: at most this share of the inside's variance may be the variation of its mean from ring to ring
+        /// about the centre (a wheel or ring printed on a mat is concentric; the lattice's holes and glints are not).
+        public var maxLatticeRings: Float = 0.5
+        /// The lattice test: where the circle crosses an edge (a luma step of at least `minRimContrast` across it), the
+        /// inside is darker than the outside by `latticeEdgeDarkness` (at 1.5 px either side of the circle) on at least
+        /// this share of those spokes. Titanium seen through its holes is far darker than all it was seen against in the
+        /// kits, right at its outline (0.3 of the luma of the white mat, of the fingers; 0.6 of the wooden floor); the
+        /// round outline of a hand, a finger or a fist holding the ball is lighter than a wooden floor and only a little
+        /// darker than the white mat (0.8 of it).
+        public var minLatticePolarity = 0.75
+        public var latticeEdgeDarkness: Float = 0.75
+        /// The lattice test: either the inside's mean luma is at most this share of the median luma of the region
+        /// searched, or its variation is fine (`minLatticeFineness`). The camera's exposure puts a scene's floor near
+        /// the middle of its range, and titanium full of holes reflects far less than a floor, a mat or a hand: the
+        /// kits' held balls over the white mat read 0.24-0.36 of the region's median, a matte orange toy ball lying on
+        /// the same mat 0.65. Over the darker wooden floor of the first kit the ball reads 0.5-0.6, but there its holes
+        /// and struts show: its variation is fine.
+        public var latticeExposureDarkness: Float = 0.5
+        /// The lattice test: the inside's mean absolute difference from the mean of its four neighbours a pixel away, over
+        /// its standard deviation, at least this, where it is not dark enough by `latticeExposureDarkness`: the
+        /// lattice's variation is its holes and struts, a cell or two pixels across at the kits' sizes (0.19-0.33 on
+        /// the held balls; 0.11 over the white mat, where it is dark enough), a smooth toy ball's is its shading and one
+        /// highlight (0.08).
+        public var minLatticeFineness: Float = 0.15
+        /// the region's median luma, as `BallFinder.find` measured it (`adapted`); nil: not known (no exposure test)
+        var regionMedianLuma: Float? = nil
+        /// widest run of spokes without the outline in an arc reading (16 of 48: 120 degrees, a thumb's or two fingers'
+        /// width at the kits' sizes)
+        public var maxArcGap = 16
+        /// With `lattice`: besides the `maxCandidates` strongest vote peaks, up to this many more are taken from the votes
+        /// cast only toward the darker side of each edge (`Votes`' `darkSide`, counted in the same pass): the lattice is
+        /// darker than all it was seen against, so its outline's edges all point their centre that way, while a textured
+        /// mat's, a road's or a hand's edges vote both ways. On the kits' white mat the held ball's own peak ranked fifth
+        /// to eighth or lower among the plain votes even in a box four radii round it. Only those on a spot darker than
+        /// all around it are examined (`BallFinder.darkSpot`): examining all of them doubled the time of a search over a
+        /// bare floor, and a half outline read on the mirror test from one on a black stool with white dots was a false
+        /// find on the first kit.
+        public var maxLatticeCandidates = 8
         public init() {}
     }
 
@@ -202,13 +283,30 @@ public enum BallFinder {
         let region = (roi ?? ImageRect(width: W, height: H)).clamped(width: W, height: H)
         guard !region.isEmpty else { return [] }
         let options = adapted(options, to: luma, in: region)
-        guard var votes = Votes(luma: luma, roi: region, rmin: rmin, rmax: rmax, options: options) else { return [] }
+        let darkSeeds = options.lattice && options.maxLatticeCandidates > 0
+        guard var votes = Votes(luma: luma, roi: region, rmin: rmin, rmax: rmax, options: options, darkSide: darkSeeds) else { return [] }
         var rim = RimMeasure(luma: luma, maxRadius: rmax * 3 + 4, minContrast: options.minRimContrast)
         // the readings of each ball found, and what they give
         var balls: [(readings: [Reading], choice: Reading)] = []
         let z = max(2, Int((rmin / 2).rounded()))
+        // the strongest peaks of the votes, then (`Options.lattice`) those of the votes toward the darker side that are
+        // not where one was examined already, on a spot darker than all around it (`darkSpot`): at most
+        // `maxLatticeCandidates` of them taken
+        var seeds: [Vec2] = []
         for _ in 0..<options.maxCandidates {
             guard let (seed, _) = votes.takePeak(minVotes: options.minVotes, clear: z) else { break }
+            seeds.append(seed)
+        }
+        if darkSeeds, var dark = votes.takeDarkVotes() {
+            let plain = seeds.count
+            var taken = 0
+            while taken < options.maxLatticeCandidates, let (seed, _) = dark.takePeak(minVotes: options.minVotes, clear: z) {
+                if seeds.prefix(plain).contains(where: { $0.distance(to: seed) < Double(2 * z) }) { continue }
+                taken += 1
+                if darkSpot(at: seed, rmin: rmin, rmax: rmax, luma: luma, options: options) { seeds.append(seed) }
+            }
+        }
+        for seed in seeds {
             let rs = examine(seed: seed, rmin: rmin, rmax: rmax, intrinsics: intrinsics, up: up, rim: &rim, options: options)
             guard let c = outermost(rs, intrinsics: intrinsics, up: up) else { continue }
             // two peaks on one ball: choose from all their readings
@@ -219,14 +317,26 @@ public enum BallFinder {
                 balls.append((rs, c))
             }
         }
+        // A find from part of its outline on the lattice's evidence is not a print lying on the floor: its points, in the
+        // frame looking straight at it, are shortened along the world's up no more than halfway to what a level disc's
+        // would be (`flatness`'s rule for a whole outline, on the arcs that show; `arcLooksLevel`). A dark print with
+        // light marks (a leaf, a wheel) passes the lattice test; its outline, read from above at a slant, is an ellipse
+        // there.
+        if options.lattice, options.rejectLevelDiscs, let K = intrinsics, let down {
+            balls.removeAll { b in (b.choice.circle.lattice || b.choice.circle.arc) && b.choice.circle.partial && arcLooksLevel(b.choice, intrinsics: K, down: down) }
+        }
         var out = balls.map(\.choice.circle)
-        // every find looks like a mirror (a partial one was tested on its upper half already; a whole one is tested all
-        // round)
+        // every find looks like a mirror, or like the lattice (a partial one was tested already; a whole one is tested
+        // all round)
         if options.mirrorTestAll {
-            out.removeAll { c in
-                guard !c.partial else { return false }
+            out = out.compactMap { (c: BallCircle) -> BallCircle? in
+                guard !c.partial else { return c }
                 let F = LocalFrame(at: c.center, intrinsics: intrinsics, up: up)
-                return !looksLikeMirror(F, (0, 0, c.radius / F.stretch), luma, options, allAround: true, trace: nil)
+                let disc: (x: Double, y: Double, r: Double) = (0, 0, c.radius / F.stretch)
+                if looksLikeMirror(F, disc, luma, options, allAround: true, trace: nil) { return c }
+                guard options.lattice, looksLikeLattice(F, disc, luma, options, trace: nil) else { return nil }
+                var l = c; l.lattice = true
+                return l
             }
         }
         // not a flat round thing lying level (see `flatness`)
@@ -236,11 +346,172 @@ public enum BallFinder {
         return out.sorted { $0.support > $1.support }
     }
 
+    /// A ball blurred by its own motion over the exposure, near where it was on the frame before (`near`, `radius`): a
+    /// falling ball moves 2-3 cm during the kits' 11-14 ms exposures at the end of a 1 ft fall, one to two of its own
+    /// radii, so its outline's ends are ramps and no rim spoke finds them (`examine` needs half the rim or more). Over an
+    /// exposure the ball covers each point for a share of the time; the line where it covers half of it lies at the
+    /// ball's radius from its centre at the middle of the exposure along the motion, and a little inside it across
+    /// (sqrt(r^2 - L^2/16) for a blur L up to 2 r). So: the darkest spot of the ball's size within `reach` of where it
+    /// was (darker than the ring around it by `latticeDarkness`: a falling ball is seen against the slab's grey top as
+    /// well as the floor, and the blur lightens it; and by `minRimContrast`); from there, on each of the 48 spokes,
+    /// where the luma (averaged across the spoke over 3 px) first rises through the level halfway between the inside
+    /// (median within 0.4 of the radius) and the background (median 2.4-2.8 radii out) to stay above it for 0.4 of the
+    /// radius (the lattice's struts and glints rise above it for a pixel or two inside); an ellipse (a circle plus its
+    /// second harmonic) fitted to those points, robustly, in a frame looking straight at the spot (`LocalFrame`, where
+    /// the ball at rest is a circle, so the second harmonic is the blur's). Its long semi-axis is the radius, its centre
+    /// the ball's at the middle of the exposure. Taken only on 28 or more spokes (well over half: the blur's ends are
+    /// long ramps the lattice's glints break), the points within max(2 px, 20% of the radius) of the ellipse (along the
+    /// motion the ramp is shallow, its level crossing uncertain by a pixel or two), the radius within 0.7-1.3 of the one
+    /// before, and the blur no longer than 2.4 radii. (On the renders it is found down to about 20 cm over the slab; in
+    /// the last 15 cm of a 1 ft fall too few spokes cross the level.)
+    static func findStreak(luma: Plane, near p0: Vec2, radius r0: Double, reach: Double, intrinsics K: CameraIntrinsics?,
+                           options o: Options, trace: ((String) -> Void)? = nil) -> BallCircle? {
+        guard r0 >= 3, reach > 0 else { return nil }
+        let W = luma.width, H = luma.height
+        // 1. the darkest disc of 0.6 r0 within reach (on a grid a sixth of r0 apart), against the ring 1.5-1.9 r0 around it
+        let ri = 0.6 * r0
+        var best: (p: Vec2, score: Float)? = nil
+        let step = max(1.0, r0 / 6)
+        var y = p0.y - reach
+        while y <= p0.y + reach {
+            var x = p0.x - reach
+            while x <= p0.x + reach {
+                if x > 2 * r0, y > 2 * r0, x < Double(W) - 2 * r0, y < Double(H) - 2 * r0 {
+                    var vin: Float = 0, vout: Float = 0
+                    for k in stride(from: 0, to: BallFinder.spokeCount, by: 3) {
+                        let (ca, sa) = spokeDirections[k]
+                        vin += luma.sample(x + ca * ri * 0.5, y + sa * ri * 0.5) + luma.sample(x + ca * ri, y + sa * ri)
+                        vout += luma.sample(x + ca * r0 * 1.5, y + sa * r0 * 1.5) + luma.sample(x + ca * r0 * 1.9, y + sa * r0 * 1.9)
+                    }
+                    vin += 2 * luma.sample(x, y)
+                    let n = Float(2 * ((BallFinder.spokeCount + 2) / 3))
+                    let a = vin / (n + 2), b = vout / n
+                    if a <= o.latticeDarkness * b, best == nil || b - a > best!.score { best = (Vec2(x, y), b - a) }
+                }
+                x += step
+            }
+            y += step
+        }
+        guard let c0 = best?.p else { trace?("streak: no spot darker than around it"); return nil }
+        // 2. the inside's and the background's levels
+        func median(_ a: [Float]) -> Float { let s = a.sorted(); return s.isEmpty ? 0 : s[s.count / 2] }
+        var inside: [Float] = [], outside: [Float] = []
+        for k in 0..<spokeCount {
+            let (ca, sa) = spokeDirections[k]
+            for f in [0.0, 0.2, 0.4] { inside.append(luma.sample(c0.x + ca * r0 * f, c0.y + sa * r0 * f)) }
+            for f in [2.4, 2.6, 2.8] { outside.append(luma.sample(c0.x + ca * r0 * f, c0.y + sa * r0 * f)) }
+        }
+        let li = median(inside), lo = median(outside)
+        guard li <= o.latticeDarkness * lo, lo - li >= o.minRimContrast else {
+            trace?(String(format: "streak: inside %.0f, background %.0f", li, lo)); return nil
+        }
+        let level = (li + lo) / 2
+        // 3. the level's first crossing outward on each spoke, in a frame looking straight at the spot (where the ball is
+        // round but for its blur)
+        let F = LocalFrame(at: c0, intrinsics: K, up: Vec2(0, -1))
+        var xs: [Double] = [], ys: [Double] = []
+        for k in 0..<spokeCount {
+            let (ca, sa) = spokeDirections[k]
+            // the first crossing after which the luma stays above the level for 0.4 r0: the lattice's struts and glints
+            // inside rise above it for a pixel or two
+            var prev: Float = li, d = 0.3 * r0, cross: Double? = nil
+            while d <= 2.6 * r0 {
+                let px = c0.x + ca * d, py = c0.y + sa * d
+                let v = (luma.sample(px, py) + luma.sample(px - sa, py + ca) + luma.sample(px + sa, py - ca)) / 3
+                if v >= level && prev < level {
+                    let t = Double((level - prev) / max(1e-3, v - prev))
+                    cross = d - 0.5 + 0.5 * t
+                } else if v < level {
+                    cross = nil
+                }
+                if let c = cross, d - c >= 0.4 * r0 { break }
+                prev = v; d += 0.5
+            }
+            if let dd = cross, d <= 2.6 * r0 {
+                let q = F.local(Vec2(c0.x + ca * dd, c0.y + sa * dd))
+                xs.append(q.x); ys.append(q.y)
+            }
+        }
+        guard xs.count >= 28 else { trace?("streak: \(xs.count) spokes cross the level"); return nil }
+        // 4. a circle, then its second harmonic, robustly
+        var keep = [Bool](repeating: true, count: xs.count)
+        var fit: (x: Double, y: Double, r: Double, a: Double, b: Double)? = nil
+        for _ in 0..<4 {
+            let kx = xs.indices.filter { keep[$0] }.map { xs[$0] }, ky = xs.indices.filter { keep[$0] }.map { ys[$0] }
+            guard kx.count >= 28, let c = kx.withUnsafeBufferPointer({ X in ky.withUnsafeBufferPointer { Y in circleFit(X, Y, count: kx.count) } }) else {
+                trace?("streak: \(kx.count) points left on the ellipse"); return nil
+            }
+            // residuals about the circle, and their second harmonic (the ellipse's elongation)
+            var sa2 = 0.0, sb2 = 0.0, n = 0.0
+            var e = [Double](repeating: 0, count: xs.count), phi = [Double](repeating: 0, count: xs.count)
+            for i in xs.indices {
+                let dx = xs[i] - c.x, dy = ys[i] - c.y
+                e[i] = (dx * dx + dy * dy).squareRoot() - c.r; phi[i] = atan2(dy, dx)
+                if keep[i] { sa2 += e[i] * cos(2 * phi[i]); sb2 += e[i] * sin(2 * phi[i]); n += 1 }
+            }
+            let A = 2 * sa2 / n, B = 2 * sb2 / n
+            fit = (c.x, c.y, c.r, A, B)
+            var dropped = 0
+            let lim = max(2, 0.2 * c.r)
+            for i in xs.indices where keep[i] && abs(e[i] - A * cos(2 * phi[i]) - B * sin(2 * phi[i])) > lim { keep[i] = false; dropped += 1 }
+            if dropped == 0 { break }
+        }
+        guard let f = fit, keep.filter({ $0 }).count >= 28 else { trace?("streak: too few points on the ellipse"); return nil }
+        let h = (f.a * f.a + f.b * f.b).squareRoot(), rMajor = f.r + h, rMinor = f.r - h
+        let blur = 4 * max(0, rMajor * rMajor - rMinor * rMinor).squareRoot()
+        let (p, r) = F.imageCircle(f.x, f.y, rMajor)
+        guard r >= 0.7 * r0, r <= 1.3 * r0, blur <= 2.4 * rMajor, p.distance(to: p0) <= reach + r0 else {
+            trace?(String(format: "streak: radius %.1f (was %.1f), blur %.1f, %.1f px from before", r, r0, blur, p.distance(to: p0))); return nil
+        }
+        return BallCircle(center: p, radius: r, support: keep.filter { $0 }.count, partial: true)
+    }
+
+    /// Whether a seed of the votes toward the darker side (`Options.maxLatticeCandidates`) is a spot darker than all
+    /// around it, as the lattice is (those votes are cast for it alone): for a radius of the band (its least, its largest
+    /// or the one between in ratio), the mean luma within half that radius of the seed is darker, by `latticeDarkness`,
+    /// than the floor at 1.25 of it out on `minLatticeDarkShare` of 16 directions (the lattice test's first part, where
+    /// the ball's size is not known yet; the fingers or a black print can lie behind some). A seed on a bare floor's
+    /// texture, or on a print's edge, is not.
+    static func darkSpot(at p: Vec2, rmin: Double, rmax: Double, luma: Plane, options o: Options) -> Bool {
+        for rho in [rmin, (rmin * rmax).squareRoot(), rmax] {
+            var vin: Float = 0, n: Float = 0
+            let ri = 0.5 * rho
+            for (dx, dy) in [(0.0, 0.0), (0.5, 0), (-0.5, 0), (0, 0.5), (0, -0.5), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+                vin += luma.sample(p.x + dx * ri, p.y + dy * ri); n += 1
+            }
+            let mean = vin / n, ro = 1.25 * rho
+            var lighter = 0
+            for k in stride(from: 0, to: spokeCount, by: 3) {
+                let (ca, sa) = spokeDirections[k]
+                if mean <= o.latticeDarkness * luma.sample(p.x + ca * ro, p.y + sa * ro) { lighter += 1 }
+            }
+            if Double(lighter) >= o.minLatticeDarkShare * Double(spokeCount / 3) { return true }
+        }
+        return false
+    }
+
+    /// Whether the points of a reading from part of an outline look more like an arc of a level disc's outline (a print
+    /// lying on the floor, seen at a slant) than a sphere's: fitted in the frame looking straight at it with a circle and
+    /// its elongation along the world's up (`elongation`), shortened along up by more than half what a level disc with
+    /// that mean radius would be ((1 - k) / (1 + k) of it, k the cosine of the line of sight's angle to the vertical),
+    /// as `flatness` judges a whole outline. False where it cannot tell (too few points, or looking straight down).
+    static func arcLooksLevel(_ r: Reading, intrinsics K: CameraIntrinsics, down: Vec3) -> Bool {
+        let up3 = -down.normalized
+        guard up3.isFinite, up3.length > 0.5, r.points.count >= 10 else { return false }
+        let F = LocalFrame(at: r.circle.center, intrinsics: K, up: Vec2(0, -1))
+        guard F.camera else { return false }
+        let u0 = Vec2(up3.dot(F.e1), up3.dot(F.e2)), cosA = abs(up3.dot(F.c))
+        guard u0.length > 1e-6, cosA < 0.999, let (sq, _, r0) = elongation(r.points.map { F.local($0) }, up: u0.normalized) else { return false }
+        return sq > r0 * (1 - cosA) / (1 + cosA) / 2
+    }
+
     /// The options with the edge thresholds raised for the region's noise.
     static func adapted(_ o: Options, to luma: Plane, in region: ImageRect) -> Options {
         var o = o
+        let median = medianLuma(luma, region)
+        o.regionMedianLuma = median
         if let ref = o.referenceLuma, ref > 0 {
-            let k = min(2, max(0.25, medianLuma(luma, region) / ref))
+            let k = min(2, max(0.25, median / ref))
             o.minGradient *= k; o.minRimContrast *= k; o.minHighlight *= k; o.minMirrorDetail *= k
         }
         let noise = noiseLevel(luma, region)
@@ -330,7 +601,8 @@ public enum BallFinder {
 
     /// One reading of a ball's outline: the circle, and which part of the outline it rests on.
     struct Reading {
-        enum Mode { case full, lower, upper }
+        /// `arc`: the whole rim measured, the outline found on the arcs the fingers leave (`Options.lattice`)
+        enum Mode { case full, lower, upper, arc }
         var circle: BallCircle
         var mode: Mode
         /// the standard error of the radius (pixels, local frame)
@@ -341,6 +613,11 @@ public enum BallFinder {
         var points: [Vec2] = []
         var onUpper: [Bool] = []
         var onLower: [Bool] = []
+        /// An arc reading that may give the outline on its own: its inside passed the lattice test, or the mirror test
+        /// and is darker than the background just outside on most spokes, as the titanium is against every floor the
+        /// kits show (`darkShare`). Otherwise it only confirms a half reading of the same circle (`outermost`): a
+        /// shaded palm, lighter than the floor, passes the mirror test on arcs too.
+        var standsAlone = true
     }
 
     /// Of several readings of one ball, the one that gives its outline. A ball's outline is the outermost circle its
@@ -366,7 +643,9 @@ public enum BallFinder {
     ///    spokes, and is closed over the top by an upper outline's reading (`closing`) replaces it.
     /// 3. Where there is no reading of the whole outline, a lower half's reading that encloses the chosen one (by more
     ///    than the fits' scatter) and finds the outline on its half's spokes about as often replaces it; then the same
-    ///    for the upper outline's, unless a lower half's reading is the same circle.
+    ///    for the upper outline's, unless a lower half's reading is the same circle. Where neither the whole outline nor
+    ///    a half of it was read, an arc reading (`Reading.Mode.arc`, the lattice's outline the fingers break: half the rim
+    ///    or more, all round it) gives the outline. A half reading an arc reading agrees with is marked `arc`.
     /// The result is `partial` unless the whole outline was read: by its own reading, or by one that the lower half's
     /// reading replaced in step 2 where the whole reading is one circle by the omnibus test (so it was the directed test
     /// that found its top a step inside). A lower half's reading that an upper outline's reading closes stays partial:
@@ -379,7 +658,13 @@ public enum BallFinder {
             }
         }
         let fulls = finds.filter { $0.mode == .full }, lowers = finds.filter { $0.mode == .lower }, uppers = finds.filter { $0.mode == .upper }
-        guard var best = largestWellSupported(fulls) ?? largestWellSupported(lowers) ?? largestWellSupported(uppers) else { return nil }
+        // an arc reading (the lattice's outline the fingers break) gives the outline only where neither the whole outline
+        // nor a half of it was read: a polished ball's reflections can make arcs of inner circles too, and its halves
+        // are read by their own rules. And only where it stands alone (`Reading.standsAlone`); any other only confirms a
+        // half reading of the same circle (below).
+        let arcs = finds.filter { $0.mode == .arc }
+        guard var best = largestWellSupported(fulls) ?? largestWellSupported(lowers) ?? largestWellSupported(uppers)
+                ?? largestWellSupported(arcs.filter { $0.standsAlone }) else { return nil }
         // the reading of the whole outline, where the lower half's reading replaces it only for its size: the whole
         // outline was read, as one circle whose top lies a step inside (see below)
         var wholeRead: Reading? = nil
@@ -425,7 +710,8 @@ public enum BallFinder {
                 // (and the ball's outline was not read whole: the find is partial).
                 best = l
             }
-        } else {
+        } else if best.mode != .arc {
+            // (an arc reading is chosen only where no half reading is, and stands)
             func replace(from fs: [Reading]) {
                 while let f = fs.filter({ encloses($0, best) && accountsForItsHalf($0, as: best) }).max(by: { $0.circle.radius < $1.circle.radius }) { best = f }
             }
@@ -444,6 +730,15 @@ public enum BallFinder {
         if best.mode == .lower, let w = wholeRead {
             best.circle.partial = false
             best.circle.support = max(best.circle.support, w.circle.support)
+        }
+        // A half reading that an arc reading agrees with (centre and radius within 10% of the radius): the outline was
+        // also read on half the rim or more, all round it, and passed the mirror or the lattice test all round, so the
+        // find is held to the rules for an arc reading (`BallCircle.arc`); the half reading gives its size.
+        if best.mode == .lower || best.mode == .upper,
+           let a = arcs.first(where: { abs($0.circle.radius - best.circle.radius) <= 0.1 * best.circle.radius
+                                         && $0.circle.center.distance(to: best.circle.center) <= 0.1 * best.circle.radius }) {
+            best.circle.arc = true
+            best.circle.lattice = best.circle.lattice || a.circle.lattice
         }
         return best
     }
@@ -679,7 +974,8 @@ public enum BallFinder {
     }
 
     /// Steps 2-4 from one start: the rim measured around the frame's centre. Returns every reading of the outline that
-    /// passes: the whole outline, its lower half and its upper half; `outermost` chooses among them.
+    /// passes: the whole outline, the arcs the fingers leave of it (`Options.lattice`), its lower half and its upper half;
+    /// `outermost` chooses among them.
     static func examine(from F0: LocalFrame, sMin: Double, sMax: Double, intrinsics K: CameraIntrinsics?, up: Vec2,
                         rim: inout RimMeasure, options o: Options, modes: Set<Reading.Mode> = [.full, .lower, .upper],
                         trace: ((String) -> Void)?) -> [Reading] {
@@ -690,8 +986,14 @@ public enum BallFinder {
         // the whole outline
         if modes.contains(.full) { rim.measure(F0, lo: sMin * 0.7, hi: sMax * 1.15, tol: 0.15) }
         // The first fit is rough (from an off-centre start the rim spreads over a range of radii, and a ring reflected
-        // inside the ball can pull it in), so its size is checked loosely; the final circle's strictly.
-        if modes.contains(.full), rim.count >= 26, let c = rim.robustFit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
+        // inside the ball can pull it in), so its size is checked loosely; the final circle's strictly. An arc reading
+        // (`Options.lattice`) starts from the same fit, where fewer spokes found the outline.
+        let firstCount = rim.count
+        var first: (x: Double, y: Double, r: Double)? = nil
+        if modes.contains(.full), firstCount >= (o.lattice ? min(26, o.minArcSupport) : 26), let c = rim.robustFit(), c.r >= sMin * 0.85, c.r <= sMax * 1.15 {
+            first = c
+        }
+        if firstCount >= 26, let c = first {
             let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
             rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06)
             rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
@@ -708,6 +1010,28 @@ public enum BallFinder {
                                    radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare,
                                    points: (0..<rim.count).map { F1.image(rim.xs[$0], rim.ys[$0]) },
                                    onUpper: Array(rim.isUp[0..<rim.count]), onLower: Array(rim.isLow[0..<rim.count])))
+            }
+        }
+        // The arcs the fingers leave (`Options.lattice`): the owner holds the lattice ball in the fingertips, the thumb on
+        // one side and two fingers under it, so a whole rim's spokes find the outline on half to three quarters of it, in
+        // two or three arcs. Measured again around the first fit, only edges that run across their spokes, on one tight
+        // circle with no gap wider than `maxArcGap` and its inside passing the lattice test (a ring of print or a curve of
+        // a road painted on the floor is no lattice inside) or the mirror test all round (`Reading.standsAlone` says
+        // whether it may give the outline on its own). Partial: held to the locator's rules for part of an outline.
+        if o.lattice, let c = first, !out.contains(where: { $0.mode == .full }) {
+            let F1 = LocalFrame(at: F0.image(c.x, c.y), intrinsics: K, up: up)
+            rim.measure(F1, lo: c.r * 0.75, hi: c.r * 1.25, tol: 0.06, maxSkew: o.maxSkew)
+            rim.keep(within: max(1, c.r * 0.06), of: (0, 0, c.r))
+            let c2 = rim.robustFit()
+            trace?("arc: \(rim.count) spokes, robust fit \(fmt(c2)), rms \(String(format: "%.2f", c2.map { rim.rms($0) } ?? -1)), widest gap \(rim.widestGap()) spokes")
+            if let c2, abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax, rim.count >= o.minArcSupport, rim.widestGap() <= o.maxArcGap,
+               rim.rms(c2) <= o.maxUpperRms, let look = looksLikeBall(F1, c2, rim.luma, o, allAround: true, trace: trace) {
+                let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
+                out.append(Reading(circle: BallCircle(center: p, radius: r, support: rim.count, partial: true, lattice: look == .lattice, arc: true), mode: .arc,
+                                   radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare,
+                                   points: (0..<rim.count).map { F1.image(rim.xs[$0], rim.ys[$0]) },
+                                   onUpper: Array(rim.isUp[0..<rim.count]), onLower: Array(rim.isLow[0..<rim.count]),
+                                   standsAlone: look == .lattice || darkShare(F1, c2, rim.luma, o) >= o.minLatticeDarkShare))
             }
         }
         // The lower half alone (not in the web app): seen from above, the top of a polished ball reflects the floor
@@ -760,6 +1084,87 @@ public enum BallFinder {
                            points: (0..<rim.count).map { F1.image(rim.xs[$0], rim.ys[$0]) },
                            onUpper: Array(rim.isUp[0..<rim.count]), onLower: Array(rim.isLow[0..<rim.count])))
         return out
+    }
+
+    /// Which test an arc reading passed: the mirror test (`allAround`: all round its inside), or else the lattice test
+    /// (`Options.lattice`); nil: neither. (A half outline's reading takes the mirror test alone, as before the lattice:
+    /// half an outline with the lattice's weaker look let round prints and toy balls on the white mat through.)
+    enum Look { case mirror, lattice }
+    static func looksLikeBall(_ F: LocalFrame, _ c: (x: Double, y: Double, r: Double), _ luma: Plane, _ o: Options,
+                              allAround: Bool = false, trace: ((String) -> Void)?) -> Look? {
+        if looksLikeMirror(F, c, luma, o, allAround: allAround, trace: trace) { return .mirror }
+        return o.lattice && looksLikeLattice(F, c, luma, o, trace: trace) ? .lattice : nil
+    }
+
+    /// The lattice test (`Options.lattice`): the owner's ball is a mildly polished titanium lattice, dark metal full of
+    /// small holes. Every background the kits show it against (a wooden floor, a white play mat, the slab's grey top, the
+    /// fingers) is lighter than it, and its inside is never plain: dark holes between lighter struts, and glints where a
+    /// strut faces the light. Sampled along all the spokes, inside at the mirror test's fractions of the radius and just
+    /// outside at its two: on at least `minLatticeDarkShare` of the spokes the inside is darker than the background
+    /// just outside (by `latticeDarkness`; the fingers or a black print can lie behind some); the inside varies
+    /// (`minLatticeVariation`: its standard deviation over its mean); and that variation is not a ring's, the same all
+    /// round the centre (`maxLatticeRings`: the share of the inside's variance carried by its mean at each fraction of
+    /// the radius), as a wheel or a ring printed on a mat is; the inside is dark for the scene's exposure
+    /// (`latticeExposureDarkness`) or varies finely (`minLatticeFineness`), as a toy ball does not; and right at the
+    /// circle, where it crosses an edge, the inside is the much darker side (`latticeEdgeDarkness` on
+    /// `minLatticePolarity` of those spokes), as the lattice's outline is and the round outline of a finger, a hand or a
+    /// fist holding the ball is not.
+    static func looksLikeLattice(_ F: LocalFrame, _ c: (x: Double, y: Double, r: Double), _ luma: Plane, _ o: Options,
+                                 trace: ((String) -> Void)?) -> Bool {
+        let nf = insideFractions.count
+        var ring = [Float](repeating: 0, count: nf)
+        var fine: Float = 0
+        // (`minRimContrast` is the region's, as `find` adapts it)
+        var s1: Float = 0, s2: Float = 0, n: Float = 0
+        var dark = 0, edges = 0, darkEdges = 0
+        for k in 0..<spokeCount {
+            let (ca, sa) = spokeDirections[k]
+            // the step across the circle itself
+            let a = luma.sample(F.image(c.x + ca * (c.r - 1.5), c.y + sa * (c.r - 1.5))), b = luma.sample(F.image(c.x + ca * (c.r + 1.5), c.y + sa * (c.r + 1.5)))
+            if abs(b - a) >= o.minRimContrast { edges += 1; if a <= o.latticeEdgeDarkness * b { darkEdges += 1 } }
+            var vin: Float = 0, vout: Float = 0
+            for (j, f) in insideFractions.enumerated() {
+                let x = c.x + ca * c.r * f, y = c.y + sa * c.r * f
+                let v = luma.sample(F.image(x, y))
+                vin += v; s1 += v; s2 += v * v; n += 1; ring[j] += v
+                let nb = luma.sample(F.image(x + 1, y)) + luma.sample(F.image(x - 1, y)) + luma.sample(F.image(x, y + 1)) + luma.sample(F.image(x, y - 1))
+                fine += abs(v - nb / 4)
+            }
+            for f in outsideFractions { vout += luma.sample(F.image(c.x + ca * c.r * f, c.y + sa * c.r * f)) }
+            if vin / Float(nf) <= o.latticeDarkness * vout / Float(outsideFractions.count) { dark += 1 }
+        }
+        guard n > 0 else { return false }
+        let mu = s1 / n, varIn = max(0, s2 / n - mu * mu)
+        var varRing: Float = 0
+        for j in 0..<nf { let m = ring[j] / Float(spokeCount); varRing += (m - mu) * (m - mu) }
+        varRing /= Float(nf)
+        let variation = mu > 1 ? varIn.squareRoot() / mu : 0
+        let rings = varIn > 1e-6 ? varRing / varIn : 1
+        let darkShare = Double(dark) / Double(spokeCount)
+        let polarity = edges > 0 ? Double(darkEdges) / Double(edges) : 0
+        let fineness = varIn > 1e-6 ? (fine / n) / varIn.squareRoot() : 0
+        if let m = o.regionMedianLuma, mu > o.latticeExposureDarkness * m, fineness < o.minLatticeFineness {
+            trace?(String(format: "lattice: inside %.0f, over %.0f%% of the region's median %.0f, and its variation broad (fineness %.2f)",
+                          mu, 100 * o.latticeExposureDarkness, m, fineness))
+            return false
+        }
+        trace?(String(format: "lattice: darker on %.0f%% of the spokes, variation %.2f, rings %.2f, darker inside at %d of %d edges", 100 * darkShare, variation, rings, darkEdges, edges))
+        return darkShare >= o.minLatticeDarkShare && variation >= o.minLatticeVariation && rings <= o.maxLatticeRings
+            && edges >= 8 && polarity >= o.minLatticePolarity
+    }
+
+    /// The share of the spokes on which the inside (at the mirror test's fractions of the radius) is darker than the
+    /// background just outside (at its two) by `latticeDarkness`: the lattice test's first part.
+    static func darkShare(_ F: LocalFrame, _ c: (x: Double, y: Double, r: Double), _ luma: Plane, _ o: Options) -> Double {
+        var dark = 0
+        for k in 0..<spokeCount {
+            let (ca, sa) = spokeDirections[k]
+            var vin: Float = 0, vout: Float = 0
+            for f in insideFractions { vin += luma.sample(F.image(c.x + ca * c.r * f, c.y + sa * c.r * f)) }
+            for f in outsideFractions { vout += luma.sample(F.image(c.x + ca * c.r * f, c.y + sa * c.r * f)) }
+            if vin / Float(insideFractions.count) <= o.latticeDarkness * vout / Float(outsideFractions.count) { dark += 1 }
+        }
+        return Double(dark) / Double(spokeCount)
     }
 
     /// The mirror test: the upper half reflects the room above, so it holds a clear highlight well above the
@@ -1023,8 +1428,23 @@ struct Votes {
     var acc: [UInt32]
     let aw: Int, ah: Int
     let ox: Double, oy: Double
+    /// With `darkSide`: the votes cast toward each edge's darker side only (a ball darker than all around it), counted in
+    /// the same pass (`takeDarkVotes()`)
+    private var dark: [UInt32]? = nil
 
-    init?(luma: Plane, roi: ImageRect?, rmin: Double, rmax: Double, options: BallFinder.Options) {
+    private init(acc: [UInt32], aw: Int, ah: Int, ox: Double, oy: Double) {
+        self.acc = acc; self.aw = aw; self.ah = ah; self.ox = ox; self.oy = oy
+    }
+
+    /// The votes cast toward the darker side of each edge only, as a set of votes of their own (nil unless counted:
+    /// `darkSide`).
+    mutating func takeDarkVotes() -> Votes? {
+        defer { dark = nil }
+        return dark.map { Votes(acc: $0, aw: aw, ah: ah, ox: ox, oy: oy) }
+    }
+
+    /// `darkSide`: also count, apart, the votes each edge pixel casts toward its darker side (`takeDarkVotes()`)
+    init?(luma: Plane, roi: ImageRect?, rmin: Double, rmax: Double, options: BallFinder.Options, darkSide: Bool = false) {
         let W = luma.width, H = luma.height
         let box = (roi ?? ImageRect(width: W, height: H))
         guard !box.isEmpty, box.minX.isFinite, box.minY.isFinite, box.maxX.isFinite, box.maxY.isFinite else { return nil }
@@ -1034,12 +1454,14 @@ struct Votes {
         let ox = Double(X0), oy = Double(Y0)
         let aw = (X1 - X0 + 1) / 2 + 1, ah = (Y1 - Y0 + 1) / 2 + 1
         var acc = [UInt32](repeating: 0, count: aw * ah)
+        var dacc = [UInt32](repeating: 0, count: darkSide ? aw * ah : 0)
         var radii: [Double] = []
         var r = rmin
         while r <= rmax + 1e-9 { radii.append(r); r += max(0.25, options.radiusStep) }
         let g2min = options.minGradient * options.minGradient
         luma.data.withUnsafeBufferPointer { Y in
             acc.withUnsafeMutableBufferPointer { A in
+              dacc.withUnsafeMutableBufferPointer { D in
                 for y in Y0..<Y1 {
                     let row = y * W
                     let py = Double(y) + 0.5 - oy
@@ -1057,17 +1479,20 @@ struct Votes {
                                 let cx = Int(qx * 0.5), cy = Int(qy * 0.5)
                                 if cx < aw && cy < ah { A[cy * aw + cx] &+= 1 }
                             }
+                            // (the gradient points to the lighter side: the centre of a dark ball lies against it)
                             qx = px - dx; qy = py - dy
                             if qx >= 0 && qy >= 0 {
                                 let cx = Int(qx * 0.5), cy = Int(qy * 0.5)
-                                if cx < aw && cy < ah { A[cy * aw + cx] &+= 1 }
+                                if cx < aw && cy < ah { A[cy * aw + cx] &+= 1; if darkSide { D[cy * aw + cx] &+= 1 } }
                             }
                         }
                     }
                 }
+              }
             }
         }
         self.acc = acc; self.aw = aw; self.ah = ah; self.ox = ox; self.oy = oy
+        if darkSide { dark = dacc }
     }
 
     /// The strongest cell left (its centre in image coordinates, and its votes), cleared with the cells within
@@ -1592,6 +2017,12 @@ public final class BallLocator {
         /// down to `minHeight`. (Chosen while looking at testPrintedDiscsBesideAMatEdge, where 0.15 m let printed discs
         /// through; it does nothing against a print whose size implies 0.2 m or more.)
         public var minPartialHeight: Double = 0.2
+        /// A ball found from part of its outline whose inside passed the lattice test (`BallCircle.lattice`: dark, and
+        /// varied as the owner's titanium lattice is, which a printed disc, a ring or a curve of print is not), or read
+        /// from the arcs the fingers leave (`BallCircle.arc`: half the rim or more, all round it, not one half), is held
+        /// to this least height instead (metres); nil: the whole outline's (`minHeight`). The owner's "held low" is about
+        /// 10 cm over the slab, under `minPartialHeight`, and the fingers holding the ball leave only part of its outline.
+        public var minLatticePartialHeight: Double? = nil
         /// a followed ball is looked for within this many radii of where it was
         public var followRadii: Double = 4
         /// updates a followed ball may go unseen before it is dropped (the web app allowed 5 scans at 15 a second)
@@ -1620,6 +2051,10 @@ public final class BallLocator {
         /// radius or more), while a round thing lying on the slab (a lid, a coin, a ring of reflected light) stays put,
         /// and half an outline is all a pressed lid needs to give. nil: no such rule.
         public var stillPartialCeiling: Double? = nil
+        /// Where nothing else is found, look for the ball blurred by its own motion (`BallFinder.findStreak`) near where the
+        /// scan before found it (within 3.5 of its radii: a ball falling 2.4 m/s moves 2.7 of them in a 60 fps frame). For
+        /// following a drop (`tracking`), not for the app: a falling ball's outline shows no edges at its ends.
+        public var streaks = false
         public var finder = BallFinder.Options()
         public init() {}
 
@@ -1644,6 +2079,7 @@ public final class BallLocator {
             o.footprint = 2.5
             o.requireOnSlab = false
             o.follows = false
+            o.streaks = true
             return o
         }
     }
@@ -1811,7 +2247,7 @@ public final class BallLocator {
                     // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
                     // (radius at least 0.9x that of a ball at the slab's depth), here as a distance; and a size that puts it
                     // where a held ball can be
-                    if B.length > slab.center.length / 0.9 || d.dropHeight < options.minPartialHeight { continue }
+                    if B.length > slab.center.length / 0.9 || d.dropHeight < (c.lattice || c.arc ? options.minLatticePartialHeight ?? options.minHeight : options.minPartialHeight) { continue }
                     // only part of the outline seen: report it only once the same ball turns up on two scans in a row
                     if part == nil { part = anchor(B, slab) }
                     let again = pending.map { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 } ?? false
@@ -1825,6 +2261,20 @@ public final class BallLocator {
                 break
             }
         }
+        // a ball blurred by its motion, near where the scan before found it
+        if chosen == nil, options.streaks, let f = followed, let prev = circle(of: f, in: slab, K: K, ball: ball) {
+            let reach = 3.5 * prev.radius
+            let box = ImageRect(center: prev.center, halfSize: reach + 3 * prev.radius).clamped(width: K.width, height: K.height)
+            if !box.isEmpty,
+               let c = BallFinder.findStreak(luma: luma, near: prev.center, radius: prev.radius, reach: reach, intrinsics: K,
+                                             options: BallFinder.adapted(options.finder, to: luma, in: box)),
+               let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
+               let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g),
+               d.onSlab || !options.requireOnSlab, d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3,
+               Self.streakIsFlight(c, from: prev.center, up: Self.imageUp(at: c.center, depth: B.length, intrinsics: K, down: g)) {
+                chosen = (c, B, d)
+            }
+        }
         pendingPartial = part
         lastPartials = partials
         guard var (c, B, d) = chosen else {
@@ -1834,7 +2284,7 @@ public final class BallLocator {
         if let f = follow, c.center.distance(to: f.center) < f.radius * 2 {
             // the same ball: smooth
             let s = BallCircle(center: f.center + (c.center - f.center) * options.positionGain,
-                               radius: f.radius + (c.radius - f.radius) * options.radiusGain, support: c.support, partial: c.partial)
+                               radius: f.radius + (c.radius - f.radius) * options.radiusGain, support: c.support, partial: c.partial, lattice: c.lattice, arc: c.arc)
             if let B2 = Bounce.ballCenter(pixel: s.center, radiusPixels: s.radius, intrinsics: K, ball: ball, model: .imageCircle),
                let d2 = Bounce.drop(ballCenter: B2, pose: slab, spec: spec, ball: ball, down: g) {
                 c = s; B = B2; d = d2
@@ -1860,6 +2310,24 @@ public final class BallLocator {
         let obs = BallObservation(circle: c, center: B, drop: d, missedUpdates: missed)
         current = obs
         return obs
+    }
+
+    /// Whether a streak (`BallFinder.findStreak`) found near where a ball was on the frame before (`from`) is that ball in
+    /// flight, and not a dark thing beside it that stays put or moves with the hand: the spot moved by a quarter of its
+    /// radius at least (a print or a shadow where the ball was stays put), and along the world's up as the image shows it
+    /// at that point (`up`), within 30 degrees: a fall is straight down, and a rebound off a slab tilted up to 15 degrees
+    /// leaves within about that of the vertical, a little more in the image of a phone looking steeply down at it. On the
+    /// kits' drops every streak find on the ball moved within 26 degrees of the vertical (0.41-1.8 radii from the frame
+    /// before). Of the 15 that were not on the ball, 10 moved 37-77 degrees off it (a hand moving sideways, a spot
+    /// jittering on the end of a stool's leg) and are no longer taken; 4 on that stool's leg (within 23-30 degrees) and
+    /// one where a hand moved the ball straight down still are. (The blur's length and axis that the ellipse's fit gives
+    /// are not used: on the real falls the length read 1-2.4 radii where the ball moved 0.4-1.8 radii from frame to
+    /// frame, though an exposure is never longer than the time between frames; and over the mat's road print the axis
+    /// was up to 90 degrees off the motion.)
+    static func streakIsFlight(_ c: BallCircle, from p0: Vec2, up: Vec2) -> Bool {
+        let move = c.center - p0, m = move.length
+        guard m >= 0.25 * c.radius, up.length > 1e-9 else { return false }
+        return abs(move.dot(up.normalized)) >= m * cos(Double.pi / 6)
     }
 
     /// The image direction of the world's up at an image point (seen at about `depth`): toward gravity's vanishing point.
@@ -1909,7 +2377,7 @@ public final class BallLocator {
         return BallFinder.find(luma: small, radiusRange: (radii.lowerBound * s)...(radii.upperBound * s), roi: roi,
                                intrinsics: Ks, up: up, down: down, options: options.finder).map {
             BallCircle(center: Vec2(Double(x0) + $0.center.x * Double(k), Double(y0) + $0.center.y * Double(k)),
-                       radius: $0.radius * Double(k), support: $0.support, partial: $0.partial)
+                       radius: $0.radius * Double(k), support: $0.support, partial: $0.partial, lattice: $0.lattice, arc: $0.arc)
         }
     }
 

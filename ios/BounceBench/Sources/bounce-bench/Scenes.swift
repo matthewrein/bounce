@@ -186,8 +186,9 @@ struct BenchScene {
     }
 
     private static func key(feet: Double?, ball: Double?, variant: Variant, seed: UInt64) -> String {
-        // v2: the app's own slab and ball (v1 files drew the 7 in straight-sided box and a 35 mm ball)
-        "scene-v2-" + (variant == .plain ? "" : variant.rawValue + "-")
+        // v2: the app's own slab and ball (v1 files drew the 7 in straight-sided box and a 35 mm ball); v3: the ball drawn
+        // as the owner's titanium lattice (`SyntheticScene.ballLook`), not a polished sphere
+        "scene-v3-" + (variant == .plain ? "" : variant.rawValue + "-")
             + "\(feet.map { String(format: "%.1f", $0) } ?? "none")-\(ball.map { String(format: "%.3f", $0) } ?? "none")-\(seed)"
     }
 

@@ -368,8 +368,11 @@ public final class KitSyntheticDrops {
                 let d = (Rot * K.ray(Vec2(Double(x) + 0.5, Double(y) + 0.5))).normalized
                 var c = (0.0, 0.0, 0.0)
                 if x >= x0 && x <= x1 && y >= y0 && y <= y1 {
-                    for sc in scenes {
-                        let v = traceInDish(sc, o, d, geo, dish: dish)
+                    // the lattice's holes are about a pixel across at the drops' sizes: 2 x 2 samples a pixel there, as a
+                    // camera's pixel averages them (each instant at its own place in the pixel)
+                    for (k, sc) in scenes.enumerated() {
+                        let q = Vec2(Double(x) + 0.25 + 0.5 * Double(k % 2), Double(y) + 0.25 + 0.5 * Double((k / 2) % 2))
+                        let v = traceInDish(sc, o, sc.ballLook == .lattice ? (Rot * K.ray(q)).normalized : d, geo, dish: dish)
                         c.0 += v.0; c.1 += v.1; c.2 += v.2
                     }
                     c = (c.0 * inv, c.1 * inv, c.2 * inv)
@@ -393,15 +396,24 @@ public final class KitSyntheticDrops {
         guard let b = sc.ball else { return c }
         let oc = o - b, bb = oc.dot(d), cc = oc.lengthSquared - sc.ballRadius * sc.ballRadius, disc = bb * bb - cc
         guard disc > 0 else { return c }
-        let tb = -bb - disc.squareRoot()
+        // where the ray meets the ball: the lattice's first strut (none: it sees through), or the polished sphere
+        var tb = -bb - disc.squareRoot(), lattice: (Double, Double, Double)? = nil
         let n = sc.slab.normal, den = d.dot(n)
-        guard tb > 1e-4, abs(den) > 1e-9 else { return c }
+        guard abs(den) > 1e-9 else { return c }
         let tp = (sc.slab.center - o).dot(n) / den
-        guard tp > 1e-4, tp < tb else { return c }
+        // (the lattice is traced, again, only where the corner plane lies in front of the ball's far side: every strut a
+        // ray can meet lies before it leaves the ball's sphere)
+        guard tp > 1e-4, tp < (sc.ballLook == .lattice ? -bb + disc.squareRoot() : tb) else { return c }
+        if sc.ballLook == .lattice {
+            guard case let .solid(t, col)? = LatticeBall(radius: sc.ballRadius).trace(o, d, center: b, light: sc.light) else { return c }
+            tb = t; lattice = col
+        }
+        guard tb > 1e-4, tp < tb else { return c }
         let ph = sc.slab.toSlab(o + d * tp)
         guard abs(ph.x) <= sc.slab.halfU && abs(ph.y) <= sc.slab.halfV else { return c }
         let p = o + d * tb, q = sc.slab.toSlab(p)
         guard -q.z < dish.surface(u: q.x, v: q.y).depth else { return c }
+        if let lattice { return lattice }
         // the ball's shading, as `SyntheticScene.trace` has it
         let nn = (p - b).normalized
         let r = d - nn * (2 * d.dot(nn))
