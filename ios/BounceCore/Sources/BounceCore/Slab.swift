@@ -46,10 +46,12 @@ public struct SlabSpec: Equatable, Codable {
     /// The owner's slab, as the app runs it: the one place the app's slab comes from (`AppSettings.slab`,
     /// `RecordingSettings()`, so the kit scorer, the synthetic kits and replays of new recordings agree on it). Each number
     /// is one constant below, in inches; change it there.
-    ///   - The flat top: 180.2 mm square, measured on the owner's first kit (slab-kit-20261118-205900: the flat top 180.2
-    ///     ± 1.5 mm across the shots, the outline over the rounded edge about 184.5 mm). The owner had said "7 in" and, by
-    ///     eye, "160mmish"; the kit rules 160 mm out for the flat top, and the owner has been asked what was meant. A
-    ///     ruler measurement replaces it. The size scales the slab's distance (and so the ball's), not its tilt.
+    ///   - The flat top: 180.2 mm square (`ownerFlatTopMm`), measured on the owner's first kit (slab-kit-20261118-205900:
+    ///     the flat top 180.2 ± 1.5 mm across the shots, the outline over the rounded edge about 184.5 mm) and confirmed by
+    ///     the owner's tape (n18: 180 mm across adjacent corners, a 250 mm diagonal, which fits corners rounded in plan by
+    ///     5-6 mm; both kits re-measured 179.8 ± 2.5 mm, the app's own corners triangulated over 8 shots 179.9 mm). The
+    ///     size scales the slab's distance (and so the ball's), not its tilt. The app's Settings > Developer > "Slab top
+    ///     (mm)" overrides it on the phone (`AppSettings.slabTopMm`); the outer (bottom) edge follows from `sideRun`.
     ///   - 1 in thick (physical: the renderers' base and the tracker's seed height), with a 1/8 in dish (the owner's).
     ///   - The sides: a prior the edge refiner refines online (`EdgeRefiner`, `ProfileLearning`), measured on the same kit:
     ///     the side face drops 19.5-22.2 mm and runs 6.8-8.2 mm out (two independent fits at 5 positions; prior 21.5 / 7.5
@@ -60,8 +62,9 @@ public struct SlabSpec: Equatable, Codable {
                                            thickness: Units.inches(ownerThicknessInches), dishDepth: Units.inches(ownerDishInches),
                                            faceDrop: Units.inches(ownerFaceDropInches), sideRun: Units.inches(ownerSideRunInches),
                                            edgeRadius: Units.inches(ownerEdgeRadiusInches))
-    /// the owner slab's flat top (both sides): 180.2 mm, measured on the kit (see `ownerSlab`), until a ruler says
-    public static let ownerFlatTopInches = 180.2 / 25.4
+    /// the owner slab's flat top (both sides, mm): the one constant for the app's default size (see `ownerSlab`)
+    public static let ownerFlatTopMm = 180.2
+    public static let ownerFlatTopInches = ownerFlatTopMm / 25.4
     public static let ownerThicknessInches = 1.0
     public static let ownerDishInches = 0.125
     /// the owner slab's profile in inches (21.5, 7.5 and 2.0 mm), so `RecordingSettings`' inch fields give it exactly

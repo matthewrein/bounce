@@ -149,6 +149,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
         t.readoutsFromSettledNormal = true
         t.lockKeepsNewestPerView = true
+        t.multiViewLock = true
         t.ballGate = RecordingSettings.appBallGate
         t.tapHints = true
         t.tapSetsBall = true
@@ -161,15 +162,16 @@ public struct RecordingSettings: Codable, Equatable {
     /// lock would pass were a median 4.9 deg off (max 7.9): blending it in at the old 0.5 added about 2.4 deg and, on one
     /// arc, moved the lock from +0.18 to -2.10 deg. Its range is still used.
     public static let appDepthNormalWeight = 0.0
-    /// LiDAR moves the lock's centre half way to its own range (`TrackerSettings.depthCentreWeight`), the weight it had
-    /// before n11. Half and half while the slab's size is not measured with a ruler: the picture's range scales with the
-    /// assumed size, now the 180.2 mm flat top read from the owner's first kit's pictures (± 1.5 mm, 0.8%), and LiDAR's
-    /// range is off by 1-2% beyond 1 m on the same kit (2.6% per metre in one shot, 0.7-0.9% in another). Replayed with
-    /// that size, LiDAR's range to the top came out a median 0.9% longer than the picture's (shot medians 0.2-2.9%), about
-    /// what LiDAR reads long against the floor, so neither is clearly better. Once a ruler gives the size (the picture's
-    /// range then good to about 0.3%), this should become the variance weight picture^2 / (picture^2 + LiDAR^2), well
-    /// under a half beyond 1 m.
-    public static let appDepthCentreWeight = 0.5
+    /// LiDAR no longer moves the lock's centre (`TrackerSettings.depthCentreWeight` 0, n18; 0.5 from n11 to n17). It was
+    /// half and half while the slab's size was not measured with a ruler: the picture's range scales with the assumed
+    /// size, and LiDAR's range is off by 1-2% beyond 1 m on the owner's first kit (it read a median 0.9% long against the
+    /// picture's). The owner's tape now gives the flat top (180 mm sides, the app's 180.2), so the picture's range is the
+    /// better one, and the multi-view lock (`TrackerSettings.multiViewLock`) pins it from several views. The half weight
+    /// also moved the shown centre along the current line of sight every frame, so the outline looked right from where
+    /// the phone was and off from elsewhere: replayed on both kits' arcs (n16, 8 shots), the shown lock wandered 6.6-21.5
+    /// mm against 3.6-13.6 mm for the picture's alone, and sat further from the views' consensus in 5 of 8. LiDAR's checks
+    /// of the top (occlusion, the re-lock veto, diagnostics) still run.
+    public static let appDepthCentreWeight = 0.0
 
     /// The launch rule: the old developer experiment when a recording says so, else the impact rule with a restitution
     /// (n12 on), else the corner plane (every recording before n12).

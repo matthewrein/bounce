@@ -657,11 +657,14 @@ final class ARController: NSObject, ARSessionDelegate {
         lastFrameTime = f.timestamp
 
         // what is done to the tracker between frames (it reports each with this frame, so a recording keeps them)
+        var slabChanged = false
         if let s = newSettings, s != settings {
+            // a new slab size: the lock (fitted at the old size) starts again
+            slabChanged = s.slabTopMm != settings.slabTopMm
             settings = s
             tracker.settings = s.tracker
         }
-        if reset { tracker.reset(); _ = captureGate.disarm(reason: "reset"); unlockCapture(); note("reset") }
+        if reset || slabChanged { tracker.reset(); _ = captureGate.disarm(reason: "reset"); unlockCapture(); note(slabChanged ? "reset: slab top" : "reset") }
 
         lastTracking = f.trackingText
         lastLens = f.fullView.intrinsics

@@ -11,6 +11,7 @@ import SwiftUI
 struct DeveloperView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage(AppSettings.keys.demo) private var demo = false
+    @AppStorage(AppSettings.keys.slabTop) private var slabTopMm = AppSettings.defaultSlabTopMm
     /// Clear log was tapped: asking first
     @State private var confirmingClearLog = false
     /// this body's redraws so far (the "Screen redraws" row)
@@ -59,9 +60,13 @@ struct DeveloperView: View {
                     .accessibilityIdentifier("reset")
             }
             Section(header: Text("Experiments"),
-                    footer: Text("The demo shows a synthetic slab instead of the camera (also on a Mac's iPhone Simulator). It applies when Settings closes.")) {
+                    footer: Text("The demo shows a synthetic slab instead of the camera (also on a Mac's iPhone Simulator). Slab top: the flat top's side (tape: 180 mm); a change starts the lock again. Both apply when Settings closes.")) {
                 Toggle("Demo scene (no camera)", isOn: $demo)
                     .accessibilityIdentifier("demoToggle")
+                Stepper(value: $slabTopMm, in: AppSettings.slabTopRange, step: 1) {
+                    Text(String(format: "Slab top (mm): %.1f", slabTopMm))
+                }
+                .accessibilityIdentifier("slabTopStepper")
             }
             Section(header: Text("Live")) {
                 HStack {

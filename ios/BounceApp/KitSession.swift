@@ -333,7 +333,7 @@ final class KitSession: ObservableObject {
                                hasLiDAR: ARController.depthSupported, cameraFormat: format, highFrameRateFormat: format)
         do {
             let s = try KitStore.create(root: root, plan: KitSession.plan, device: device,
-                                        measurements: KitMeasurements(settings: AppSettings().recording), build: appBuild, date: Date())
+                                        measurements: KitMeasurements(settings: AppSettings.load().recording), build: appBuild, date: Date())
             store = s
             let formatWords = format.map { f in String(format: "%dx%d at %.0f fps", f.width, f.height, f.fps) } ?? "no camera format (demo)"
             AppLog.info("kit", "created \(s.kitId): \(device.modelIdentifier), LiDAR \(device.hasLiDAR ? "yes" : "no"), \(formatWords)")

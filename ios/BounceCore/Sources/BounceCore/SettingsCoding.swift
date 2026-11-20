@@ -136,6 +136,7 @@ extension TrackerSettings: Codable {
         .init("settle", \.settle),
         .init("readoutsFromSettledNormal", \.readoutsFromSettledNormal),
         .init("lockKeepsNewestPerView", \.lockKeepsNewestPerView),
+        .init("multiViewLock", \.multiViewLock),
         .init(optional: "ballGate", \.ballGate),
     ]
 

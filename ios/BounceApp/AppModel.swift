@@ -14,7 +14,8 @@ struct AppSettings: Equatable {
 
     /// The slab: a 180.2 mm (7.09 in) square flat top, 1 in thick, with a 1/8 in dish and its sloped, rounded sides
     /// (BounceCore's `SlabSpec.ownerSlab`, the same as `RecordingSettings()`'s, so the kit scorer and replays run what the
-    /// app runs; its constants are the one place to change it). The slab finder is tuned for it.
+    /// app runs; its constants are the one place to change it). The slab finder is tuned for it. Settings > Developer >
+    /// "Slab top (mm)" overrides the flat top's side on the phone (`slabTopMm`); the demo scene's slab stays this one.
     static let slab = SlabSpec.ownerSlab
     /// The ball: 30 mm titanium (BounceCore's `BallSpec.ownerBall`; its restitution is replaced by the user's setting).
     static let ball = BallSpec.ownerBall
@@ -28,15 +29,22 @@ struct AppSettings: Equatable {
     static let defaultRestitution = BallSpec.ownerRestitution
     static let dropRange: ClosedRange<Double> = 0.5...10
     static let restitutionRange: ClosedRange<Double> = 0...1
+    /// Settings > Developer > "Slab top (mm)": the flat top's side (n18; the owner's tape: 180 mm). The default is
+    /// BounceCore's `SlabSpec.ownerFlatTopMm` (180.2, what the kits measured); 1 mm steps.
+    static let defaultSlabTopMm = SlabSpec.ownerFlatTopMm
+    static let slabTopRange: ClosedRange<Double> = 120...250
 
     /// used when no ball is held over the slab
     var dropFeet: Double = AppSettings.defaultDropFeet
     /// the ball's restitution e: the share of its speed into the slab, along the slab's surface normal, that it keeps
     /// coming off (a straight-up bounce regains e² of the drop height)
     var restitution: Double = AppSettings.defaultRestitution
+    /// the slab's flat top, side (mm): the tracker's slab size (`recording`); the sloped sides' outer edge follows from it
+    /// (`SlabSpec.sideRun`)
+    var slabTopMm: Double = AppSettings.defaultSlabTopMm
 
     /// UserDefaults keys. The slab, thickness, dish, ball and "dishBounce" keys of earlier builds are no longer read.
-    static let keys = (drop: "dropFeet", restitution: "restitution", demo: "demo")
+    static let keys = (drop: "dropFeet", restitution: "restitution", demo: "demo", slabTop: "slabTopMm")
     /// Keys of the builds before n12 that are removed, not read (`load`): the rebound percent ("reboundPercent") tuned the
     /// old launch along the slab's normal, which had no speed along the surface, so it stood in for that missing speed
     /// as well as for the bounce (the owner's 100% matched the distance); read as a restitution (e = 1.00) it would make
@@ -54,6 +62,10 @@ struct AppSettings: Equatable {
         for k in retiredKeys where d.object(forKey: k) != nil { d.removeObject(forKey: k) }
         if let x = number(keys.drop) { s.dropFeet = clamped(x, dropRange) }
         if let x = number(keys.restitution) { s.restitution = clamped(x, restitutionRange) }
+        // the slab's top: stored by Settings > Developer, or a launch argument (-slabTopMm 175: a string there)
+        if let x = number(keys.slabTop) ?? d.string(forKey: keys.slabTop).flatMap({ Double($0) }), x.isFinite {
+            s.slabTopMm = clamped(x, slabTopRange)
+        }
         return s
     }
 
@@ -67,6 +79,7 @@ struct AppSettings: Equatable {
         r.dropHeightFeet = dropFeet
         r.restitution = restitution
         r.reboundPercent = RecordingSettings.reboundPercent(restitution: restitution)
+        r.sideUInches = slabTopMm / 25.4; r.sideVInches = slabTopMm / 25.4
         return r
     }
 
@@ -295,7 +308,7 @@ final class AppModel: ObservableObject {
         controller.stop()
     }
 
-    /// Settings closed: apply the drop height, restitution and the developer switches.
+    /// Settings closed: apply the drop height, restitution, the slab's top and the developer switches.
     func settingsChanged() {
         if preflightRunning { preflight.cancel("Settings was closed") }
         settings = AppSettings.load()

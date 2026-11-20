@@ -42,6 +42,43 @@ be checked on your recordings in time.
 gate, tilt and replay suites were re-run. Nothing in n17 was checked on your real recordings, and the app itself only
 compiles in CI: the cue's wording and position, and the larger target, are first seen on your phone.
 
+### Added on branch n18size (the build number is set when it is merged): the outline from all its views, and the slab's size
+
+**The locked square now combines its views.** Until now each detection fitted the square from one view at the known
+size, so a pixel's error at a corner became 1-3 cm of distance along that view's line of sight: the outline looked
+right from where it locked and off from anywhere else (what you saw on n16). The lock now keeps its own detections,
+each view of the slab (7.5 degrees apart) its newest three, up to 12 views, and once two views at least 15 degrees
+apart exist it fits them together: the square's centre and its turn, at the size setting, that put its corners nearest
+every detection's outline in its own picture (`MultiViewLock`, `TrackerSettings.multiViewLock`, on in the app). The
+tilt is not touched: the fit holds the lock's normal, so the tilt number, its settling and its uncertainty come from
+the same detections as before. With one view, or if the fit misfits (over 1.5 px per corner) or would move the centre
+more than 2.5 cm, the outline is the old single-view average. LiDAR no longer moves the centre either (it moved it half
+way to its own range along the current line of sight, which also made the outline slide as you walked); LiDAR's checks
+still run. Copy diagnostics shows what the fit did under `multiView`: views, whether it is used, its misfit, the size the
+views imply against the setting, and how far the shown corners drift.
+
+**Replayed on your two kits** (arcs and walk-round, n16 against this; error = the shown corners against all the views'
+consensus): the median corner error fell in all 10 shots, kit 1 from 5-11 mm to 2-4 mm (the walk-round 10.8 to
+1.8), kit 2's arcs from 12-25 mm to 2-12 mm; the largest error fell or stayed in all 10 (kit 1's walk-round 35.6 to
+10.5 mm). How far the outline wanders over a shot fell in 7 of 10 (20.1 to 6.6 mm on kit 1's level arc, 18.1 to 6.5 on
+kit 2's steepest) and rose a little in two of kit 1's tilted arcs (8.7 to 9.4, 6.6 to 7.8 mm, while it still had
+one view). The tilt was no worse: the settled tilt against your phone-on-slab truth moved from -0.53 to -0.23 deg,
+-0.28 to +0.08, -1.06 to -0.73 and +0.98 to +0.97 on the tilted arcs and from -0.04 to +0.08 on kit 1's level arc,
+and it settled as often or more. Kit 2's walk-round (its edge finder took a side's outer edge in many views) improved
+least: 25.7 to 17.6 mm, wander 19.5 to 17.8.
+
+**The slab's size stays 180 mm** (the app's 180.2: your tape's 180 mm sides; the 250 mm diagonal fits corners rounded
+by about 5-6 mm in plan). Both kits re-measured from the pictures give 179.8 ± 2.5 mm, and the views fitted together
+imply 177.3-182.0 mm across the 10 shots (median about 180). If it ever needs changing: Settings > Developer > **Slab top (mm)** (1 mm steps, 120-250 mm, applied
+when Settings closes; a change starts the lock again; the sloped sides' outer edge follows), or for tests the launch
+argument `-slabTopMm 175`; the default is one constant, `SlabSpec.ownerFlatTopMm`. Recordings replay with the size
+they were recorded with. Nothing on the main screen changed.
+
+**Checked:** BounceCore unit tests (`MultiViewLockTests`: the fit puts a lock 15 mm off back on the slab from four
+views, leaves out an outline on the wrong edge, keeps the tilt exactly, and on a synthetic walk round halves the corner
+error, median 3.5 to 1.3 mm) and the replays above; the full BounceCore suite was re-run. The Developer row and the
+size setting only compile in CI and are first seen on your phone.
+
 ## Build n16 (20 November 2026): tap the ball
 
 Small build on top of n15: the lattice ball finder and the gate (the n15 section below) are unchanged, and so is
@@ -635,6 +672,8 @@ opens them by itself.
   or refused and why) and whether a ring was on screen after it, the ring going, and what each tap did with the ball,
   each with the time, the ball's place in the room and in the full picture, and its height over the slab's top.
 - **Reset tracking**: forgets the slab and looks for it again.
+- **Slab top (mm)** (under Experiments): the slab's flat top, side (default 180.2 mm, the owner's tape 180 mm). The
+  outline and the ball's distance scale with it; a change starts the lock again when Settings closes.
 - **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal
   where it lands instead of the corner plane's. Both apply when Settings closes.
