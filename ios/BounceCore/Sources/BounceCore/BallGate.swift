@@ -10,14 +10,20 @@ import Foundation
 ///   held ball stays put; a print on the floor seen from a moving phone does not (its distance from its size is wrong, so
 ///   its place in the room drifts as the phone moves), and a passing hand or thumb does not;
 /// - over the slab: its centre straight above the top face (within `topMargin`), its bottom `minHeight` to `maxHeight` over
-///   it. Nothing at or under the slab's surface or beside the slab is shown;
+///   it. Nothing at or under the slab's surface or beside the slab is shown. (The app's finder already keeps to these
+///   limits, a little tighter, so on the app's path this re-checks it: on the kits it refused nothing. A look-alike whose
+///   size is wrong reads as being in the air over the slab and passes it; agreement and LiDAR are what stop those.);
 /// - unless LiDAR says the place is a surface: where the ball would be near enough for LiDAR to resolve it (its radius
-///   at least `lidarMinRadiusPixels` of the depth map's pixels), a depth at its centre more than `lidarSurfaceMetres`
-///   beyond the ball's centre is the floor or a print, not a ball in the air; that place is not taken for the ball for
-///   `lidarMemorySeconds`.
+///   at least `lidarMinRadiusPixels` of the depth map's pixels, about 0.55 m away), a depth at its centre more than
+///   `lidarSurfaceMetres` beyond the ball's centre is the floor or a print, not a ball in the air. Searches without a
+///   reading (frames without depth; the kits store it once a second) do not take that place for the ball for
+///   `lidarMemorySeconds`; a later reading at the ball overrules it.
 /// Once shown, the ball stays shown while each new find agrees with the last one shown (the same test), and the finder's
-/// hold-over of a ball it missed for a scan or two is shown with it; a ball not seen for `keepSeconds` must be seen
-/// `sightings` times again. (No new screen, nothing to tap: point and go.)
+/// hold-over of a ball it missed for a scan or two is shown with it (while it agrees with it); a ball not seen for
+/// `keepSeconds` must be seen `sightings` times again. (No new screen, nothing to tap: point and go.)
+///
+/// What it does not stop: a look-alike that stays put (a toy or a stool's cut-out at the picture's edge) agrees with
+/// itself, and beyond LiDAR's reach only the over-the-slab test applies to it; the kits show it for about 0.4 s.
 ///
 /// The numbers come from the owner's two kits: the app's finder on the lock the phone had while recording, on the app's
 /// schedule (a search every 0.1 s, every 0.3 s when idle), against the ball's place marked by hand (see each).
@@ -46,9 +52,10 @@ public struct BallGateSettings: Equatable {
     public var topMargin = 0.01
     /// a shown ball not found again for this long (s) is let go
     public var keepSeconds = 0.35
-    /// LiDAR's check (see the type): nil turns it off. 0.15 m: on the kits' held balls LiDAR read -0.050 to +0.051 m from
-    /// the ball's centre (25 finds with depth, the ball 5.2-8.4 depth pixels in radius); the false black-and-white label
-    /// at the first kit's picture edge read +1.33 m.
+    /// LiDAR's check (see the type): nil turns it off. 0.15 m: on the kits' held balls LiDAR read -0.050 to +0.052 m from
+    /// the ball's centre (only 25 finds with depth, the kits storing it once a second; the ball 5.2-8.4 depth pixels in
+    /// radius); the false black-and-white label at the first kit's picture edge read +1.33 m. On the phone it runs on
+    /// every search with depth; Copy diagnostics counts its refusals (`ballGate.surface`).
     public var lidarSurfaceMetres: Double? = 0.15
     /// only where the ball's radius spans this many depth pixels (about 0.55 m away on the phone's 256 x 192 map): the
     /// kits verify LiDAR on a held ball only that near; farther away it may not resolve the ball and reads what is behind
@@ -132,35 +139,48 @@ public struct BallGate {
         recent.removeAll { t - $0.time > s.window }
         guard let B = center, B.isFinite else { return .none }
         let x = Sighting(time: t, center: B, camera: camera)
-        // LiDAR: a surface there now, or there a moment ago
-        if let limit = s.lidarSurfaceMetres, let e = lidarExcess, e > limit {
-            surfaces.append(x); shown = nil
-            recent.removeAll { BallGate.agree($0, x, s) }
-            return .surface
+        let R = ball.radius
+        // LiDAR: a surface there now. A reading at the ball overrules what an earlier reading said of that place (one
+        // reading that mixed in the background behind a held ball hides it for that search only); the memory stands in
+        // only where this search has no reading (frames without depth, a ball too far for the map).
+        if let limit = s.lidarSurfaceMetres, let e = lidarExcess {
+            if e > limit {
+                surfaces.append(x); shown = nil
+                recent.removeAll { BallGate.agree($0, x, s, radius: R) }
+                return .surface
+            }
+            surfaces.removeAll { BallGate.agree($0, x, s, radius: R) }
+        } else if surfaces.contains(where: { BallGate.agree($0, x, s, radius: R) }) {
+            shown = nil; return .surface
         }
-        if surfaces.contains(where: { BallGate.agree($0, x, s) }) { shown = nil; return .surface }
-        if heldOver { return shown != nil ? .heldOver : .notShownHeldOver }
-        // over the slab's top, at a drop height
-        guard let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: down) else { return .tooLow }
-        guard abs(d.u) <= slab.halfU + s.topMargin, abs(d.v) <= slab.halfV + s.topMargin else { return .offTop }
+        // the finder's hold-over: shown only with the shown ball it holds over
+        if heldOver {
+            guard let sh = shown, BallGate.agree(sh, x, s, radius: R) else { return .notShownHeldOver }
+            return .heldOver
+        }
+        // over the slab's top, at a drop height (the finder checks this too; a find that fails it is not the shown ball,
+        // and ends it as a find elsewhere does)
+        guard let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: down) else { shown = nil; return .tooLow }
+        guard abs(d.u) <= slab.halfU + s.topMargin, abs(d.v) <= slab.halfV + s.topMargin else { shown = nil; return .offTop }
         // (`Bounce.drop` reports at least 6 mm: a centre less than a radius over the face reads as touching it)
-        guard d.dropHeight >= s.minHeight else { return .tooLow }
-        guard d.dropHeight <= s.maxHeight else { return .tooHigh }
+        guard d.dropHeight >= s.minHeight else { shown = nil; return .tooLow }
+        guard d.dropHeight <= s.maxHeight else { shown = nil; return .tooHigh }
         recent.append(x)
-        if let sh = shown, BallGate.agree(sh, x, s) { shown = x; return .kept }
+        if let sh = shown, BallGate.agree(sh, x, s, radius: R) { shown = x; return .kept }
         // the shown ball, if any, was not found here: it is no longer shown
         shown = nil
-        if recent.filter({ BallGate.agree($0, x, s) }).count >= s.sightings { shown = x; return .accepted }
+        if recent.filter({ BallGate.agree($0, x, s, radius: R) }).count >= s.sightings { shown = x; return .accepted }
         return .waiting
     }
 
-    /// Whether find `b` agrees with the earlier `a` (see `BallGateSettings`): across `b`'s line of sight, and along it.
-    static func agree(_ a: Sighting, _ b: Sighting, _ s: BallGateSettings) -> Bool {
+    /// Whether find `b` agrees with the earlier `a` (see `BallGateSettings`): across `b`'s line of sight, and along it
+    /// (`radius`: the ball's, m, for the share of the range a few pixels of its image radius make).
+    static func agree(_ a: Sighting, _ b: Sighting, _ s: BallGateSettings, radius: Double) -> Bool {
         let los = b.center - b.camera, range = los.length
-        guard range > 1e-6 else { return false }
+        guard range > 1e-6, radius > 0 else { return false }
         let dir = los / range, d = b.center - a.center
         let along = d.dot(dir), across = (d - dir * along).length
-        let alongShare = max(s.alongFraction, s.radiusNoiseRadians * range / 0.015)
+        let alongShare = max(s.alongFraction, s.radiusNoiseRadians * range / radius)
         return across <= s.acrossMetres && abs(along) <= alongShare * range
     }
 

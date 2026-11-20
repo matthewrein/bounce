@@ -124,6 +124,57 @@ final class BallGateTests: XCTestCase {
                                                     camera: camera, lidarExcess: 2) }, [.waiting, .waiting, .accepted])
     }
 
+    /// One stray LiDAR reading behind a held, shown ball (depth that mixed in the background) hides it for that search,
+    /// not for `lidarMemorySeconds`: the readings after it, at the ball, overrule it, and the ball is shown again on its
+    /// third find. The memory stands in only for searches without a reading, and a reading at the ball clears it.
+    func testOneStrayLidarReadingDoesNotHideAHeldBallForLong() {
+        var g = gate()
+        let readings: [Double?] = [0.01, -0.02, 0.0, 0.2, 0.01, -0.01, 0.02, 0.0, 0.01]
+        let v = readings.enumerated().map { step(&g, Double($0.offset) * 0.1, above(0.4), lidar: $0.element) }
+        XCTAssertEqual(v, [.waiting, .waiting, .accepted, .surface, .waiting, .waiting, .accepted, .kept, .kept])
+        // a surface reading, then a reading at the ball there: later searches without depth are not refused
+        var h = gate()
+        XCTAssertEqual(step(&h, 0, above(0.4), lidar: 0.9), .surface)
+        XCTAssertEqual(step(&h, 0.1, above(0.4), lidar: -0.01), .waiting)
+        XCTAssertEqual([0.2, 0.3].map { step(&h, $0, above(0.4)) }, [.waiting, .accepted])
+        // the floor or a print really there reads as a surface on every search with depth: never shown
+        var p = gate()
+        for k in 0..<15 { XCTAssertEqual(step(&p, Double(k) * 0.1, above(0.4), lidar: k % 3 == 0 ? 0.8 : nil), .surface, "search \(k)") }
+        XCTAssertFalse(p.showing)
+    }
+
+    /// A shown ball that the finder then finds beside the top, too low or too high is no longer shown, and the finder's
+    /// hold-over of that find is not shown either; a hold-over away from the shown ball is not shown.
+    func testARefusedFindEndsTheShownBallAndItsHoldOver() {
+        let refused: [(Vec3, BallGate.Verdict)] = [(above(0.4, Vec3(slab.halfU + 0.05, 0, 0)), .offTop), (above(0.035), .tooLow),
+                                                   (above(2.5), .tooHigh)]
+        for (p, why) in refused {
+            var g = gate()
+            XCTAssertEqual([0, 0.1, 0.2].map { step(&g, $0, above(0.4)) }, [.waiting, .waiting, .accepted])
+            XCTAssertEqual(step(&g, 0.3, p), why)
+            XCTAssertFalse(g.showing, "\(why)")
+            XCTAssertEqual(step(&g, 0.4, p, heldOver: true), .notShownHeldOver, "\(why)")
+        }
+        var h = gate()
+        XCTAssertEqual([0, 0.1, 0.2].map { step(&h, $0, above(0.4)) }, [.waiting, .waiting, .accepted])
+        XCTAssertEqual(step(&h, 0.3, above(0.4, Vec3(0.04, 0, 0)), heldOver: true), .notShownHeldOver)
+        XCTAssertEqual(step(&h, 0.4, above(0.4), heldOver: true), .heldOver)
+    }
+
+    /// The tolerance along the line of sight follows the ball's own size: a few pixels of radius are a larger share of a
+    /// small ball's image than of a large one's.
+    func testAgreementAlongTheLineOfSightFollowsTheBallsSize() {
+        let s = BallGateSettings()
+        let b = above(0.4), range = (b - camera).length, los = (b - camera) / range
+        // 30 mm ball: max(6%, 0.00195 * range / 0.015); 50 mm: max(6%, 0.00195 * range / 0.025)
+        let small = max(s.alongFraction, s.radiusNoiseRadians * range / 0.015), large = max(s.alongFraction, s.radiusNoiseRadians * range / 0.025)
+        XCTAssertGreaterThan(small, large + 0.02)
+        let share = (small + large) / 2
+        let a = BallGate.Sighting(time: 0, center: b, camera: camera), x = BallGate.Sighting(time: 0.1, center: b + los * (share * range), camera: camera)
+        XCTAssertTrue(BallGate.agree(a, x, s, radius: 0.015))
+        XCTAssertFalse(BallGate.agree(a, x, s, radius: 0.025))
+    }
+
     /// LiDAR around a ball: the median depth within half its radius less the centre's depth, only where the map resolves
     /// the ball (its radius at least `lidarMinRadiusPixels` of the map's pixels).
     func testLidarExcessReadsTheMapNearTheBall() throws {

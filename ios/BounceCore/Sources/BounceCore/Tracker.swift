@@ -366,7 +366,9 @@ public struct TrackerSettings: Equatable {
     /// The ball gate (n15, `BallGateSettings`): the ball finder's results are shown, and set the drop height and the drop
     /// point, only once they agree over several searches, over the slab's top at a drop height, and not where LiDAR sees a
     /// surface. nil (the default, so older recordings, whose settings lack it, replay as the phone ran them): every result
-    /// is shown, as before. The app's is on (`RecordingSettings.trackerSettings`).
+    /// is shown, as before. The app's is on (`RecordingSettings.trackerSettings`). (Version-1 recordings store no tracker
+    /// settings and replay with the app's current ones, the gate included, as for `lockKeepsNewestPerView` and
+    /// `idleBallAfter`; version-2 recordings without the key replay without it.)
     public var ballGate: BallGateSettings? = nil
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
