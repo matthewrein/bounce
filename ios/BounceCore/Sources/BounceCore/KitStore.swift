@@ -85,6 +85,38 @@ public struct KitListing: Equatable {
     public var loadable: Bool
 }
 
+/// Why a shot that needs the slab's true tilt (`KitShotSpec.requiresTruth`: the drops of standard-v2) may not be
+/// recorded yet: the slab position it is in has no true tilt from its flat-phone shot (`KitStore.missingTruth(forShot:)`).
+public struct KitMissingTruth: Equatable {
+    public enum Reason: String, Equatable {
+        /// the flat-phone shot is not taken yet (or the slab was set up again since, on Resume)
+        case notTaken
+        /// it was skipped
+        case skipped
+        /// it was taken but its reading gave no usable tilt
+        case failed
+    }
+    /// the shot that needs it
+    public var shotId: String
+    /// the flat-phone shot to take (again) first
+    public var flatShotId: String
+    public var reason: Reason
+
+    /// What the shot's screen says: "Take the phone-on-slab reading first: the drops need the slab's tilt measured right
+    /// before them."
+    public static let message = "Take the phone-on-slab reading first: the drops need the slab's tilt measured right before them."
+    public var message: String { KitMissingTruth.message }
+
+    /// Why there is none: "It was skipped."
+    public var why: String {
+        switch reason {
+        case .notTaken: return "It has not been taken since the slab was set up."
+        case .skipped: return "It was skipped."
+        case .failed: return "Its reading gave no tilt."
+        }
+    }
+}
+
 /// One step on the end screen.
 public struct KitStepSummary: Equatable {
     public var number: Int
@@ -110,7 +142,10 @@ public struct KitSummary: Equatable {
     public var headline: String
     /// one line per slab position (and generation): "Level: 0.42° (two readings)."
     public var positionLines: [String]
-    /// headline, step lines, position lines
+    /// one line per captured shot whose tilt check disagrees (`KitTiltCheck`): "Tilt check: s10-drop1: the app read 0.3°,
+    /// the phone-on-slab reading 17.2° (16.9° apart). Has the slab moved?"; empty when none does
+    public var tiltCheckLines: [String] = []
+    /// headline, step lines, position lines, tilt check lines
     public var lines: [String]
 }
 
@@ -387,6 +422,33 @@ public final class KitStore {
 
     public func position(forShot id: String) -> KitSlabPosition? { positionId(forShot: id).flatMap { manifest.position($0) } }
 
+    /// Why shot `id` may not be recorded now, or nil when it may. Only a shot that needs the slab's true tilt
+    /// (`KitShotSpec.requiresTruth`) can be held back: it needs the current generation of the slab position its flat-phone
+    /// shot (`KitPlan.positionShot(for:)`) starts to have a true tilt. The flat-phone shot not taken (or the slab set up
+    /// again since: a new generation, without one), skipped, or taken without a usable reading: held back, with the
+    /// flat-phone shot to take first. Skipping the shot itself is always allowed. Never the true tilt of an earlier
+    /// position: the drops must carry the tilt the slab had when the ball was dropped on it.
+    public func missingTruth(forShot id: String) -> KitMissingTruth? {
+        guard let s = plan.shot(id), s.requiresTruth, let flat = plan.positionShot(for: id), let ps = flat.startsPosition else { return nil }
+        if let p = manifest.currentPosition(plan: ps.id), p.groundTruth != nil { return nil }
+        let reason: KitMissingTruth.Reason
+        switch (manifest.currentPosition(plan: ps.id) == nil, record(flat.id)?.status) {
+        case (false, .some(.skipped)): reason = .skipped
+        case (false, .some(.captured)): reason = .failed
+        default: reason = .notTaken
+        }
+        return KitMissingTruth(shotId: id, flatShotId: flat.id, reason: reason)
+    }
+
+    /// The tilt check for a video shot about to be committed (`KitTiltCheck`): the app's tilt over its frames against the
+    /// true tilt of the slab position it is taken in. nil for a shot that is not a video, one whose plan expects no slab
+    /// in view, one in a position without a true tilt, or one with too few locked frames.
+    public func tiltCheck(forShot id: String, stats: [KitFrameStat]) -> KitTiltCheck? {
+        guard let s = plan.shot(id), s.isVideo, s.expect.slab != .forbidden else { return nil }
+        let truth = currentPositionId(forShot: id).flatMap { manifest.position($0) }?.groundTruth
+        return KitTiltCheck.make(stats: stats, truthDegrees: truth.flatMap { $0.isUsable ? $0.tiltDegrees : nil })
+    }
+
     /// The slab position the next shot continues: one already started, whose flat-phone shot is behind. nil when the
     /// next shot starts a position itself, belongs to none, or the kit is complete. On Resume, if this is set, the app
     /// asks "Has the slab moved since <label>?" and on Yes calls `restartPosition`.
@@ -582,6 +644,8 @@ public final class KitStore {
         }
         let pos = currentPositionId(forShot: id).flatMap { manifest.position($0) }
         m.positionId = pos?.id; m.trueTilt = pos?.groundTruth
+        // the tilt check is kept only against the true tilt the shot is committed with
+        m.tiltCheck = s.isVideo ? m.tiltCheck?.against(truthDegrees: (pos?.groundTruth?.isUsable ?? false) ? pos?.groundTruth?.tiltDegrees : nil) : nil
         var hadOld = false
         do {
             try ops.writeAtomically(KitJSON.encode(m), to: attempt.appendingPathComponent(KitStore.shotManifestFile))
@@ -618,7 +682,7 @@ public final class KitStore {
             upsertPosition(p, shotId: s.id, groundTruth: (m.flat?.isUsable ?? false) ? m.flat : nil, date: KitTime.date(capturedAt) ?? Date())
         }
         r.status = .captured; r.attempts = max(r.attempts, m.attempt); r.folder = KitStore.shotsFolder + "/" + s.id
-        r.positionId = m.positionId
+        r.positionId = m.positionId; r.tiltCheck = m.tiltCheck
         r.verdict = m.quality?.verdict; r.enteredHeightInches = m.enteredHeightInches; r.duration = m.duration
         r.frames = m.video?.frameCount ?? m.motionSamples; r.bytes = KitFiles.size(of: shotFolder(s.id)); r.capturedAt = capturedAt
         setRecord(r)
@@ -779,8 +843,13 @@ public final class KitStore {
             }
             return String(format: "%@: %.2f° (%@).", label, t, how)
         }
+        let tiltCheckLines = manifest.shots.compactMap { r -> String? in
+            guard r.status == .captured, let c = r.tiltCheck, c.disagrees else { return nil }
+            return "Tilt check: " + c.line(shot: r.id) + ". Has the slab moved?"
+        }
         return KitSummary(steps: steps, captured: captured, skipped: skipped, pending: pending, total: manifest.shots.count, bytes: bytes,
-                          headline: headline, positionLines: positionLines, lines: [headline] + steps.map { $0.line } + positionLines)
+                          headline: headline, positionLines: positionLines, tiltCheckLines: tiltCheckLines,
+                          lines: [headline] + steps.map { $0.line } + positionLines + tiltCheckLines)
     }
 }
 

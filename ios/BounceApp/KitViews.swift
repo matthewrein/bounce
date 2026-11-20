@@ -291,11 +291,25 @@ struct KitShotView: View {
                     KitDiagramView(diagram: s.diagram)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(s.title).font(.headline)
+                        // what must not be missed ("Do not level the slab or touch it until the drops are done.")
+                        if let w = s.warning {
+                            Text(w).font(.subheadline.bold()).foregroundColor(.yellow).accessibilityIdentifier("kitWarning")
+                        }
                         Text(s.instruction).font(.subheadline).accessibilityIdentifier("kitInstruction")
                         if let d = s.detail, kit.phase == .ready {
                             Text(d).font(.caption).foregroundColor(.white.opacity(0.75))
                         }
                     }
+                }
+            }
+            // a drop without the slab's tilt measured right before it: not recorded until the reading is taken
+            if let m = kit.missingTruth, kit.phase == .ready || kit.phase == .failed {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(m.message).font(.subheadline.bold()).foregroundColor(.orange).accessibilityIdentifier("kitNeedsReading")
+                    Text(m.why).font(.caption)
+                    Button("Take the reading") { kit.takeReadingFirst() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("kitTakeReading")
                 }
             }
             if let n = kit.notice {
@@ -352,6 +366,13 @@ struct KitShotView: View {
             if let h = kit.heightNote {
                 Text(h).font(.caption).accessibilityIdentifier("heightNote")
             }
+            // the drop read a tilt far from the reading before it: the slab may have moved
+            if kit.tiltDisagrees {
+                Button("Take the reading again") { kit.retakeReading() }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                    .accessibilityIdentifier("kitRetakeReading")
+            }
         }
     }
 
@@ -361,6 +382,7 @@ struct KitShotView: View {
             HStack(spacing: 12) {
                 Button(action: { kit.start() }) { Text("Start").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
+                    .disabled(kit.missingTruth != nil)
                     .accessibilityIdentifier("shotStart")
                 skipOrKeep
             }

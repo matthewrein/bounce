@@ -13,7 +13,7 @@ final class KitStoreTests: XCTestCase {
 
     func at(_ s: Double) -> Date { t0.addingTimeInterval(s) }
 
-    func newKit(plan: KitPlan = .standard, at date: Date? = nil) throws -> KitStore {
+    func newKit(plan: KitPlan = .standardV1, at date: Date? = nil) throws -> KitStore {
         try KitStore.create(root: root, plan: plan, device: KitManifestTests.device, measurements: KitMeasurements(settings: RecordingSettings()),
                             build: "1.0 (7)", date: date ?? t0)
     }
@@ -83,7 +83,7 @@ final class KitStoreTests: XCTestCase {
         XCTAssertEqual(p.done, 0); XCTAssertEqual(p.total, 28); XCTAssertFalse(p.isComplete); XCTAssertEqual(p.fraction, 0)
         let loaded = try KitStore.load(folder: store.folder)
         XCTAssertEqual(loaded.manifest, store.manifest)
-        XCTAssertEqual(loaded.plan, KitPlan.standard)
+        XCTAssertEqual(loaded.plan, KitPlan.standardV1)
         // a second kit in the same second gets its own folder
         let again = try newKit()
         XCTAssertEqual(again.kitId, "slab-kit-20261117-153000-2")
@@ -313,7 +313,7 @@ final class KitStoreTests: XCTestCase {
     }
 
     func testProgressFinishAndResume() throws {
-        let store = try newKit(plan: KitPlan.standard)
+        let store = try newKit(plan: KitPlan.standardV1)
         try store.commitMeasurements(KitManifestTests.measurements, date: at(1))
         try capture(store, "s02-scan", at: 2)
         try store.skipShot("s03-flat-level", date: at(3))
@@ -389,7 +389,7 @@ final class KitStoreTests: XCTestCase {
     }
 
     func testScaledPlanKitsRememberTheirScale() throws {
-        let fast = KitPlan.standard.scaled(by: 0.25)
+        let fast = KitPlan.standardV1.scaled(by: 0.25)
         let store = try newKit(plan: fast)
         XCTAssertEqual(store.manifest.timeScale, 0.25)
         let loaded = try KitStore.load(folder: store.folder)

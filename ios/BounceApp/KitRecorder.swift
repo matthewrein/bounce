@@ -190,9 +190,11 @@ final class KitRecorder {
         let frame = KitFrame(index: 0, time: f.clock, pose: f.arkitPose, intrinsics: [Float(K.fx), Float(K.fy), Float(K.cx), Float(K.cy)],
                              tracking: f.kitTracking, exposure: f.exposureDuration, exposureOffset: f.exposureOffset,
                              ambientLumens: f.ambientLumens, colorTemperature: f.colorTemperature, luma: luma, blur: blur, live: live)
+        // the app's own tilt on this frame, for the shot's tilt check against the slab's true tilt (`KitTiltCheck`)
         let stat = KitFrameStat(t: f.clock, trackingNormal: f.kitTracking.isNormal, luma: luma, blurPixels: blur,
                                 slabFound: live.slabFound, slabLocked: live.state == .locked, ballFound: out.ball != nil,
-                                ambientLumens: f.ambientLumens)
+                                ambientLumens: f.ambientLumens, appTiltDegrees: live.tilt, appTiltSigmaDegrees: out.tiltSigmaDegrees,
+                                appTiltSettled: out.angleSettled)
         var depthMap: DepthMap? = nil
         if wantsDepth, f.clock - lastDepthClock >= KitRecorder.depthInterval - 0.25 / keptFps, let d = f.depth()?.0 {
             depthMap = d

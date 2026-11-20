@@ -37,23 +37,68 @@ positions"). At the end, the app lists what was captured and what was skipped, t
 | 5 Slab only, tilts | `s05-tilt1-flat`, `s05-tilt1-still`, `s05-tilt1-arc`, then the same for `tilt2` and, optionally, `tilt3` | Slide the slab to a new tilt (about 5°, 10°, 15°). Each tilt starts with a flat-phone true tilt, which begins a new slab position. | per tilt: about 12 s + 5 s + 15 s |
 | 6 Light | `s06-dim`, `s06-bright` | Same slab position: dim the room, then make it bright. | 6 s + 6 s |
 | 7 Ball only | `s07-ball-3ft`, `s07-ball-5ft` | Ball resting on the floor away from the slab (slab out of view), the phone about 3 ft from it, then about 5 ft. | 5 s + 5 s |
-| 8 Ball on the slab | `s08-ball-centre` | Ball resting in the dish, as near the middle as it will stay (on the tilted slab it cannot stay in the middle: the scorer takes it where it is). It ties the ball's size to the slab's distance. | 6 s |
+| 8 Ball on the slab | `s08-ball-centre` | Ball resting in the dish, as near the middle as it will stay (on the tilted slab it cannot stay in the middle: the scorer takes it where it is). It ties the ball's size to the slab's distance. In standard-v2 it starts "Leave the slab tilted." with, in bold, "Do not level the slab for the ball: if it will not stay, tap Skip." (both v1 kits were levelled here). | 6 s |
 | 9 Ball held above | `s09-held-low`, `s09-held-mid`, `s09-held-high` | Hold the ball over the middle of the slab: low (about 4 in), middle (about 1 ft), high (about 2 ft). After each shot, the owner may enter the measured height of the ball's bottom above the slab right under it (a ruler stood on the slab under the ball, so in the dish: the app's drop height), or skip that. The field starts empty; the nominal height is only its placeholder. | 5 s each |
-| 10 Bounces | `s10-drop1`, `s10-drop2`, `s10-drop3` | Hold the ball about 1 ft over the middle of the slab and let go at the high beep (Drop now): the only beep after the countdown's ticks. Keep the slab and the floor around it in view. Recorded at the highest frame rate ARKit offers. | 6 s each |
-| 11 Off-centre bounce | `s11-drop-edge` | The same, dropping the ball near one edge of the slab. | 6 s |
+| 10 Bounces, slab tilted | `s10-flat` (flat), then `s10-drop1`, `s10-drop2`, `s10-drop3` | **Leave the slab tilted.** First a flat-phone true tilt of the slab as it stays for the drops (if it is not tilted, tilt it about 10° first; do not level it); it starts **slab position 5, "drops"**. Then, without touching the slab, hold the ball about 1 ft over the middle of the slab and let go at the high beep (Drop now): the only beep after the countdown's ticks. Keep the slab and the floor around it in view. Recorded at the highest frame rate ARKit offers. A drop cannot be started until its position has that true tilt (see "Drops on a tilted slab"). | about 12 s + 6 s each |
+| 11 Off-centre bounce | `s11-drop-edge` | The same, dropping the ball near one edge of the slab (the slab still tilted, untouched). | 6 s |
 | 12 Negatives | `s12-no-slab`, `s12-no-ball` | The room with neither the slab nor the ball in view; then the slab in view with no ball anywhere. | 6 s + 6 s |
 
-There are 25 shots in total, or 28 with the optional third tilt (`KitPlan.standard`, id `standard-v1`). Recording takes
-about 3 minutes; with reading, moving the slab and countdowns, the whole kit takes about 10 minutes. Every shot can be
-skipped. UI tests run the same plan faster with `KitPlan.standard.scaled(by:)`, which shortens recordings, countdowns, the
-release cue and the flat-phone timings; kit.json records the time scale.
+There are 26 shots in total, or 29 with the optional third tilt (`KitPlan.standard`, id `standard-v2`, since n20k).
+Recording takes about 3 minutes; with reading, moving the slab and countdowns, the whole kit takes about 10 minutes. Every
+shot can be skipped. UI tests run the same plan faster with `KitPlan.standard.scaled(by:)`, which shortens recordings,
+countdowns, the release cue and the flat-phone timings; kit.json records the time scale.
+
+Kits taken before n20k use **standard-v1** (`KitPlan.standardV1`): the same plan without `s10-flat`, 25 shots (28 with the
+third tilt), whose drops belong to the last tilt's position (`p3`, or `p4`) and are never held back. kit.json records the
+plan id, so such a kit resumes, checks and scores against standard-v1 exactly as before (`KitPlan.named`). In both of the
+owner's v1 kits the slab was put back level for the drops while the kit gave them the third tilt's true tilt (17° and 12°;
+the app read about 0.3° on those clips): their drops are level-slab drops, good for the rebound and the apex but not for
+the bounce's direction or the tangential share. standard-v2 exists to get drops on a tilted slab with their own reading.
+
+### Drops on a tilted slab (standard-v2)
+
+- `s10-flat` is a required flat-phone shot right before `s10-drop1`. Its screen says, in bold above the instruction
+  (`KitShotSpec.warning`), "Leave the slab tilted for the drops: do not level it."; the instruction: "If the slab is not
+  tilted, tilt it about 10° in its cradle. Leave it tilted: do not level it. Lay the phone flat in its middle, top pointing
+  away. Let go."; the detail ends "Then do not touch the slab until the drops are done: they use the tilt measured here."
+  It starts its own slab position, `p5` "drops".
+- Read in place, the owner's two v1 kits show the slab levelled from the ball on the slab on (`s08`), not only for the
+  drops: the app's own tilt (frames.jsonl, locked frames) was 0.5° and 3.9° there and 0.2-4.2° on every later shot,
+  against 12.1° and 17.2° in kit.json. So `s08-ball-centre` now says to leave the slab tilted and to skip the shot if the
+  ball will not stay (its position, kind and expectations unchanged).
+- Every drop (`s10-drop1..3`, `s11-drop-edge`) shows "Do not level the slab or touch it until the drops are done." in bold
+  above its instruction, which starts "Leave the slab tilted."; its detail starts "Do not level it or touch it: the drops
+  use the tilt just measured."
+- **Required reading** (`KitShotSpec.requiresTruth`, `KitStore.missingTruth(forShot:)`): a drop cannot be recorded unless the
+  current generation of the slab position its flat-phone shot starts (`KitPlan.positionShot(for:)`, here `s10-flat` and
+  `p5`) has a true tilt. Without one (the reading was skipped, failed, or not taken since the slab was set up again on
+  Resume) the drop's screen says "Take the phone-on-slab reading first: the drops need the slab's tilt measured right
+  before them." with the reason, **Start** is disabled, and **Take the reading** reopens `s10-flat`; after it, **Next**
+  comes back to the drop. **Skip** stays, so the owner is never stuck. The earlier tilt's true tilt never stands in.
+
+### Tilt check (from n20k)
+
+After each video shot whose slab position has a true tilt (and whose plan does not forbid the slab in view), the app
+compares its own tilt during the shot with that true tilt (`KitTiltCheck`, from the tracker's tilt on every recorded frame:
+`KitFrameStat.appTiltDegrees`, `appTiltSigmaDegrees`, `appTiltSettled`). The app's tilt is the median over the frames with
+the slab locked (over the settled ones when there are at least 3), its uncertainty the median of the tracker's honest
+standard deviation over the same frames. They **disagree** when they are more than 3° apart *and* more than 2 standard
+deviations apart, so a still, unsettled single view cannot raise it (without a standard deviation only a settled tilt
+can). shot.json and the shot's line in kit.json carry `tiltCheck` { `appTiltDegrees`, `appSigmaDegrees`, `appSettled`,
+`appFrames`, `truthTiltDegrees`, `differenceDegrees`, `disagrees` } (absent in older kits, and for shots without a true
+tilt or with fewer than 3 locked frames). When it disagrees, the shot's review says, for example, "The app reads 0.3° but
+the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading."; after a drop it also offers **Take the
+reading again**, which sets the slab position up again from its flat-phone shot (`restartPosition`, as "Yes, it moved" on
+Resume: the drop just taken keeps the earlier reading and its flag; the reading comes next, then the drops not taken yet).
+The end screen lists such shots ("Tilt check: ..."), as do `bounce-kit check` (a note) and the score report (a note).
 
 ### Slab positions
 
-A flat-phone shot (`*-flat-*`) starts a new **slab position** (`p1` "level", `p2` "tilt 1", `p3` "tilt 2", `p4` "tilt 3")
-and gives that position its true tilt. Every later shot belongs to the latest position until the next flat-phone shot:
-precisely, a shot belongs to the position of the last flat-phone shot at or before it in plan order whose position has
-started. Steps 6-12 use the position that is current then, normally the last tilt. If a flat-phone shot is skipped, its
+A flat-phone shot (`*-flat*`) starts a new **slab position** (`p1` "level", `p2` "tilt 1", `p3` "tilt 2", `p4` "tilt 3",
+and in standard-v2 `p5` "drops") and gives that position its true tilt. Every later shot belongs to the latest position
+until the next flat-phone shot: precisely, a shot belongs to the position of the last flat-phone shot at or before it in
+plan order whose position has started. Steps 6-9 use the position that is current then, normally the last tilt; in
+standard-v2 the drops and the negatives belong to `p5` (in standard-v1, steps 6-12 all use the last tilt). If a flat-phone shot is skipped, its
 position still starts, without a true tilt, since the slab was moved. The exception is the optional third tilt: skipping
 its flat-phone shot skips all three of its shots and starts no position, because the slab stays at tilt 2. A flat-phone
 shot whose result failed also starts its position without a true tilt. Moving the slab without a flat-phone shot is not
@@ -811,12 +856,13 @@ The kit's core is plain Swift in `BounceCore/Sources/BounceCore/Kit*.swift`, uni
 
 | File | Main types | What for |
 |---|---|---|
-| `KitPlan.swift` | `KitPlan` (`.standard`, `.scaled(by:)`, `.named(_:timeScale:)`), `KitStepSpec`, `KitShotSpec`, `KitShotKind`, `KitDiagram`, `KitExpectations`, `KitPositionSpec` | the steps and shots as data: instruction, diagram, kind (`.form`, `.video(seconds:highFrameRate:releaseCue:)`, `.flat`), countdown, expectations, positions; lookups `shot(_:)`, `index(of:)`, `shots(inStep:)`, `progressLabel(step:)`, `flatSettings` |
+| `KitPlan.swift` | `KitPlan` (`.standard` standard-v2, `.standardV1`, `.known`, `.scaled(by:)`, `.named(_:timeScale:)`), `KitStepSpec`, `KitShotSpec`, `KitShotKind`, `KitDiagram`, `KitExpectations`, `KitPositionSpec` | the steps and shots as data: instruction, `warning` (bold, above it), diagram, kind (`.form`, `.video(seconds:highFrameRate:releaseCue:)`, `.flat`), countdown, expectations, positions, `requiresTruth`; lookups `shot(_:)`, `index(of:)`, `shots(inStep:)`, `positionShot(for:)`, `progressLabel(step:)`, `flatSettings` |
 | `KitFormats.swift` | `KitClipFiles`, `KitFrame`, `KitLiveResult`, `KitLiveState`, `KitTracking`, `KitMotionSample`, `KitQuaternion`, `KitJSONLWriter`, `KitJSONL`, `KitDepth` | the clip files' names and formats: frames.jsonl, motion.jsonl, BDP2 depth; `KitFrame.view(videoWidth:videoHeight:)` gives the `CameraView` for the detectors |
 | `KitManifest.swift` | `KitManifest`, `KitShotManifest`, `KitShotRecord`, `KitSlabPosition`, `KitMeasurements`, `KitDevice`, `KitCameraFormat`, `KitVideoInfo`, `KitTime`, `KitJSON` | kit.json and shot.json; measurement ranges and conversion to `SlabSpec`, `BallSpec` and `RecordingSettings` |
 | `KitFlatTilt.swift` | `KitFlatSession`, `KitFlatSettings`, `KitFlatTilt`, `KitFlatReading`, `KitTrueTilt`, `KitBump`, `KitStats` | the flat-phone true tilt: the live state machine, and the maths (`twoReading`, `singleReading`, `solve`, `gravity`, `slabNormalInMotionFrame`) |
 | `KitQuality.swift` | `KitQuality`, `KitQualityReport`, `KitQualityCheck`, `KitQualityReference`, `KitFrameStat`, `KitVerdict`, `KitSeverity`, `KitImageStats`, `KitMotionBlur` | the quality check after each shot, and the per-frame luma and blur |
-| `KitStore.swift` | `KitStore`, `KitProgress`, `KitListing`, `KitSummary`, `KitStepSummary`, `KitFiles` | the kit folder: create, list, resume, record, skip, positions (and restarting one), heights, finish, summary, crash repair |
+| `KitStore.swift` | `KitStore`, `KitProgress`, `KitListing`, `KitSummary`, `KitStepSummary`, `KitMissingTruth`, `KitFiles` | the kit folder: create, list, resume, record, skip, positions (and restarting one), the required reading (`missingTruth(forShot:)`), the tilt check (`tiltCheck(forShot:stats:)`), heights, finish, summary, crash repair |
+| `KitTiltCheck.swift` | `KitTiltCheck` | the app's own tilt during a shot against the slab position's true tilt (`tiltCheck` in shot.json and kit.json) |
 | `KitBundle.swift` | `KitBundle`, `KitZipWriter`, `KitBundleResult`, `KitBundlePart` | the zip parts the owner shares |
 | `KitPhoneVideo.swift` | `KitPhoneVideo` | the phone's video settings (`KitRecorder`'s size, bitrate, frame rates, depth rate) and the largest file a real kit can hold |
 | `KitArrival.swift` | `KitArrival`, `KitArrivalReport` | whether a kit unzipped from its parts holds every file kit.json and its shot.json files describe (`bounce-kit check`) |
@@ -834,11 +880,13 @@ if let p = store.positionInProgress, ownerSaysSlabMoved(p.label) {  // on Resume
 }
 // each screen: store.progress.nextShotId, store.progress.label ("Step 4 of 12"), store.plan.shot(id)
 try store.commitMeasurements(entered, date: Date())                  // step 1 (throws with plain messages if out of range)
+guard store.missingTruth(forShot: id) == nil else { ... }         // a drop without its reading: Start disabled, "Take the reading"
 let folder = try store.beginShot(id)                                // record into it: KitClipFiles.video, .frames, .motion, .depthFolder
 var m = try store.newShotManifest(id, startedAt: start, duration: d) // ids, attempt, device, measurements, position and true tilt filled in
 m.startTime = startUptime; m.releaseTime = beepUptime                // ARFrame/CoreMotion clock; drops only for releaseTime
 m.motionSessionId = motionRun; m.arSessionId = arRun                // one CoreMotion run and one ARSession for the whole kit screen
 m.video = ...; m.quality = KitQuality.evaluate(shot: shot, stats: frameStats, expectedFrames: n, reference: store.qualityReference)
+m.tiltCheck = store.tiltCheck(forShot: id, stats: frameStats)        // frameStats carry the tracker's tilt, sigma, settled
 try store.commitShot(id, manifest: m, date: Date())                 // Retry: beginShot again. Skip: skipShot. Leaving mid-shot: discardAttempt
 let flat = KitFlatSession(settings: store.plan.flatSettings, knownBump: store.knownBump)  // flat-phone shots: feed every sample;
 // beep when phase becomes .waitingForLift or .done; then m.flat = flat.result ?? flat.finish(); m.quality = KitQuality.evaluate(shot:flat:)

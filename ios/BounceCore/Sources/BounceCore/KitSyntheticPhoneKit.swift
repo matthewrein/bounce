@@ -158,7 +158,8 @@ public final class KitSyntheticPhoneKit {
     /// Makes the kit in a new folder under `root` (finished, as after the last shot).
     public static func build(root: URL, options: Options = Options()) throws -> KitSyntheticPhoneKit {
         guard KitFFmpeg.find("ffmpeg") != nil else { throw KitVideoError.toolMissing("ffmpeg") }
-        let plan = options.timeScale == 1 ? KitPlan.standard : KitPlan.standard.scaled(by: options.timeScale)
+        // standard-v1, the plan the hand-off dry run was written for (standard-v2 bundles and checks the same way)
+        let plan = options.timeScale == 1 ? KitPlan.standardV1 : KitPlan.standardV1.scaled(by: options.timeScale)
         let store = try KitStore.create(root: root, plan: plan, device: device(options),
                                         measurements: KitMeasurements(settings: RecordingSettings()), build: options.build, date: options.date)
         let kit = KitSyntheticPhoneKit(store: store, options: options)

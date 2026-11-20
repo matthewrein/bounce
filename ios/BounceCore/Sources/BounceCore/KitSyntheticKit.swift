@@ -1,7 +1,8 @@
 import Foundation
 
 /// A complete capture kit with known truth, rendered with `SyntheticScene`, for scoring the scorer itself and for CI
-/// (CaptureKit.md, "Scoring"). Every shot of the standard plan is made as the app would make it, through `KitStore`
+/// (CaptureKit.md, "Scoring"). Every shot of its plan (standard-v1 by default, `Options.plan`) is made as the app would
+/// make it, through `KitStore`
 /// (kit.json, shot.json, frames.jsonl, motion.jsonl):
 ///   - the slab and ball are the app's (`SlabSpec.ownerSlab`, `BallSpec.ownerBall`: a 180.2 mm flat top, 1 in thick, 1/8 in
 ///     dish, sloped sides; a 30 mm ball), so the scorer scores what ships; measurements: those, entered;
@@ -43,6 +44,9 @@ public final class KitSyntheticKit {
         public var ballHeight: Int? = 1080
         /// the camera's focal length over the image width (an iPhone's wide camera: about 0.78)
         public var focalShare = 0.78
+        /// the plan: standard-v1 (the default, so its numbers stay comparable with earlier runs) or `KitPlan.standard`
+        /// (standard-v2, whose drops are taken after a reading of their own, "p5", with the slab left where it was)
+        public var plan: KitPlan = .standardV1
         /// only these shots (nil: every shot of the plan); the others are skipped
         public var shots: Set<String>? = nil
         /// take the optional third tilt
@@ -139,7 +143,7 @@ public final class KitSyntheticKit {
         let fullH = Int((1920 * Double(options.height) / Double(options.width)).rounded())
         let fmt = KitCameraFormat(width: 1920, height: fullH, fps: 60)
         let device = KitDevice(modelIdentifier: "synthetic", systemVersion: "0", hasLiDAR: false, cameraFormat: fmt, highFrameRateFormat: fmt)
-        let store = try KitStore.create(root: root, plan: .standard, device: device, measurements: KitMeasurements(settings: RecordingSettings()),
+        let store = try KitStore.create(root: root, plan: options.plan, device: device, measurements: KitMeasurements(settings: RecordingSettings()),
                                         build: "synthetic", date: date)
         let kit = KitSyntheticKit(store: store, options: options)
         try kit.make()
@@ -177,10 +181,10 @@ public final class KitSyntheticKit {
                 continue
             }
             if let p = s.startsPosition {
-                // the slab is moved to this position, unless the optional group is skipped
-                if included(s) || !s.optional {
-                    let k = Int(p.id.dropFirst()).map { $0 - 1 } ?? tiltIndex
-                    tiltIndex = min(max(0, k), options.tilts.count - 1)
+                // the slab is moved to this position, unless the optional group is skipped; a position past the tilts
+                // (standard-v2's drops, "p5") leaves the slab where it is: its reading measures the tilt it was left at
+                if included(s) || !s.optional, let n = Int(p.id.dropFirst()), n <= options.tilts.count {
+                    tiltIndex = min(max(0, n - 1), options.tilts.count - 1)
                     current = slab(tilt: options.tilts[tiltIndex])
                 }
             }

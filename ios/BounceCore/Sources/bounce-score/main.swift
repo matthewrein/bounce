@@ -207,7 +207,7 @@ if synthetic {
     var so = KitSyntheticKit.Options()
     so.framesPerShot = frames
     so.video = videoCodec
-    if !quiet { progress("synthetic kit: making \(KitPlan.standard.shotCount) shots, \(frames) frames per ordinary shot") }
+    if !quiet { progress("synthetic kit: making \(so.plan.shotCount) shots, \(frames) frames per ordinary shot") }
     do {
         let kit = try KitSyntheticKit.build(root: root, options: so)
         var o = kit.scorerOptions(truthBall: truthBall)

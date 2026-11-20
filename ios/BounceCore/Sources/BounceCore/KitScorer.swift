@@ -312,6 +312,15 @@ final class KitScoreRun {
         appBallMinHeight = (probe as? BallLocator)?.options.minHeight
         if !hasBallLocator { notes.append("No ball finder in this build (AppDetectors.ball() is nil): the ball and bounce metrics are n/a.") }
         loadShots()
+        // the phone's own tilt check (kits from n20k): shots whose app tilt disagreed with their true tilt at capture
+        let flagged = shots.compactMap { sh -> String? in
+            guard let c = sh.manifest?.tiltCheck, c.disagrees else { return nil }
+            return c.line(shot: sh.spec.id)
+        }
+        if !flagged.isEmpty {
+            notes.append("Tilt check on the phone: the app's tilt disagreed with the true tilt on " + flagged.joined(separator: "; ")
+                         + ". The slab may have moved since its reading: those shots' true tilt may be wrong.")
+        }
         if !options.positions.isEmpty {
             let named = shots.filter { $0.spec.isVideo }.compactMap { sh in options.position(forShot: sh.spec.id).map { "\(sh.spec.id) \($0)" } }
             notes.append("Slab positions overridden (--positions): " + (named.isEmpty ? "none of the kit's shots matched" : named.joined(separator: ", ")) + ".")

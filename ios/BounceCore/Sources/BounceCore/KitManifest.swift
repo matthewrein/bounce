@@ -212,13 +212,16 @@ public struct KitShotRecord: Codable, Equatable {
     public var capturedAt: String?
     /// the plan marks it optional
     public var optional: Bool
+    /// a video shot in a slab position with a true tilt: the app's own tilt during it against that true tilt (copied from
+    /// shot.json; nil in kits before n20k, for other shots, and when the slab was not locked long enough)
+    public var tiltCheck: KitTiltCheck?
 
     public init(id: String, step: Int, status: KitShotStatus = .pending, attempts: Int = 0, folder: String? = nil, positionId: String? = nil,
                 verdict: KitVerdict? = nil, enteredHeightInches: Double? = nil, duration: Double? = nil, frames: Int? = nil,
-                bytes: Int64? = nil, capturedAt: String? = nil, optional: Bool = false) {
+                bytes: Int64? = nil, capturedAt: String? = nil, optional: Bool = false, tiltCheck: KitTiltCheck? = nil) {
         self.id = id; self.step = step; self.status = status; self.attempts = attempts; self.folder = folder; self.positionId = positionId
         self.verdict = verdict; self.enteredHeightInches = enteredHeightInches; self.duration = duration; self.frames = frames
-        self.bytes = bytes; self.capturedAt = capturedAt; self.optional = optional
+        self.bytes = bytes; self.capturedAt = capturedAt; self.optional = optional; self.tiltCheck = tiltCheck
     }
 }
 
@@ -325,6 +328,10 @@ public struct KitShotManifest: Codable, Equatable {
     public var releaseTime: Double?
     /// flat-phone shots: the result
     public var flat: KitTrueTilt?
+    /// video shots in a slab position with a true tilt: the app's own tilt during the shot against `trueTilt`
+    /// (`KitTiltCheck`); set by the app, kept by the store only against the true tilt it commits with. nil in kits before
+    /// n20k.
+    public var tiltCheck: KitTiltCheck?
     public var notes: String?
 
     public init(kitId: String, shotId: String, step: Int, attempt: Int, startedAt: String, startTime: Double? = nil, duration: Double,
@@ -332,14 +339,15 @@ public struct KitShotManifest: Codable, Equatable {
                 positionId: String? = nil, trueTilt: KitTrueTilt? = nil, motionSessionId: String? = nil, arSessionId: String? = nil,
                 video: KitVideoInfo? = nil, cameraFormat: KitCameraFormat? = nil, hasDepth: Bool = false, depthFrames: Int? = nil,
                 motionSamples: Int? = nil, enteredHeightInches: Double? = nil, quality: KitQualityReport? = nil,
-                releaseCue: Double? = nil, releaseTime: Double? = nil, flat: KitTrueTilt? = nil, notes: String? = nil) {
+                releaseCue: Double? = nil, releaseTime: Double? = nil, flat: KitTrueTilt? = nil, tiltCheck: KitTiltCheck? = nil,
+                notes: String? = nil) {
         self.kitId = kitId; self.shotId = shotId; self.step = step; self.attempt = attempt; self.startedAt = startedAt
         self.startTime = startTime; self.duration = duration; self.build = build; self.device = device; self.measurements = measurements
         self.measurementsEntered = measurementsEntered; self.positionId = positionId; self.trueTilt = trueTilt
         self.motionSessionId = motionSessionId; self.arSessionId = arSessionId; self.video = video; self.cameraFormat = cameraFormat
         self.hasDepth = hasDepth; self.depthFrames = depthFrames; self.motionSamples = motionSamples
         self.enteredHeightInches = enteredHeightInches; self.quality = quality; self.releaseCue = releaseCue
-        self.releaseTime = releaseTime; self.flat = flat; self.notes = notes
+        self.releaseTime = releaseTime; self.flat = flat; self.tiltCheck = tiltCheck; self.notes = notes
     }
 }
 
