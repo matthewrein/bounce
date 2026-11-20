@@ -58,7 +58,10 @@ struct ContentView: View {
     private var controls: some View {
         VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                StatusChip(live: model.live)
+                VStack(alignment: .leading, spacing: 6) {
+                    StatusChip(live: model.live)
+                    CueLine(live: model.live)
+                }
                 Spacer(minLength: 0)
                 settingsButton
             }
@@ -251,6 +254,28 @@ private struct StatusChip: View {
             .background(live.hud.locked ? Color.green.opacity(0.8) : Color.black.opacity(0.6))
             .foregroundColor(.white)
             .clipShape(Capsule())
+    }
+}
+
+/// n17: the one short cue under the status chip (`HUDState.cue`, BounceCore's MainScreenCue), shown only when the owner
+/// can help; taps pass through it to the tap layer.
+private struct CueLine: View {
+    @ObservedObject var live: LiveFrame
+
+    var body: some View {
+        Group {
+            if let c = live.hud.cue {
+                Text(c)
+                    .accessibilityIdentifier("cue")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Color.orange.opacity(0.9))
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 

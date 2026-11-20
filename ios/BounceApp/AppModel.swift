@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n16"
+let appBuild = "n17"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the ball's
 /// restitution (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
@@ -114,7 +114,8 @@ struct TapMark: Equatable {
     var fade: Double
 }
 
-/// What the main screen shows: a passive status and the readouts. (No hints or instructions: those are developer-only.)
+/// What the main screen shows: a passive status, the readouts and (n17) one short cue when the owner can help (the
+/// tracker's own hints stay developer-only).
 struct HUDState: Equatable {
     var status = "Starting camera"
     var locked = false
@@ -127,6 +128,10 @@ struct HUDState: Equatable {
     /// the slab is locked but its tilt is still settling (`TrackerOutput.angleSettled` false): Tilt and Lands read
     /// `HUDState.settlingText`, dimmed; Apex and Air keep their values (a degree moves them by at most 6 mm and 4 ms)
     var settling = false
+    /// n17: one short line under the status chip, only when the owner can do something about what the app waits for
+    /// (BounceCore's MainScreenCue: "Point at the slab", "Step closer", "Hold the phone higher", "Lower the phone", "Move
+    /// the phone slowly", "Tap the ball"); nil otherwise
+    var cue: String? = nil
 
     /// what Tilt and Lands read while the tilt settles
     static let settlingText = "settling"

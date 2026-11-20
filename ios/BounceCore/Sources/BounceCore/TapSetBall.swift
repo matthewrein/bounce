@@ -151,11 +151,28 @@ public enum TapSetBall {
     /// radians), as seen from where the tap was made (the rule for a ring under the finger, `SlabTracker.tapKind`, as
     /// angles). A ball the finder finds in a ball tap's box but beside the finger (the hand holding the ball, a print
     /// beyond it) is not taken for the one tapped.
+    /// (n17, the demo build) At least four of the ball's radii, however small the slack: a real finger on a 30 mm ball held
+    /// a metre or more away covers it and more.
     public static func underFinger(_ c: Vec3, origin o: Vec3, direction d: Vec3, slack: Double, ball: BallSpec) -> Bool {
         let v = c - o, along = v.dot(d)
         guard along > 0.05 else { return false }
         let off = atan2((v - d * along).length, along)
-        return off <= 1.5 * asin(min(1, ball.radius / v.length)) + slack
+        let a = asin(min(1, ball.radius / v.length))
+        return off <= max(1.5 * a + slack, 4 * a)
+    }
+
+    /// A real fingertip on the owner's screen (points): Apple's smallest recommended tap target.
+    public static let fingerPoints = 44.0
+    /// How many screen points the image's shorter side spans on the owner's phone: the camera's 1920 x 1440 image, upright
+    /// (1440 wide), fills the iPhone 17 Pro's 402 x 874 pt screen (aspect fill: scaled to its height, 874 / 1920 pt per
+    /// pixel, its sides cut off), so its 1440 px span 655.5 pt.
+    public static let shortSidePoints = 874.0 * 1440 / 1920
+    /// The finger's reach for a ball tap (n17), in pixels of an image of `width` x `height` (the camera's image or a scale
+    /// of it): `fingerPoints` on the owner's screen. A ball the finder finds this near the tapped point (as an angle, plus
+    /// half again the ball's radius; at least four radii: `underFinger`) is the one tapped, and a ball tap's box is padded
+    /// by at least this (`SlabTracker`). The slab taps' slack (`TrackerSettings.tapSlackFraction`, 33 pt) is unchanged.
+    public static func reach(width: Int, height: Int) -> Double {
+        fingerPoints / shortSidePoints * Double(min(width, height))
     }
 
     /// The drop height a ball centred at `center` (world) gives over the slab `slab`, as the tracker's bounce takes it

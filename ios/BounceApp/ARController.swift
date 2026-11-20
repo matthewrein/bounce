@@ -153,6 +153,8 @@ final class ARController: NSObject, ARSessionDelegate {
     private var lastBallCrop: BallImageCrop? = nil
     private var lastFloorY: Double? = nil
     private var lastFrameTime = 0.0
+    /// n17: the main screen's cue (per frame, camera clock; it starts over when the clock jumps)
+    private var cue = MainScreenCue()
     private var lastDisplayTransform: CGAffineTransform = .identity
     /// the last tap's mark (view points) and when it was made (camera clock), for `TapMark`
     private var tapMark: (kind: TapMark.Kind, center: CGPoint, radius: CGFloat, at: Double)? = nil
@@ -781,7 +783,7 @@ final class ARController: NSObject, ARSessionDelegate {
         // the demo's held ball when it is not drawn: where it is, for the UI tests (a ball the finder cannot see, to set by
         // tapping it)
         if isDemo, let d = demoScript, d.ballHidden, let b = d.heldBall(at: t, spec: AppSettings.slab) { ov.demoBall = toView(b, full, vp) }
-        let hud = makeHUD(out)
+        let hud = makeHUD(out, camera: full.position, time: t)
         // the frame numbers for the developer line, once a second (camera clock; again at once if the clock went back)
         if t - framesLineTime >= 1 || t < framesLineTime {
             framesLine = ARController.framesLine(isDemo ? demoPacer.report : handoff.report)
@@ -974,8 +976,10 @@ final class ARController: NSObject, ARSessionDelegate {
         return o
     }
 
-    /// The main screen's status: the tracker's state, passively (no advice or instructions).
-    private func makeHUD(_ out: TrackerOutput) -> HUDState {
+    /// The main screen's status: the tracker's state, passively, and (n17) one short cue when the owner can help
+    /// (`MainScreenCue`: how long it has not locked or the tilt has settled, from the lock's or the candidate's distance
+    /// and the line of sight's angle from the slab's normal; a ball tap that set nothing).
+    private func makeHUD(_ out: TrackerOutput, camera: Vec3, time t: Double) -> HUDState {
         var h = HUDState()
         switch out.state {
         case .searching: h.status = "Looking for the slab"
@@ -999,6 +1003,9 @@ final class ARController: NSObject, ARSessionDelegate {
             h.drop = Format.length(r.dropHeight) + (r.dropFromSetBall == true ? " (set)" : r.dropFromBall ? " (ball)" : "")
         }
         h.demo = isDemo
+        let centre = out.slab?.center ?? tracker.candidateCenter
+        h.cue = cue.update(time: t, locked: h.locked, settling: h.settling, slabDistance: centre.map { $0.distance(to: camera) },
+                           viewAngleDegrees: out.slab.flatMap { MainScreenCue.viewAngleDegrees(slab: $0, camera: camera) }, events: out.events)
         return h
     }
 

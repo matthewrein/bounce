@@ -2,6 +2,37 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n17 (20 November 2026): demo build
+
+Small build on top of n16 for the live demo: the slab search, the tilt's settling rule, the ball finder and its gate
+(n15) are unchanged. Developer shows **n17**.
+
+**A short cue under the status chip.** The main screen now shows one short orange line, only when you can do something
+about what the app is waiting for, and nothing otherwise (the developer hints stay in Settings > Developer):
+- not locked for more than 2 s: **"Point at the slab"**, or **"Step closer"** when the slab it is checking is more than
+  1.25 m (about 4 ft) from the phone;
+- locked but the tilt still "settling" for more than 1.5 s, the most useful reason: more than 1.25 m away **"Step
+  closer"** (the honest tilt uncertainty grows with distance and stays above the 1 degree threshold beyond about 4 ft,
+  so the number would never show); line of sight more than 60 degrees from straight down onto the slab (phone held low)
+  **"Hold the phone higher"**; less than 25 degrees (looking almost straight down, where n11 measured slow or no
+  settling) **"Lower the phone"**; otherwise **"Move the phone slowly"** (a second view of the slab, a few degrees
+  away, lets the tilt settle);
+- for 2 s after a ball tap that set nothing: **"Tap the ball"**.
+So "settling" never sits there alone for more than 1.5 s.
+
+**A larger tap target for the ball.** A ball the finder sees within a 44 pt fingertip of your tap (on the iPhone 17
+Pro's screen; at least four of the ball's radii) is taken as the ball you tapped, and the tap's search area is padded
+by at least as much (n16: about 33 pt plus half again the ball's radius). n15's place checks still apply to it. If the
+finder sees no ball there, the ball is set at the tap as in n16. Slab taps are unchanged.
+
+**Not in this build:** showing an approximate tilt ("≈X.X°") while settling was considered and left out: it could not
+be checked on your recordings in time.
+
+**What is checked, and how:** the cue's rules and the tap reach have unit tests here (BounceCore `DemoCueTests`; taps
+10, 25 and 40 pt off a ball are accepted, 90 pt off sets the ball at the tap) on synthetic scenes; the existing tap,
+gate, tilt and replay suites were re-run. Nothing in n17 was checked on your real recordings, and the app itself only
+compiles in CI: the cue's wording and position, and the larger target, are first seen on your phone.
+
 ## Build n16 (20 November 2026): tap the ball
 
 Small build on top of n15: the lattice ball finder and the gate (the n15 section below) are unchanged, and so is

@@ -724,6 +724,9 @@ public final class SlabTracker {
     /// refreshes in a row, and not yet back above `unsettleDegrees`; false while the lock is unconfirmed. A new lock, a
     /// re-lock (a move), a world-frame discontinuity or losing the lock starts it again.
     public var angleSettled: Bool { state == .locked && unconfirmed == nil && honest.settled }
+    /// While confirming: the newest candidate detection's centre (world); nil otherwise (n17: the main screen's cue says
+    /// "Step closer" when the slab being confirmed is far, `MainScreenCue`)
+    public var candidateCenter: Vec3? { state == .confirming ? candidates.last?.pose.center : nil }
     /// the honest estimate's normal (world), and how many views of the slab it rests on
     public var settledNormal: Vec3? { state == .locked ? honest.normal : nil }
     /// the honest estimate's covariance across its normal (world, rad^2) while locked, and how many times it has been
@@ -2417,7 +2420,9 @@ public final class SlabTracker {
                                           ball: settings.ball, rule: settings.launchRule, maxHeight: settings.tapSetMaxHeight,
                                           depthTolerance: settings.depthMaxOffsetFraction)
             let (o, d) = f.view.ray(through: tp)
-            pendingBallTap = (f.timestamp, tp, c, o, d, slack / f.view.intrinsics.focal)
+            // (n17) the finger's reach for the find to accept: at least a 44 pt fingertip on the owner's screen
+            // (`TapSetBall.reach`), wider than the slab taps' slack
+            pendingBallTap = (f.timestamp, tp, c, o, d, max(slack, TapSetBall.reach(width: K.width, height: K.height)) / f.view.intrinsics.focal)
             logTap(TapLogEntry(time: f.timestamp, event: "tap", note: String(format: "%.0f,%.0f", tp.x, tp.y)))
         }
         let before = dismissedSpots.count
@@ -2663,8 +2668,10 @@ public final class SlabTracker {
         let v = CameraView(worldFromCamera: f.view.worldFromCamera, intrinsics: bk)
         let pk = f.view.intrinsics
         let slack = TapHints.slack(fraction: settings.tapSlackFraction, width: pk.width, height: pk.height) * bk.focal / pk.focal
+        // (n17) a ball tap's box is padded by the finger's reach for a ball tap (`TapSetBall.reach`), at least the slack
+        let reach = max(slack, TapSetBall.reach(width: pk.width, height: pk.height) * bk.focal / pk.focal)
         var h = BallSearchHints()
-        if let b = ballHint, let r = TapHints.searchRegion(b, view: v, ball: settings.ball, slack: slack) { h.region = r.region; h.radii = r.radii }
+        if let b = ballHint, let r = TapHints.searchRegion(b, view: v, ball: settings.ball, slack: settings.tapSetsBall ? reach : slack) { h.region = r.region; h.radii = r.radii }
         h.avoid = dismissedSpots.compactMap { TapHints.avoidCircle($0, view: v) }
         // with tap to set the ball, a low part outline is taken in the tap's box only while the tap waits to be accepted
         // and while the ball it accepted is followed (`BallSearchHints.lowPartials`)

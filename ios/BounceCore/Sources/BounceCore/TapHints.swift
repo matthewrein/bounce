@@ -165,7 +165,8 @@ public enum TapHints {
             box = box.union(p); rLo = min(rLo, r); rHi = max(rHi, r)
         }
         guard rLo <= rHi else { return nil }
-        let region = box.expanded(by: rHi * 1.2 + slack).clamped(width: K.width, height: K.height)
+        // (n17) at least four of the ball's radii around the line, however small the slack
+        let region = box.expanded(by: max(rHi * 1.2 + slack, 4 * rHi)).clamped(width: K.width, height: K.height)
         return region.isEmpty ? nil : (region, (rLo / 1.2)...(rHi * 1.2))
     }
 
