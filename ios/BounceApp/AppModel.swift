@@ -89,6 +89,22 @@ struct OverlayState: Equatable {
     /// the tilt is not settled yet (`TrackerOutput.angleSettled`): the launch line and path are drawn faint and dashed,
     /// and the landing ring and its label are left out (1 deg of tilt moves the landing about 4.5 cm)
     var settling = false
+    /// the brief mark a tap leaves (`TapMark`), while it lasts
+    var tapMark: TapMark? = nil
+    /// where dismissed balls are (the near ends of the tracker's dismissed spots: nothing is drawn there; the UI tests
+    /// read them)
+    var dismissed: [CGPoint] = []
+}
+
+/// The brief mark a tap leaves on the overlay (about 0.8 s, fading): a ring where the finger was for a slab or a ball tap
+/// (the search looks there first), the dismissed ball's ring crossed out. Nothing to read: taps are optional hints.
+struct TapMark: Equatable {
+    enum Kind: String, Equatable { case slab, ball, dismissed }
+    var kind: Kind
+    var center: CGPoint
+    var radius: CGFloat
+    /// 1 when new, down to 0 when it goes
+    var fade: Double
 }
 
 /// What the main screen shows: a passive status and the readouts. (No hints or instructions: those are developer-only.)
@@ -140,7 +156,8 @@ struct DeveloperStatus: Equatable {
 /// What the controller publishes with every processed frame (several times a second; about 8 in the Simulator's demo):
 /// the overlay, the main screen's readouts and status, the developer line and the demo's synthetic frame. It is an
 /// observable object of its own, apart from AppModel, so that only the small views that show it redraw with the frames:
-/// on the main screen `LiveScene` (the feed or the demo's frame, and the overlay), `StatusChip`, `ReadoutPanel` and the
+/// on the main screen `LiveScene` (the feed or the demo's frame, and the overlay: a tap's mark too, and the UI tests'
+/// invisible markers for the ball's ring, dismissed balls and a tap's mark), `StatusChip`, `ReadoutPanel` and the
 /// recording pill's `LiveRecordingFailure`; in Settings > Developer `LiveDeveloperLine` and `LiveRecordingFailure`. The
 /// main screen's own body, Settings, Developer and Pre-flight observe AppModel, which changes only when someone does
 /// something (until n12 these values were AppModel's, so all of them redrew with every frame, Settings' sheet too).

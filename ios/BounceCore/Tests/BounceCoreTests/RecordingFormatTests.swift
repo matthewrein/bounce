@@ -51,6 +51,7 @@ final class RecordingFormatTests: XCTestCase {
         s.maxSweepRegions = 30; s.sweepSkipsFinds = true; s.sweepSameOutlinePixels = 1.2
         s.idleSearchAfter = 0.8; s.idleSearchInterval = 0.4; s.idleSearchMoveDegrees = 3; s.idleSearchMoveDistance = 0.05
         s.idleBallAfter = 0.4; s.idleBallInterval = 0.25
+        s.tapHints = true; s.tapSlackFraction = 0.04; s.tapBallSeconds = 1.5; s.tapDismissSeconds = 15; s.tapDismissMax = 3; s.tapSlabFirstSeconds = 0.8
         for c in Mirror(reflecting: s).children where c.label != "shapeLimits" {
             let d = Mirror(reflecting: TrackerSettings()).children.first { $0.label == c.label }!
             XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes \(c.label!)")

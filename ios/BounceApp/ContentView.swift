@@ -22,7 +22,10 @@ struct ContentView: View {
                 GeometryReader { geo in
                     ZStack {
                         LiveScene(live: model.live, session: model.controller.session, size: geo.size)
-                        // tapping the slab guides the search (silently: the app never asks for it)
+                        // Taps are optional hints, decided by what is under the finger (BounceCore's SlabTracker.tapKind):
+                        // tapping the slab makes the search look there first, tapping the ball looks for it there first,
+                        // and tapping a ball ring that is wrong dismisses it. Silent: the app never asks for a tap. (A tap's
+                        // mark and the UI tests' markers change with the frames: LiveScene draws them, under this layer.)
                         Color.clear
                             .contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { v in model.tap(at: v.location) })
@@ -135,7 +138,10 @@ struct ContentView: View {
 
 // MARK: the views that redraw with every frame (they observe AppModel.live, the per-frame state)
 
-/// The camera feed (or, in the demo, its synthetic frame, filling the view as the camera feed does) and the overlay.
+/// The camera feed (or, in the demo, its synthetic frame, filling the view as the camera feed does) and the overlay (a
+/// tap's brief mark among it), with the invisible markers the UI tests find the ball's ring, dismissed balls and a tap's
+/// mark by. All of it is per-frame state (`OverlayState`), so it is drawn here, under ContentView's tap layer, and the
+/// main screen's own body does not read it.
 private struct LiveScene: View {
     @ObservedObject var live: LiveFrame
     let session: ARSession
@@ -153,6 +159,55 @@ private struct LiveScene: View {
                 ARFeedView(session: session)
             }
             OverlayView(overlay: live.overlay)
+            // where the ball's ring and a tap's mark are, for the UI tests (invisible, under ContentView's tap layer); the
+            // accessibility element is made before `.position`, so it is the marker's square, not the whole screen
+            // `.position` fills (this scene fills the same full-screen space as the tap layer, so the points match)
+            if let b = live.overlay.ball {
+                let r = max(live.overlay.ballRadius, 6)
+                Color.white.opacity(0.001)
+                    .frame(width: 2 * r, height: 2 * r)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel("Ball")
+                    .accessibilityIdentifier("ballRing")
+                    .position(b)
+            }
+            ForEach(Array(live.overlay.dismissed.enumerated()), id: \.offset) { _, p in
+                Color.white.opacity(0.001)
+                    .frame(width: 24, height: 24)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel("Dismissed ball")
+                    .accessibilityIdentifier("dismissedSpot")
+                    .position(p)
+            }
+            // the same places as text ("x,y", view points), which the UI tests can read whatever the accessibility tree
+            // does with a nearly transparent shape
+            if let b = live.overlay.ball {
+                Text(String(format: "%.0f,%.0f", Double(b.x), Double(b.y)))
+                    .font(.system(size: 2))
+                    .opacity(0.02)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("ballRingAt")
+                    .position(b)
+            }
+            if let p = live.overlay.dismissed.first {
+                Text(String(format: "%.0f,%.0f", Double(p.x), Double(p.y)))
+                    .font(.system(size: 2))
+                    .opacity(0.02)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("dismissedSpotAt")
+                    .position(p)
+            }
+            if let m = live.overlay.tapMark {
+                Color.white.opacity(0.001)
+                    .frame(width: 2 * m.radius, height: 2 * m.radius)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel(m.kind.rawValue)
+                    .accessibilityIdentifier("tapMark")
+                    .position(m.center)
+            }
         }
     }
 }

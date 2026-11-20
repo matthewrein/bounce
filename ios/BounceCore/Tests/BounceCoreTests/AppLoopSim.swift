@@ -98,6 +98,12 @@ struct AppLoopSim {
     var ball: Vec3? = nil
     var ballFrom = 1.5
     var tapAt: Double? = 2.5
+    /// a tap on the floor beside the slab at this time (with the app's tap hints a slab tap: it looks there and, finding
+    /// nothing, keeps the lock)
+    var floorTapAt: Double? = nil
+    /// a tap on the slab at this time (before the lock: a slab tap that starts the search over there, its place from the
+    /// frame's LiDAR depth, which the app reads on a slab tap's frame)
+    var slabTapAt: Double? = nil
     var settingsAt: Double? = 3.0
     var resetAt: Double? = 3.5
     var discontinuityAt: Double? = 5.0
@@ -235,12 +241,16 @@ struct AppLoopSim {
             let normal = !(limited?.contains(t) ?? false)
             var tap: Vec2? = nil
             if crossed(tapAt) { tap = pv.project(world: world.slab.center) }
+            if crossed(floorTapAt) { tap = pv.project(world: Vec3(world.slab.center.x + 0.4, 0, world.slab.center.z + 0.2)) }
+            if crossed(slabTapAt) { tap = pv.project(world: world.slab.center) }
             // the detector's answer in this frame's image (noise drawn every frame, whether or not it is converted)
             let truth = world.slab.topCorners.compactMap { pv.project(world: $0) }
             let inView = truth.count == 4 && truth.allSatisfy { pK.contains($0, margin: 2) }
             let noisy = truth.map { Vec2($0.x + rng.gaussian() * noise, $0.y + rng.gaussian() * noise) }
             let recordDue = version1 ? t - lastV1 >= 0.2 : cadence.needsImage(at: t, tracker: tracker)
-            let needImage = tap != nil || tracker.detectionDue(at: t) || recordDue
+            // (a tap makes the detector run only when it is taken for the slab, as in the app)
+            let slabTap = tap.map { tracker.tapSeedsSlab($0, view: pv) } ?? false
+            let needImage = tracker.detectionDue(at: t, tap: slabTap) || recordDue
             let ballW = (ball != nil && t >= ballFrom) ? ball : nil
             let bp: (Vec2, Double)? = ballW.flatMap { b in fv.project(world: b).map { ($0, full.fx * BallSpec().radius / fv.toCamera(b).z) } }
             var luma: [UInt8]? = nil
@@ -250,7 +260,7 @@ struct AppLoopSim {
             }
             let ycc: YCCImage? = needImage ? CornerCodeImage.make(width: pK.width, height: pK.height, outline: inView ? noisy : nil, salt: i, luma: luma) : nil
             var depth: (DepthMap, CameraIntrinsics)? = nil
-            if tracker.state == .locked || recordDue { depth = self.depth(pv) }
+            if tracker.state == .locked || recordDue || slabTap { depth = self.depth(pv) }
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil, crop: BallImageCrop? = nil
             if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab, let c = BallImageCrop.plan(slab: s, full: fv, maxSide: ballMaxSide) {
                 ballImage = lumaCrop(c, ballPx: bp); ballK = c.intrinsics(full: full); crop = c
