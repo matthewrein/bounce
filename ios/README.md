@@ -4,7 +4,8 @@
 
 ## Build n15 (20 November 2026): tap hints
 
-Small build on top of n14; everything below still holds. Developer shows **n15**.
+Small build on top of n14; everything below still holds. Developer shows **n15**. (CI: the Pre-flight test passed on
+two runs in a row after n12's fix, so it is off the known-flaky list again.)
 
 **What changed**
 - You can tap the screen to help the app, and you never need to: nothing asks for a tap, the main screen still has no
