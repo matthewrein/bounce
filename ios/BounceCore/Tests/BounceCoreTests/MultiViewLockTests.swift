@@ -124,7 +124,13 @@ final class MultiViewLockTests: XCTestCase {
         XCTAssertNotNil(sum.cornerSpreadMm); XCTAssertNotNil(sum.lockDriftMm)
         // the tilt is the single-view lock's, exactly
         XCTAssertEqual(on.normals.count, off.normals.count)
-        for (a, b) in zip(on.normals, off.normals) { XCTAssertLessThan(Units.degrees(a.angle(to: b)), 1e-9) }
+        // compared component by component: acos of a dot product cannot resolve below 8.5e-7 deg (acos(1 - 2^-53)), and on
+        // arm64 (fused multiply-add) two identical unit normals can dot to 1 - 2^-53, which failed on CI's Mac; a real change
+        // of the tilt would show here as 1e-9 or more
+        var worst = 0.0
+        for (a, b) in zip(on.normals, off.normals) { worst = max(worst, abs(a.x - b.x), abs(a.y - b.y), abs(a.z - b.z)) }
+        print("MULTIVIEW normal: largest component difference on vs off \(worst)")
+        XCTAssertLessThanOrEqual(worst, 1e-12)
         let mOn = KitStats.median(on.err), mOff = KitStats.median(off.err)
         print("MULTIVIEW corner error median on \(mOn * 1000) mm (max \(on.err.max()! * 1000)), off \(mOff * 1000) mm (max \(off.err.max()! * 1000))")
         XCTAssertLessThan(mOn, mOff)
