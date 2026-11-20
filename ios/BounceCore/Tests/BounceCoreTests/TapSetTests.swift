@@ -287,6 +287,113 @@ final class TapSetTests: XCTestCase {
         XCTAssertEqual(tr.ballLog.last?.source, "tap")
     }
 
+    func testATappedFindLiDARReadsAsASurfaceIsNotAccepted() throws {
+        // a look-alike the finder puts 0.3 m over the slab (its size says so) where LiDAR reads the floor far behind it: the
+        // gate refuses it as a surface on every search. A tap on it is a ball tap (the owner sees a ball there), but the
+        // tap vouches for a ball, not for that place: it is not accepted, no ring shows and the drop never comes from it;
+        // the ball is set at the tap instead, as where no ball is found (a tap on its mark clears it)
+        let balls = ScriptedBalls()
+        var (tr, det, v, k) = lockedTracker(balls: balls)
+        // (LiDAR resolves the ball at this range in the test's coarse map)
+        tr.settings.ballGate?.lidarMinRadiusPixels = 1
+        let floor = flatDepth(v, z: 2.0)
+        let B = slab.center + up * 0.30 - slab.axisV * 0.04
+        balls.balls = [B]
+        var searches = 0
+        for _ in 0..<30 {
+            let o = step(tr, det, balls, v, Double(k) / 60, depth: floor); k += 1
+            XCTAssertNil(o.ball)
+            if o.ballSearched { searches += 1; XCTAssertEqual(o.ballGateVerdict, .surface) }
+        }
+        XCTAssertGreaterThan(searches, 2)
+        XCTAssertEqual(step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: B)!, depth: floor).tap?.kind, .ball); k += 1
+        for _ in 0..<60 {
+            let o = step(tr, det, balls, v, Double(k) / 60, depth: floor); k += 1
+            XCTAssertNil(o.ball, "no ring where LiDAR reads a surface")
+            XCTAssertFalse(o.ballUserConfirmed)
+            if o.readouts?.dropFromBall == true { XCTAssertEqual(o.readouts?.dropFromSetBall, true, "the drop only from the ball set at the tap") }
+        }
+        XCTAssertNil(tr.counts["tapBallAccepted"])
+        XCTAssertGreaterThan(tr.counts["tapBallAcceptRefused"] ?? 0, 0)
+        XCTAssertEqual(tr.counts["tapBallSet"], 1, "set at the tap instead")
+        XCTAssertEqual(tr.ballLog.last(where: { $0.event == "refused" })?.why, "surface")
+    }
+
+    func testATappedBallIsLetGoWhenTheGateRefusesItsPlace() throws {
+        // a ball a tap accepted (frames without depth: shown at once), then LiDAR reads the floor far behind it: the gate
+        // refuses the place, and the acceptance (the bypass of the gate's agreeing finds) ends with it
+        let balls = ScriptedBalls()
+        var (tr, det, v, k) = lockedTracker(balls: balls)
+        tr.settings.ballGate?.lidarMinRadiusPixels = 1
+        for _ in 0..<12 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        let B = slab.center + up * 0.30 - slab.axisV * 0.04
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: B)!); k += 1
+        balls.balls = [B]
+        var accepted = false
+        for _ in 0..<30 {
+            let o = step(tr, det, balls, v, Double(k) / 60); k += 1
+            if o.events.contains("tap-ball-accepted") { accepted = true; XCTAssertNotNil(o.ball); break }
+        }
+        XCTAssertTrue(accepted)
+        var o: TrackerOutput! = nil
+        for _ in 0..<12 { o = step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        XCTAssertNotNil(o.ball); XCTAssertTrue(o.ballUserConfirmed)
+        let floor = flatDepth(v, z: 2.0)
+        var refused = false
+        for _ in 0..<30 {
+            o = step(tr, det, balls, v, Double(k) / 60, depth: floor); k += 1
+            if o.ballSearched, !refused { refused = true; XCTAssertEqual(o.ballGateVerdict, .surface) }
+            if refused { XCTAssertNil(o.ball, "gone from the search that refused it"); XCTAssertFalse(o.ballUserConfirmed) }
+        }
+        XCTAssertTrue(refused)
+        XCTAssertEqual(o.readouts?.dropFromBall, false, "the drop setting again")
+        XCTAssertEqual(tr.counts["tapAcceptedRefused"], 1)
+        let e = try XCTUnwrap(tr.ballLog.last)
+        XCTAssertEqual(e.event, "refused"); XCTAssertEqual(e.why, "surface"); XCTAssertEqual(e.source, "finder"); XCTAssertEqual(e.shown, false)
+    }
+
+    func testATapsBoxTakesLowPartOutlinesOnlyWhileTheTapWaitsOrItsBallIsFollowed() {
+        // `BallSearchHints.lowPartials` (the box takes part of an outline as low as a whole one): on while the ball tap waits
+        // for the finder (`tapAcceptSeconds`), off once it has set a ball or nothing (a box that found nothing under the
+        // finger in time takes no low part outline later: on the owner's first kit, the ball lying in the dish read as a
+        // ball 6 cm over the slab), and on while a ball the tap accepted is followed
+        let balls = ScriptedBalls()
+        var (tr, det, v, k) = lockedTracker(balls: balls)
+        for _ in 0..<12 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        // a tap on the slab's middle (while locked a ball tap), nothing found: the box stays `tapBallSeconds`
+        var pendingBefore = true, sawOn = 0, sawOff = 0
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: slab.center)!); k += 1
+        for _ in 0..<90 {
+            let n = balls.given.count
+            let o = step(tr, det, balls, v, Double(k) / 60); k += 1
+            if o.ballSearched, balls.given.count > n, let h = balls.given.last, h.region != nil {
+                XCTAssertEqual(h.lowPartials, pendingBefore, "low part outlines while the tap waits, not after")
+                if h.lowPartials { sawOn += 1 } else { sawOff += 1 }
+            }
+            pendingBefore = o.ballTapPending
+        }
+        XCTAssertGreaterThan(sawOn, 0); XCTAssertGreaterThan(sawOff, 0)
+        // a tap on a ball the finder finds under the finger: accepted, and its box keeps taking low part outlines while
+        // it is followed
+        for _ in 0..<150 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        let B = slab.center + up * 0.08
+        balls.balls = [B]
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: B)!); k += 1
+        var last: TrackerOutput! = nil
+        for _ in 0..<60 { last = step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        XCTAssertTrue(last.ballUserConfirmed)
+        XCTAssertEqual(tr.counts["tapBallAccepted"], 1)
+        XCTAssertEqual(balls.given.last?.lowPartials, true)
+        XCTAssertNotNil(balls.given.last?.region)
+        // without tap to set the ball (tap hints alone, as recorded before it): the box takes them for as long as it lasts
+        let other = ScriptedBalls()
+        var (tr2, det2, v2, k2) = lockedTracker(sets: false, balls: other)
+        step(tr2, det2, other, v2, Double(k2) / 60, tap: v2.project(world: slab.center)!); k2 += 1
+        for _ in 0..<90 { step(tr2, det2, other, v2, Double(k2) / 60); k2 += 1 }
+        XCTAssertTrue(other.given.filter { $0.region != nil }.allSatisfy { $0.lowPartials })
+        XCTAssertGreaterThan(other.given.filter { $0.region != nil }.count, 5)
+    }
+
     // MARK: how a set ball ends
 
     /// A locked tracker with a ball set on the plane over the slab's middle (no ball found), and k.

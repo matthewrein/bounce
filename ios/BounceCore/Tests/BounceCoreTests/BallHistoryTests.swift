@@ -105,6 +105,55 @@ final class BallHistoryTests: XCTestCase {
         XCTAssertEqual(bare.ballHistory?[1].center, a.center)
     }
 
+    func testShownSaysWhetherARingWasOnScreen() throws {
+        // `shown` on a find's entry: a ball the gate lets through is not shown while a set ball stands (its own mark is),
+        // and a ring a tap accepted is shown before the gate lets it through
+        var settings = RecordingSettings(sideUInches: 7, sideVInches: 7, ballDiameterMm: 30).trackerSettings
+        settings.spec = .standard
+        let w = World(slab: slab, lens: .processing)
+        let det = SceneDetector(w, noise: 0.3, seed: 77)
+        let balls = ScriptedBalls()
+        let tr = SlabTracker(settings: settings, detector: det, ballLocator: balls)
+        let v = w.view(from: Vec3(0.05, 0.9, 0), at: slab.center)
+        var k = 0
+        while tr.state != .locked && k < 120 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        for _ in 0..<12 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        // a ball set at a tap (nothing found there), then the finder finds something elsewhere over the slab: let through
+        // by the gate, not shown
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: slab.center + up * 0.28)!); k += 1
+        for _ in 0..<30 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        XCTAssertNotNil(tr.setBall)
+        balls.balls = [slab.center + up * 0.12 + slab.axisU * 0.05]
+        for _ in 0..<30 { XCTAssertNil(step(tr, det, balls, v, Double(k) / 60).ball); k += 1 }
+        let tail = Array(tr.ballLog.suffix(4))
+        XCTAssertEqual(tail.map { $0.event }, ["set", "waiting", "accepted", "kept"])
+        XCTAssertNil(tail[0].shown, "not a find")
+        XCTAssertEqual(tail.dropFirst().map { $0.shown }, [false, false, false], "let through, but no ring while the set ball stands")
+        // a tap on the set ball clears it; then a ball a tap accepts, drifting as a hand moves it (7 mm a search: the gate
+        // never finds it three times in one place): shown, from the tap
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: tr.setBall!.center)!); k += 1
+        XCTAssertNil(tr.setBall)
+        balls.balls = []
+        for _ in 0..<30 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        let B = slab.center + up * 0.30 - slab.axisV * 0.04
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: B)!); k += 1
+        var j = 0
+        for _ in 0..<40 {
+            balls.balls = [B + slab.axisU * (0.007 * Double(j))]
+            let o = step(tr, det, balls, v, Double(k) / 60); k += 1
+            if o.ballSearched { j += 1 }
+        }
+        let last = try XCTUnwrap(tr.ballLog.last)
+        XCTAssertEqual(last.event, "waiting"); XCTAssertEqual(last.source, "tap"); XCTAssertEqual(last.shown, true)
+        XCTAssertTrue(tr.ballLog.contains { $0.event == "tapAccepted" })
+        // written and read back; an entry written before `shown` reads back without it
+        let e = DiagnosticsReport.BallEvent(last, full: nil)
+        XCTAssertEqual(e.shown, true)
+        XCTAssertEqual(try JSONDecoder().decode(DiagnosticsReport.BallEvent.self, from: JSONEncoder().encode(e)), e)
+        let old = try JSONDecoder().decode(DiagnosticsReport.BallEvent.self, from: Data(#"{"time":1.5,"event":"kept","source":"finder","count":3}"#.utf8))
+        XCTAssertNil(old.shown); XCTAssertEqual(old.event, "kept"); XCTAssertEqual(old.count, 3)
+    }
+
     func testAtMostTwentyEntriesTheLatestKept() {
         var settings = RecordingSettings(sideUInches: 7, sideVInches: 7, ballDiameterMm: 30).trackerSettings
         settings.spec = .standard

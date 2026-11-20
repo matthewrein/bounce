@@ -400,6 +400,52 @@ final class ReplayPhoneTests: XCTestCase {
         let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: DiscBallLocator(), options: o)
         XCTAssertTrue(recorded.report.agrees, recorded.report.description)
     }
+
+    /// The owner's taps reach the replay's ball finder as they reached the phone's (`ReplayBallLocator.setSearchHints`):
+    /// with a finder that looks only in a ball tap's box while it lasts, a tap on the slab's middle while the ball is held
+    /// over it (a ball tap: nothing there) takes the ring away on the phone, and the replay running that finder matches it
+    /// frame for frame. (A finder the box does not reach would keep finding the ball: such a replay differs.)
+    func testABallTapsBoxReachesTheReplaysBallFinder() throws {
+        var s = sim()
+        s.settingsAt = nil; s.resetAt = nil; s.discontinuityAt = nil; s.limited = nil
+        s.tapAt = 3.0; s.duration = 4.5
+        s.ballLocator = BoxedDiscBallLocator()
+        let folder = tmp.appendingPathComponent("tapbox.bouncerec")
+        let phone = try s.run(recordingTo: folder)
+        XCTAssertTrue(phone.outputs.flatMap { $0.events }.contains("tap-ball"))
+        let i3 = try XCTUnwrap(phone.times.firstIndex { $0 >= 3.0 })
+        XCTAssertNotNil(phone.outputs[i3 - 1].ball, "shown before the tap")
+        XCTAssertNil(phone.outputs[i3 + 45].ball, "gone while the tap's box lasts")
+        let rec = try RecordingReader(folder: folder)
+        let boxed = BoxedDiscBallLocator()
+        let run = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: boxed)
+        XCTAssertTrue(run.report.agrees, run.report.description)
+        XCTAssertGreaterThan(boxed.boxes, 0, "the tap's box reached the replay's finder")
+        XCTAssertEqual(run.report.substitutionCounts["ball"], nil, "the finder ran on the recorded crops")
+        let deaf = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: BoxedDiscBallLocator(hears: false))
+        XCTAssertFalse(deaf.report.agrees, "a finder the box does not reach finds the ball outside it")
+    }
+}
+
+/// DiscBallLocator that takes a ball tap's box (`BallSearchHints.region`) as a finder that looks only there while it lasts
+/// (`hears` false: one the hints never reach).
+final class BoxedDiscBallLocator: BallLocating {
+    let inner = DiscBallLocator()
+    let hears: Bool
+    private var hints = BallSearchHints()
+    private(set) var boxes = 0
+    init(hears: Bool = true) { self.hears = hears }
+    func setSearchHints(_ h: BallSearchHints) {
+        guard hears else { return }
+        hints = h
+        if h.region != nil { boxes += 1 }
+    }
+    func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
+        guard let b = inner.locate(image: image, intrinsics: intrinsics, slab: slab, spec: spec, ball: ball, down: down) else { return nil }
+        if let box = hints.region, !box.contains(b.circle) { return nil }
+        return b
+    }
+    func reset() { inner.reset() }
 }
 
 /// CornerCodeDetector with every corner moved half a pixel: a different detector, for the divergence report.

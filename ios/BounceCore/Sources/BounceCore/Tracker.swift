@@ -180,21 +180,23 @@ public struct DetectionRecord: Codable, Equatable {
 /// One event in the ball's recent history (`SlabTracker.ballLog`; Copy diagnostics' `ballHistory`): what the ball gate
 /// made of a search's find, or what a tap did with the ball, so a pasted diagnostics shows where a wrong ball came from.
 /// `event`:
-/// - the gate's verdict on the finder's find (`TrackerSettings.ballGate`): "accepted" (shown: the third find agreeing in
-///   one place), "kept" (shown: agreeing with the ball shown), "heldOver" (shown: the finder's hold-over of the ball
-///   shown), "waiting" (not shown yet: fewer agreeing finds; `why` "heldOver": a hold-over of a ball not shown), "refused"
-///   (not shown; `why`: "offTop", "tooLow", "tooHigh" (not over the slab's top at a drop height), "surface" (LiDAR reads a
-///   surface behind it) or "disagree" (not where the ball shown was, which ends it)); without the gate "found";
+/// - the gate's verdict on the finder's find (`TrackerSettings.ballGate`): "accepted" (let through: the third find
+///   agreeing in one place), "kept" (let through: agreeing with the ball it let through), "heldOver" (let through: the
+///   finder's hold-over of that ball), "waiting" (not let through yet: fewer agreeing finds; `why` "heldOver": a hold-over
+///   of a ball not let through), "refused" (not let through; `why`: "offTop", "tooLow", "tooHigh" (not over the slab's top
+///   at a drop height), "surface" (LiDAR reads a surface behind it) or "disagree" (not where the ball let through was,
+///   which ends it)); without the gate "found"; `shown`: whether a ring was on screen after the search (a ball the gate
+///   let through is not while a set ball stands; a ring a tap accepted is, before the gate lets it through);
 /// - "gone": the ring shown after the search before is not shown after this one, which found nothing;
-/// - taps (`TrackerSettings.tapSetsBall`): "tapAccepted" (a find under a ball tap, shown at once whatever the gate says),
-///   "set" (`why` "lidar" or "plane": where its place came from), "nothing" (a ball tap that set nothing; `why`),
-///   "cleared" (a tap on the set ball), "replaced" (the set ball; `why` "find": by the finder's ball shown close to it,
-///   "tap": by a ball a tap accepted, "set": by a new set ball), "ended" (the set ball, with the lock; `why`), and
-///   "dismissed" (a ring tapped away).
+/// - taps (`TrackerSettings.tapSetsBall`): "tapAccepted" (a find under a ball tap, shown at once without the gate's
+///   agreeing finds), "set" (`why` "lidar" or "plane": where its place came from), "nothing" (a ball tap that set
+///   nothing; `why`), "cleared" (a tap on the set ball), "replaced" (the set ball; `why` "find": by the finder's ball shown
+///   close to it, "tap": by a ball a tap accepted, "set": by a new set ball), "ended" (the set ball, with the lock; `why`),
+///   and "dismissed" (a ring tapped away).
 /// `source`: "finder" (the finder's find, judged by the gate), "tap" (the ring a tap accepted: the gate's verdicts on it are
-/// noted, but it shows whatever they are), "set" (the ball a tap set).
-/// A run of the same "kept", "heldOver", "waiting", "refused" or "found" (same `why` and `source`) is one entry: `time`
-/// the first, `until` the last, `count` how many, the rest the latest's.
+/// noted; it is shown without the agreeing finds, and goes when the gate refuses its place), "set" (the ball a tap set).
+/// A run of the same "kept", "heldOver", "waiting", "refused" or "found" (same `why`, `source` and `shown`) is one entry:
+/// `time` the first, `until` the last, `count` how many, the rest the latest's.
 public struct BallLogEntry: Equatable {
     /// camera clock (s)
     public var time: Double
@@ -212,10 +214,13 @@ public struct BallLogEntry: Equatable {
     public var circle: [Double]? = nil
     /// LiDAR's depth at its centre less the centre's own (m), where the gate read it
     public var lidar: Double? = nil
+    /// for a search's find (the gate's verdict, or "found"): whether a ring was on screen after the search; nil for the
+    /// other events
+    public var shown: Bool? = nil
     public init(time: Double, event: String, why: String? = nil, source: String, center: Vec3? = nil, heightOverTop: Double? = nil,
-                circle: [Double]? = nil, lidar: Double? = nil) {
+                circle: [Double]? = nil, lidar: Double? = nil, shown: Bool? = nil) {
         self.time = time; self.event = event; self.why = why; self.source = source; self.center = center
-        self.heightOverTop = heightOverTop; self.circle = circle; self.lidar = lidar
+        self.heightOverTop = heightOverTop; self.circle = circle; self.lidar = lidar; self.shown = shown
     }
     /// the events whose runs are kept as one entry
     static let runs: Set<String> = ["kept", "heldOver", "waiting", "refused", "found"]
@@ -390,7 +395,9 @@ public struct TrackerSettings: Equatable {
     /// Tap to set the ball (`TapSetBall`; with `tapHints`). Off (the default, so older recordings replay as the phone ran
     /// them): a ball tap only looks there first (tap hints alone). On (the app's, `RecordingSettings.trackerSettings`): a ball the
     /// finder finds in the tap's box within `tapAcceptSeconds`, under the finger, is accepted at once
-    /// (`TrackerOutput.ballUserConfirmed`); with none found by then, the ball is set at the tap (`TrackerOutput.setBall`:
+    /// (`TrackerOutput.ballUserConfirmed`: shown without the ball gate's agreeing finds, but not where the gate refuses its
+    /// place); a tap's box takes a low part outline only while the tap waits and while the ball it accepted is followed
+    /// (`BallSearchHints.lowPartials`); with none found by then, the ball is set at the tap (`TrackerOutput.setBall`:
     /// LiDAR's range there or the upright plane through the slab's middle, the nearer of those that put it over the slab's
     /// top at a drop height up to `tapSetMaxHeight`; nothing where neither does, or where LiDAR reads the slab's own top
     /// under the finger: `TapSetBall.Candidates`), and its drop height is used until a tap on it clears it, another ball
@@ -1343,6 +1350,8 @@ public final class SlabTracker {
             // the owner's taps, in this scan's image (none without tap hints)
             let hints = settings.tapHints ? ballSearchHints(f, bk) : BallSearchHints()
             loc.setSearchHints(hints)
+            // a find under a waiting ball tap's finger (accepted once the gate has not refused its place, below)
+            var underTap: (center: Vec3, circle: Vec2, radius: Double)? = nil
             if let b = loc.locate(image: img, intrinsics: bk, slab: sc, spec: settings.spec, ball: settings.ball, down: downCam) {
                 if hints.avoids(b.circle) {
                     // a finder that does not pass over dismissed spots itself: the tracker does
@@ -1358,9 +1367,10 @@ public final class SlabTracker {
                             ballTapTime = nil
                         }
                         // tap to set the ball: found in the box while the tap waits, and under the finger, it is accepted at once
+                        // (after the gate's verdict on it: `acceptTappedBall`)
                         if settings.tapSetsBall, let p = pendingBallTap, let w = ballState, TapSetBall.underFinger(w.center, origin: p.origin, direction: p.direction,
                                                                                                                  slack: p.slack, ball: settings.ball) {
-                            acceptTappedBall(w, bk, t, &out.events)
+                            underTap = w
                         }
                         ballHint = TapHints.recentred(h, on: f.view.toWorld(b.center), from: f.view.position)
                     }
@@ -1390,11 +1400,17 @@ public final class SlabTracker {
                 verdict = v; lidarAt = excess
                 if v != .none { bump("ballGate." + v.rawValue) }
             }
-            // tap to set the ball: the ball a tap accepted, while the finder keeps finding it (its own result: the owner's
-            // tap stands in for the gate's agreeing finds), and the set ball against the ball shown (with the gate, the one
-            // it let through: a confident detection close to it)
+            // tap to set the ball: a find under a waiting ball tap's finger is accepted at once, unless the gate refused its
+            // place (the tap vouches for a ball there, not for where the finder put it: then the tap waits on); the ball a
+            // tap accepted, while the finder keeps finding it and the gate does not refuse its place (the owner's tap stands
+            // in for the gate's agreeing finds only); and the set ball against the ball shown (with the gate, the one it let
+            // through: a confident detection close to it)
             if settings.tapSetsBall {
-                followTappedBalls(ballState, confident: settings.ballGate != nil ? shownBall : ballState, bk, f, &out.events)
+                let refused = verdict?.refusesPlace ?? false
+                if let w = underTap {
+                    if refused { bump("tapBallAcceptRefused") } else { acceptTappedBall(w, bk, t, &out.events) }
+                }
+                followTappedBalls(ballState, refused: refused, confident: settings.ballGate != nil ? shownBall : ballState, bk, f, &out.events)
             }
             searchNote = (verdict, shownBefore, lidarAt, bk)
         }
@@ -2458,9 +2474,9 @@ public final class SlabTracker {
 
     /// The ring the app shows for the ball: none while a set ball stands (its own mark is shown instead, and the finder's
     /// finds are not shown: `followTappedBalls`); the finder's ball while a ball tap's acceptance stands (`acceptedBall`:
-    /// the owner's tap stands in for the ball gate's agreeing finds, whatever the gate's verdict); else, with the ball gate
-    /// (`TrackerSettings.ballGate`), only the ball it let through (`shownBall`), without it every find. (With no tap, the
-    /// gate's ball exactly: n15.)
+    /// the owner's tap stands in for the ball gate's agreeing finds, and only for them: a find the gate refuses for its
+    /// place, `BallGate.Verdict.refusesPlace`, ends the acceptance); else, with the ball gate (`TrackerSettings.ballGate`),
+    /// only the ball it let through (`shownBall`), without it every find. (With no tap, the gate's ball exactly: n15.)
     private var shownRing: (center: Vec3, circle: Vec2, radius: Double)? {
         guard setBall == nil else { return nil }
         if acceptedBall != nil { return ballState }
@@ -2469,9 +2485,10 @@ public final class SlabTracker {
 
     /// "Accept at once": a ball the finder finds (`b`, world) in a ball tap's box while the tap waits
     /// (`tapAcceptSeconds`), under the finger (`TapSetBall.underFinger`: as near the tapped line as a tap on it would be),
-    /// is accepted at once: the owner said the ball is there. It is marked (`acceptedBall`, `TrackerOutput
-    /// .ballUserConfirmed`) and kept while the finder keeps finding it there (`followTappedBalls`); while it is, the ring
-    /// shows the finder's result whatever the ball gate's verdict (`shownRing`: this is where the gate is bypassed; the
+    /// is accepted at once (unless the ball gate refused its place on that search: then the tap waits on): the owner said
+    /// the ball is there. It is marked (`acceptedBall`, `TrackerOutput.ballUserConfirmed`) and kept while the finder keeps
+    /// finding it there and the gate does not refuse its place (`followTappedBalls`); while it is, the ring shows the
+    /// finder's result without waiting for the gate's agreeing finds (`shownRing`: this is where the gate is bypassed; the
     /// gate goes on counting the finds, so once the acceptance ends the ring is the gate's again).
     /// A set ball goes (replaced by the ball found), and so does the waiting tap.
     private func acceptTappedBall(_ b: (center: Vec3, circle: Vec2, radius: Double), _ bk: CameraIntrinsics, _ t: Double, _ events: inout [String]) {
@@ -2489,19 +2506,28 @@ public final class SlabTracker {
                              circle: SlabTracker.unitCircle(b.circle, b.radius, bk)))
     }
 
-    /// After each ball search (`found`: the finder's ball, world; `confident`: the ball shown for it, which with the ball
-    /// gate is the one the gate let through, else `found`; `bk`: the finder's image's intrinsics; `f`: the frame): the
-    /// accepted ball stays the owner's while the finder keeps finding it where it was (within two of its radii in the
-    /// finder's image, as `BallLocator` follows a ball; on the finder's own result, the gate's verdict aside); and a set
+    /// After each ball search (`found`: the finder's ball, world; `refused`: the ball gate refused its place,
+    /// `BallGate.Verdict.refusesPlace`; `confident`: the ball shown for it, which with the ball gate is the one the gate let
+    /// through, else `found`; `bk`: the finder's image's intrinsics; `f`: the frame): the accepted ball stays the owner's
+    /// while the finder keeps finding it where it was (within two of its radii in the finder's image, as `BallLocator`
+    /// follows a ball; on the finder's own result, however few agreeing finds the gate has) and the gate does not refuse
+    /// its place (not over the slab's top at a drop height, or LiDAR's surface behind it: the tap vouches for a ball, not
+    /// for a place LiDAR or the slab rules out); and a set
     /// ball is replaced by the confident ball once it is found close to it (in the image as near as a tap on it would be,
     /// and at its range within a quarter either way, as a ball tap's search keeps to: `TapHints.recentred`) on two
     /// searches in a row, close to each other (the finder's own evidence, agreeing with itself through the gate, agreeing
     /// with the owner's). A find elsewhere, or one the gate holds back, is not shown while the ball the owner set stands.
-    private func followTappedBalls(_ found: (center: Vec3, circle: Vec2, radius: Double)?, confident: (center: Vec3, circle: Vec2, radius: Double)?,
-                                   _ bk: CameraIntrinsics, _ f: TrackerFrame, _ events: inout [String]) {
+    private func followTappedBalls(_ found: (center: Vec3, circle: Vec2, radius: Double)?, refused: Bool,
+                                   confident: (center: Vec3, circle: Vec2, radius: Double)?, _ bk: CameraIntrinsics, _ f: TrackerFrame,
+                                   _ events: inout [String]) {
         let t = f.timestamp
         if let a = acceptedBall {
-            if let b = found, let p = bk.project(f.view.toCamera(a)), p.distance(to: b.circle) <= 2 * b.radius { acceptedBall = b.center } else { acceptedBall = nil }
+            if !refused, let b = found, let p = bk.project(f.view.toCamera(a)), p.distance(to: b.circle) <= 2 * b.radius {
+                acceptedBall = b.center
+            } else {
+                acceptedBall = nil
+                if refused { bump("tapAcceptedRefused") }
+            }
         }
         guard let sb = setBall else { setSightings = []; return }
         let K = f.view.intrinsics, slack = TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height)
@@ -2592,7 +2618,7 @@ public final class SlabTracker {
             case BallGate.Verdict.none?, nil: event = "found"
             }
             logBall(BallLogEntry(time: t, event: event, why: why, source: source, center: b.center, heightOverTop: heightOverTop(b.center, s),
-                                 circle: SlabTracker.unitCircle(b.circle, b.radius, bk), lidar: lidar))
+                                 circle: SlabTracker.unitCircle(b.circle, b.radius, bk), lidar: lidar, shown: ringNow))
         } else if let was = ringLogged, !ringNow, setBall == nil {
             logBall(BallLogEntry(time: t, event: "gone", source: was))
         }
@@ -2600,7 +2626,8 @@ public final class SlabTracker {
     }
 
     private func logBall(_ e: BallLogEntry) {
-        if var last = ballLog.last, BallLogEntry.runs.contains(e.event), last.event == e.event, last.why == e.why, last.source == e.source {
+        if var last = ballLog.last, BallLogEntry.runs.contains(e.event), last.event == e.event, last.why == e.why, last.source == e.source,
+           last.shown == e.shown {
             let n = last.count + 1, t0 = last.time
             last = e; last.time = t0; last.until = e.time; last.count = n
             ballLog[ballLog.count - 1] = last
@@ -2639,6 +2666,9 @@ public final class SlabTracker {
         var h = BallSearchHints()
         if let b = ballHint, let r = TapHints.searchRegion(b, view: v, ball: settings.ball, slack: slack) { h.region = r.region; h.radii = r.radii }
         h.avoid = dismissedSpots.compactMap { TapHints.avoidCircle($0, view: v) }
+        // with tap to set the ball, a low part outline is taken in the tap's box only while the tap waits to be accepted
+        // and while the ball it accepted is followed (`BallSearchHints.lowPartials`)
+        if settings.tapSetsBall { h.lowPartials = pendingBallTap != nil || acceptedBall != nil }
         return h
     }
 

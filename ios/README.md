@@ -11,18 +11,28 @@ the app runs exactly as n15. Tapping is there for when the app does not find you
 **What a tap does** (what is under your finger decides):
 - **Tap the ball** while you hold it over the locked slab and it has no ring. If the ball finder sees a ball right under
   your finger within about a third of a second, that ball is taken at once: its ring shows straight away (it does not
-  wait for n15's three agreeing finds) and the drop height reads "(ball)". If it sees none there, the ball is **set where
-  you tapped**: a dashed yellow ring with a dot in the middle, the label **Slab locked · ball set**, and the drop height
+  wait for n15's three agreeing finds) and the drop height reads "(ball)". n15's other checks still apply to it: where
+  LiDAR sees a surface behind it, or it is not over the slab's top at a drop height, it is not taken (and a ring a tap
+  took goes as soon as they rule it out). Otherwise the ring stays while the finder keeps finding it there, and gives
+  the drop height until it goes or you tap it away. If the finder sees no ball there, the ball is **set where you
+  tapped**: a dashed yellow ring with a dot in the middle, the label **Slab locked · ball set**, and the drop height
   "(set)". Its height comes from LiDAR under your finger, or from where your line of sight crosses the upright plane
-  through the slab's middle (the nearer of the two that puts it over the slab). It stays put, and the finder's own
-  rings are not shown meanwhile, until you tap it again, tap the ball somewhere else, the finder shows a ball close to
-  it on two searches in a row, or the lock goes.
+  through the slab's middle (the nearer of the two that puts it over the slab): right for a ball held over the middle
+  of the slab, as on all your clips; a ball held over the slab's near or far edge can be set several cm too high or too
+  low (not measured). It stays put, also after you drop the ball, and the finder's own rings are not shown meanwhile,
+  until you tap it again, tap the ball somewhere else, the finder shows a ball close to it on two searches in a row, or
+  the lock goes.
 - **Tap the yellow ring again** to clear it: the drop height is your setting again.
 - **Tap a wrong ring** to dismiss it: it goes at once and that spot is passed over for 20 seconds (tap the same spot
   again to take it back). A ring that is on your ball is right: leave it, because a tap on a ring removes it.
 - **Before the lock**, a tap on the slab makes the search look there first for about a second.
-- **Stray taps cost nothing**: a tap on the floor never costs the lock or changes anything else, and a tap on the
-  locked slab's own top sets nothing (LiDAR or your line of sight puts no ball there).
+- **A tap on the floor** costs nothing: it never costs the lock or changes anything else.
+- **A tap on the locked slab's own top** is taken as a tap on a ball (a ball held low over the slab could be there). It
+  never sets a ball where LiDAR under your finger reads the top (all 30 such taps on the top's far half below were on
+  frames with LiDAR) or where your line of sight puts no ball over the slab; where LiDAR cannot read under your finger,
+  a tap on the top's far half can set a ball a few cm up (tap its yellow ring to clear it). It does act on what is under
+  your finger: a ring there goes, also the one on your ball; and a ball the finder finds right there is taken and gives
+  the drop height until the finder loses it or you tap its ring away (if it is not your ball, tap it).
 
 **On your real clips** (both kits replayed here in private, the taps simulated as the app takes them, with the app's own
 lock; the ball's true place from the circles marked by hand and tracked by script, as for n15):
@@ -30,35 +40,47 @@ lock; the ball's true place from the circles marked by hand and tracked by scrip
   frames with the app's own lock. So n15's numbers below stand: the ball found while held over the slab 85% and 60% of
   the time on your phone's lock, 76% and 46% with the app's own; wrong balls about once a minute (0.3-0.4 s a minute) on
   the first kit, none on the second.
-- **Tapping your ball when it had no ring** (held 4 in, 1 ft and 2 ft, and the drops before the release; 42 taps, half
-  on the ball's middle and half a fingertip off its edge, half on frames with LiDAR and half at the first moment the ball
-  had no ring): **33 taken at once, every one your ball**, the drop height from it within 3.5 cm of the truth (typically
+- **Tapping your ball when it had no ring** (held 4 in, 1 ft and 2 ft, and the drops before the release): 42 taps, on
+  21 moments in 13 shots, each tapped on the ball's middle and a fingertip off its edge; 16 of the 42 on frames with
+  LiDAR, the other 26 at the first moment the ball had no ring (frames without LiDAR: your kits store it once a
+  second). **33 taken at once, every one your ball**, the drop height from it within 3.5 cm of the truth (typically
   1.3 cm); **9 set where tapped**, all on the second kit and all from the plane (on these clips LiDAR never put the ball
   nearer), off by 0.1 to 7.5 cm (typically 1.5 cm; the 7.5 cm was a fingertip off a ball held 4 in, on a frame without
-  LiDAR). On the first kit every tap was taken at once. No tap set nothing.
+  LiDAR). On the first kit every tap was taken at once. No tap set nothing. (The true height comes from the size of the
+  circle marked on your ball, which is itself good to about 1-2 cm on the held shots: the typical 1.3 cm is about as
+  close as can be checked.)
 - **Afterwards**: 3 of the 9 set balls were later replaced by your ball, found close to them; **none by a wrong ball**
   (the second kit shows no wrong ball at all in n15). The tap-to-set build without n15's gate let a wrong find replace
   a set ball 3 times on the second kit's first drop; in n16 your ball shows there without a tap, and the taps simulated
   there were taken at once.
-- **Taps on the locked slab's own top** (where a held ball could be, so taken as ball taps): 73 on its middle and 30 on
-  its far half: **none set a ball**, and the lock and its tilt never moved. Where a ball was under the finger, the tap
-  acted on it: on the second kit's held 4 in, which the app never shows by itself, both taps brought up your ball (33
-  and 119 frames); on the first kit's held 4 in, a far-half tap landed on your ball's ring and removed it (your ball
-  shown on 14 frames instead of 44); with the ball lying in the dish, a tap on the middle showed a ring on it (8
-  searches) until the next tap removed it; and one tap after the second kit's edge drop was released took a ball found
-  under the finger (the clips mark no ball after a release).
-- **Stray taps on the floor**: 145 (while searching, while confirming and once locked, on 38 shots): every shot exactly
-  as without the tap (the same lock, tilt, searches and balls).
+- **After a drop** (the numbers above stop at the drop's cue, about 0.9 s before your hand let go; this was checked
+  frame by frame to the end of each clip): a ring a tap took follows your ball until it is let go, then stays where it
+  was let go for up to about a quarter of a second, as without a tap. A set ball stays where you set it after the drop
+  (on the second kit's third drop and edge drop, to the end of the clip, 3 s): tap it to clear it. On one shot (the
+  first kit's first drop, the taps on frames with LiDAR) the tap moved the app's search times, and n15's known wrong
+  ball after a drop, your ball lying on the floor beside the slab read as a ball 7 cm over it, showed for the clip's
+  last 0.2 s; without the tap it was found but never shown.
+- **Taps on the locked slab's own top**: 73 on its middle and 30 on its far half: **none set a ball**, and the lock and
+  its tilt never moved. Where your ball was under the finger, the tap acted on it: on the second kit's held 4 in, which
+  the app never shows by itself, both taps brought up your ball (33 and 119 frames); on the first kit's held 4 in, a
+  far-half tap landed on your ball's ring and removed it (your ball shown on 14 frames instead of 44); and after the
+  second kit's edge drop, a tap on the middle took your ball rolling across the top, for 0.1 s (its drop height reading
+  6 cm). With the ball lying in the dish, the first version of this build showed a ring on it for about 2 s after a tap
+  on the top (the drop height then read 2-3 in "(ball)"): a tap now looks for half-seen balls that low only while it
+  waits (that third of a second) and while it follows the ball it took, and no ring shows there now.
+- **Taps on the floor**: 145 (while searching, while confirming and once locked, on 38 shots): every shot exactly as
+  without the tap (the same lock, tilt, searches and balls).
 - **Wrong rings**: the one wrong ring the simulation could tap (the first kit, a toy at the picture's edge in a shot
   without the ball, shown for 12 frames): one tap when it first showed left it 1 frame, and it did not come back.
 - **Tapping the slab before the lock** was measured on n14's tracking, which is unchanged since: it helped on 5 shots
   where the app was slow or never locked, and changed nothing on most. Not re-run on this build.
 
-**Copy diagnostics** now has the ball's last 20 events (`ballHistory`): each time the gate showed a ball, kept it,
-held one back (waiting) or refused one (and why: not over the slab's top, too low, too high, LiDAR saw a surface
-behind it, or not where the ball shown was), each time the ring went, and each tap that took, set, cleared, replaced
-or dismissed a ball, with where the ball was (in the room and in the picture) and how high over the slab. If a wrong
-ball shows, copy the diagnostics right after and paste them: they say where it came from.
+**Copy diagnostics** now has the ball's last 20 events (`ballHistory`): each time the gate let a ball through, kept
+it, held one back (waiting) or refused one (and why: not over the slab's top, too low, too high, LiDAR saw a surface
+behind it, or not where the ball let through was), and whether a ring was on screen after it (`shown`: none while a
+set ball stands; a ring a tap took shows before the gate lets it through); each time the ring went; and each tap that
+took, set, cleared, replaced or dismissed a ball, with where the ball was (in the room and in the picture) and how high
+over the slab. If a wrong ball shows, copy the diagnostics right after and paste them: they say where it came from.
 
 **Only on the demo** (the Developer demo scene, which has no LiDAR): a ball the finder cannot see (not drawn) set by a
 tap, its drop height 0.1 in from the scene's, then cleared by a tap on it; a ring dismissed, kept away while the camera
@@ -569,9 +591,9 @@ opens them by itself.
   `videoFormatChange` the last time the camera's video format changed (the capture kit opening or closing). The recent
   events list the same moments in words, e.g. "capture locked after 0.42 s settled" (or, at the 2.5 s timeout, what
   was still adjusting) and "video format 1920x1440 30 fps -> 1920x1440 60 fps".
-  `ballHistory` (n16) lists the ball's last 20 events: the gate's verdict on each find (shown, kept, waiting, or
-  refused and why), the ring going, and what each tap did with the ball, each with the time, the ball's place in the
-  room and in the full picture, and its height over the slab's top.
+  `ballHistory` (n16) lists the ball's last 20 events: the gate's verdict on each find (let through, kept, waiting,
+  or refused and why) and whether a ring was on screen after it, the ring going, and what each tap did with the ball,
+  each with the time, the ball's place in the room and in the full picture, and its height over the slab's top.
 - **Reset tracking**: forgets the slab and looks for it again.
 - **Demo scene**: a synthetic slab instead of the camera, to see how the app works without the slab (it is also what
   the Simulator tests run). **Launch along the dish's normal** is an experiment: the ball leaves along the dish's normal

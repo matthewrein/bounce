@@ -118,6 +118,9 @@ public struct BallGate {
         /// too high, LiDAR's surface
         case waiting, notShownHeldOver, offTop, tooLow, tooHigh, surface
         public var shows: Bool { self == .accepted || self == .kept || self == .heldOver }
+        /// refused for its place, whatever the agreement: not over the slab's top at a drop height, or LiDAR's surface
+        /// (a ball a tap accepted is not shown there either: `SlabTracker`'s tap to set the ball)
+        public var refusesPlace: Bool { self == .offTop || self == .tooLow || self == .tooHigh || self == .surface }
     }
 
     public init(settings: BallGateSettings) { self.settings = settings }

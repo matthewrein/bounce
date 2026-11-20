@@ -57,5 +57,9 @@ final class DemoTapTests: XCTestCase {
         XCTAssertEqual(tracker.counts["tapDismissLifted"], 1, "the second tap took the dismissal back")
         XCTAssertNotNil(backAt, "the ball never came back")
         XCTAssertLessThan((backAt ?? 99) - (tappedBackAt ?? 0), 2)
+        // the path the UI test relies on for "ball in view" soon after the second tap: the ball found under the finger and
+        // accepted at once (not set at the tap, which would say "ball set" until the gate's ball replaced it)
+        XCTAssertEqual(tracker.counts["tapBallAccepted"], 1)
+        XCTAssertNil(tracker.counts["tapBallSet"])
     }
 }

@@ -95,8 +95,15 @@ public struct BallSearchHints: Equatable {
     public var radii: ClosedRange<Double>? = nil
     /// pass over a ball centred in any of these
     public var avoid: [BallSearchAvoid] = []
-    public init(region: ImageRect? = nil, radii: ClosedRange<Double>? = nil, avoid: [BallSearchAvoid] = []) {
-        self.region = region; self.radii = radii; self.avoid = avoid
+    /// In `region`, a ball found from part of its outline is taken as low as a whole outline (`BallLocator.Options
+    /// .minHeight`: the tap says a ball is there); false: at the usual least heights for part of an outline, as outside
+    /// it. The tracker keeps it on while a ball tap waits to be accepted (`TrackerSettings.tapAcceptSeconds`) and while
+    /// the ball it accepted is followed, and turns it off after that (with tap to set the ball): a tap's box that found
+    /// nothing under the finger in time does not take a low part outline later (on the owner's first kit, the ball lying
+    /// in the dish, read as a ball 6 cm over the slab).
+    public var lowPartials = true
+    public init(region: ImageRect? = nil, radii: ClosedRange<Double>? = nil, avoid: [BallSearchAvoid] = [], lowPartials: Bool = true) {
+        self.region = region; self.radii = radii; self.avoid = avoid; self.lowPartials = lowPartials
     }
     public var isEmpty: Bool { region == nil && avoid.isEmpty }
     public func avoids(_ p: Vec2) -> Bool { avoid.contains { $0.covers(p) } }

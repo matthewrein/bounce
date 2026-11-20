@@ -969,7 +969,8 @@ final class SlabBounceUITests: XCTestCase {
         let c = try counts(app)
         summary("dismiss and take back: gone after \(String(format: "%.1f", gone ?? -1)) s, back after \(String(format: "%.1f", back ?? -1)) s, "
                 + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
-        XCTAssertNotNil(back, "the ball never came back after the second tap; status \(label(app, "status"))")
+        XCTAssertNotNil(back, "the ball never came back after the second tap; status \(label(app, "status")); "
+                         + "tapBallAccepted=\(c["tapBallAccepted"] ?? 0) tapBallSet=\(c["tapBallSet"] ?? 0) (accepted: the expected path)")
         XCTAssertEqual(c["tapDismiss"] ?? 0, 1)
         XCTAssertGreaterThanOrEqual(c["tapBall"] ?? 0, 1)
         XCTAssertEqual(c["tapDismissLifted"] ?? 0, 1)
