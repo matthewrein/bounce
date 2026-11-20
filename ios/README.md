@@ -103,8 +103,10 @@ Small build on top of n16 for the live demo: the slab search, the tilt's settlin
 
 **A short cue under the status chip.** The main screen now shows one short orange line, only when you can do something
 about what the app is waiting for, and nothing otherwise (the developer hints stay in Settings > Developer):
-- not locked for more than 2 s: **"Point at the slab"** when it sees no slab, **"Hold the phone steady"** when the
-  slab it is checking is within 1.25 m (about 4 ft) of the phone, and the far cue below when it is farther;
+- not locked for more than 2 s: **"Point at the slab"** when it has seen no slab for 2.5 s (fix-dryrun: before, the
+  search starting over between candidates flipped it to "Point at the slab" with the slab in full view), **"Hold the
+  phone steady"** when the slab it is checking is within 1.25 m (about 4 ft) of the phone, and the far cue below when it
+  is farther;
 - locked but the tilt still "settling" for more than 1.5 s, the most useful reason: more than 1.25 m away, the far cue
   (the honest tilt uncertainty grows with distance and stays above the 1 degree threshold beyond about 4 ft, so the
   number would never show): **"Lower the phone"** when the phone is more than about 1.0 m above the slab (standing with

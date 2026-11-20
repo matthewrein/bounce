@@ -31,10 +31,59 @@ final class DemoCueTests: XCTestCase {
         XCTAssertEqual(c.update(time: 3.17, locked: false, settling: false, slabDistance: 1.6, viewAngleDegrees: 35, events: []), MainScreenCue.lowerPhone)
         // a slab being confirmed within 1.25 m: hold steady (it is about to lock), not "Point at the slab"
         XCTAssertEqual(c.update(time: 3.2, locked: false, settling: false, slabDistance: 1.0, viewAngleDegrees: 45, events: []), MainScreenCue.holdSteady)
-        // no slab at all
-        XCTAssertEqual(c.update(time: 3.25, locked: false, settling: false, slabDistance: nil, viewAngleDegrees: nil, events: []), MainScreenCue.pointAtSlab)
+        // the search gives the slab up for a moment: the slab seen 0.05 s ago still counts (n19 dry run,
+        // `slabMemorySeconds`)
+        XCTAssertEqual(c.update(time: 3.25, locked: false, settling: false, slabDistance: nil, viewAngleDegrees: nil, events: []), MainScreenCue.holdSteady)
+        // no slab for more than 2.5 s: "Point at the slab"
+        let gone = run(&c, from: 3.3, to: 6.0, locked: false)
+        XCTAssertTrue(gone.filter { $0.0 <= 3.2 + 2.5 - 1e-9 }.allSatisfy { $0.1 == MainScreenCue.holdSteady })
+        XCTAssertEqual(gone.last?.1, MainScreenCue.pointAtSlab)
         // locked and settled: nothing
-        XCTAssertNil(c.update(time: 3.3, locked: true, settling: false, slabDistance: 1.0, viewAngleDegrees: 45, events: []))
+        XCTAssertNil(c.update(time: 6.05, locked: true, settling: false, slabDistance: 1.0, viewAngleDegrees: 45, events: []))
+    }
+
+    /// The n19 dry run on the owner's kits: before the lock the search gave its candidate up and started again 83 times
+    /// (0.1 to 2.2 s each, the slab 0.6 to 1.8 m away and in the picture wherever its place was known), and once the 2 s
+    /// wait was over the cue flipped to "Point at the slab" in those gaps (21 s over the two kits). The last slab seen now
+    /// stands in for up to 2.5 s: the slab's own cue holds through the gaps, and "Point at the slab" comes 2.5 s after the
+    /// phone last saw it.
+    func testTheSearchStartingOverDoesNotSayPointAtTheSlab() {
+        var c = MainScreenCue()
+        XCTAssertEqual(c.slabMemorySeconds, 2.5)
+        // kit 2's room scan: a candidate 1.33 m away, the phone 1.19 m over it (26 deg from straight down), given up and
+        // found again; gaps of 0.13 to 2.2 s
+        var cues: [(Double, String?)] = []
+        var t = 0.0, lastSeen = 0.0
+        for (seen, gap) in [(1.2, 0.13), (0.9, 1.6), (0.5, 0.4), (1.2, 2.2), (0.6, 0.13), (0.8, 1.07)] {
+            let s = run(&c, from: t, to: t + seen, locked: false, distance: 1.33, angle: 26)
+            cues += s; lastSeen = s.last!.0
+            t += seen + 0.1
+            cues += run(&c, from: t, to: t + gap, locked: false)
+            t += gap + 0.1
+        }
+        XCTAssertFalse(cues.contains { $0.1 == MainScreenCue.pointAtSlab }, "no 'Point at the slab' while the search starts over")
+        XCTAssertTrue(cues.filter { $0.0 > 2.05 }.allSatisfy { $0.1 == MainScreenCue.lowerPhone }, "the far, high slab's cue throughout")
+        // the phone turned away from the slab: "Point at the slab" once 2.5 s have passed since it last saw it
+        let away = run(&c, from: t, to: lastSeen + 3.5, locked: false)
+        XCTAssertTrue(away.filter { $0.0 <= lastSeen + 2.5 - 1e-9 }.allSatisfy { $0.1 == MainScreenCue.lowerPhone })
+        XCTAssertTrue(away.filter { $0.0 > lastSeen + 2.5 + 1e-9 }.allSatisfy { $0.1 == MainScreenCue.pointAtSlab })
+        XCTAssertEqual(away.last?.1, MainScreenCue.pointAtSlab)
+        // never seen at all: "Point at the slab" after 2 s, as before
+        var d = MainScreenCue()
+        XCTAssertEqual(run(&d, from: 0, to: 2.5, locked: false).last?.1, MainScreenCue.pointAtSlab)
+        // a restart forgets the slab
+        var e = MainScreenCue()
+        _ = run(&e, from: 0, to: 1, locked: false, distance: 1.0, angle: 45)
+        e.reset()
+        XCTAssertEqual(run(&e, from: 1.1, to: 3.5, locked: false).last?.1, MainScreenCue.pointAtSlab)
+        // with no memory: the old behaviour
+        var f = MainScreenCue(); f.slabMemorySeconds = 0
+        _ = run(&f, from: 0, to: 2.5, locked: false, distance: 1.0, angle: 45)
+        XCTAssertEqual(f.update(time: 2.6, locked: false, settling: false, slabDistance: nil, viewAngleDegrees: nil, events: []), MainScreenCue.pointAtSlab)
+        // locked: the memory plays no part (the lock always has its distance)
+        var g = MainScreenCue()
+        _ = run(&g, from: 0, to: 2, locked: true, settling: true, distance: 0.9, angle: 45)
+        XCTAssertEqual(g.update(time: 2.1, locked: true, settling: true, slabDistance: 0.9, viewAngleDegrees: 45, events: []), MainScreenCue.moveSlowly)
     }
 
     func testSettlingLongerThanOneAndAHalfSecondsGivesTheReason() {

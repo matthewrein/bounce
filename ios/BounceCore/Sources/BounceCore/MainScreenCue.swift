@@ -5,7 +5,9 @@ import Foundation
 /// Developer, `TrackerOutput.hint`):
 ///   - not locked (or the lock unconfirmed) for more than `notLockedSeconds`: farther than `farMetres` from the slab
 ///     being confirmed (or the unconfirmed lock), `farCue`; a slab being confirmed within `farMetres`: "Hold the phone
-///     steady" (it is about to lock: do not move off it); no slab at all: "Point at the slab";
+///     steady" (it is about to lock: do not move off it); no slab seen for `slabMemorySeconds`: "Point at the slab"
+///     (the search gives a candidate up and starts again every second or so while the phone points at the slab: the
+///     last slab seen stands in meanwhile, so the cue does not flip to "Point at the slab" while it is in view);
 ///   - locked, the tilt still settling for more than `settlingSeconds`, the most useful reason from the tracker's own
 ///     numbers: farther than `farMetres` (the honest tilt uncertainty grows with distance and stays above the settle
 ///     threshold beyond about 4 ft) `farCue`; the line of sight more than `shallowDegrees` from the slab's normal
@@ -40,16 +42,23 @@ public struct MainScreenCue {
     public var shallowDegrees = 60.0
     public var steepDegrees = 25.0
     public var tapCueSeconds = 2.0
+    /// while not locked, a slab seen (being confirmed, or locked) this recently still gives the cue its distance and
+    /// view angle when the search has none this frame (s; 0: none). The dry run of n19 on the owner's two kits: the
+    /// search gave a candidate up and started again 83 times before a lock (gaps of 0.1 to 2.2 s, the slab 0.6 to 1.8 m
+    /// away); in all 51 gaps where a lock in the same shot showed the slab's place the slab was in the picture (49 whole,
+    /// 2 with three corners), and the cue read "Point at the slab" there, alternating with the slab's own cue.
+    public var slabMemorySeconds = 2.5
 
     private var notLockedSince: Double? = nil
     private var settlingSince: Double? = nil
     private var tapMissAt: Double? = nil
     private var lastTime: Double? = nil
+    private var lastSlab: (time: Double, distance: Double, angle: Double?)? = nil
 
     public init() {}
 
     /// Start over (a new camera session or the demo restarting).
-    public mutating func reset() { notLockedSince = nil; settlingSince = nil; tapMissAt = nil; lastTime = nil }
+    public mutating func reset() { notLockedSince = nil; settlingSince = nil; tapMissAt = nil; lastTime = nil; lastSlab = nil }
 
     /// The line of sight's angle from the slab's normal (degrees, 0 straight down onto it, 90 edge-on), from the slab's
     /// centre to the camera.
@@ -75,12 +84,19 @@ public struct MainScreenCue {
     /// One frame: `locked` (locked and confirmed), `settling` (locked and the tilt not shown yet), `slabDistance` (m, camera
     /// to the lock's centre, or to the slab being confirmed; nil: none), `viewAngleDegrees` (`viewAngleDegrees(slab:
     /// camera:)`, or for a slab being confirmed `viewAngleDegrees(center:normal:camera:)` with world up), and the frame's
-    /// tracker events. Returns the cue to show, or nil.
+    /// tracker events. Returns the cue to show, or nil. While not locked with no slab this frame, the last slab seen
+    /// within `slabMemorySeconds` stands in for it.
     public mutating func update(time t: Double, locked: Bool, settling: Bool, slabDistance: Double?, viewAngleDegrees: Double?,
                                 events: [String]) -> String? {
         // the clock went back (a restart) or jumped (the camera paused): start over
         if let l = lastTime, t < l - 0.5 || t > l + 2 { reset() }
         lastTime = t
+        var slabDistance = slabDistance, viewAngleDegrees = viewAngleDegrees
+        if let d = slabDistance {
+            lastSlab = (t, d, viewAngleDegrees)
+        } else if !locked, let m = lastSlab, t - m.time <= slabMemorySeconds {
+            slabDistance = m.distance; viewAngleDegrees = m.angle
+        }
         if events.contains("tap-ball-set-none") { tapMissAt = t }
         if let m = tapMissAt {
             if t - m <= tapCueSeconds && locked { return MainScreenCue.ballOverSlab }
