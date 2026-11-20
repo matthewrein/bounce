@@ -101,9 +101,10 @@ public struct RecordedOutput: Codable, Equatable {
     public var ballAwaitsConfirmation: Bool?
     /// the ball: world centre x, y, z (m), then its circle's x, y and radius in the ball finder's image (pixels)
     public var ball: [Double]?
-    /// With the ball gate (`TrackerSettings.ballGate`): the ball finder's own result on this frame when the gate did not
-    /// show it (`ball` is then nil; same layout), and whether the finder's result was its hold-over of a ball it missed
-    /// (`TrackerOutput.ballFound`, `ballHeldOver`). nil: no gate, nothing held back, or a recording from before n15.
+    /// The ball finder's own result on this frame when it was not shown (`ball` is then nil; same layout): held back by
+    /// the ball gate (`TrackerSettings.ballGate`), or while a ball the owner set by tapping it stood (`TrackerOutput
+    /// .ballFound`); and whether the finder's result was its hold-over of a ball it missed (`ballHeldOver`, with the gate).
+    /// nil: nothing held back (or no gate), or a recording from before n15.
     public var ballFound: [Double]?
     public var ballHeldOver: Bool?
     public var depthFused: Bool?
@@ -260,9 +261,9 @@ public struct FrameRecord {
 ///     tracker's result (a replay runs the tracker on the same frames at the same times, and compares);
 ///   - the image on every frame the detector ran on (it ran on that image), on taps and controls, and otherwise every
 ///     `imageInterval` seconds (to look at, and for replays with other settings);
-///   - LiDAR depth: the whole map with an image or a detection (a re-lock checks other poses), else only the part
-///     under the lock's top, which is all the tracker read (a few kB instead of 250 kB, so it can be kept on every
-///     frame at the camera's rate);
+///   - LiDAR depth: the whole map with an image, a detection (a re-lock checks other poses) or a tap (a ball tap reads
+///     LiDAR under the finger, `TapSetBall`), else only the part under the lock's top, which is all the tracker read (a
+///     few kB instead of 250 kB, so it can be kept on every frame at the camera's rate);
 ///   - for the ball finder, on every frame it ran on, what `ballPixels` says (its crop's place and intrinsics always);
 ///   - the slab's full-resolution crop on every frame the detector used one (`TrackerOutput.slabDetail`).
 /// Use: before processing a frame, convert its image if the tracker needs it (`detectionDue`, a tap) or
@@ -309,7 +310,7 @@ public struct RecordingCadence {
         if keepImage { lastImageTime = t }
         var depth: DepthMap? = nil
         if let d = tf.depth, let dk = tf.depthIntrinsics {
-            if keepImage || output.detections != nil {
+            if keepImage || output.detections != nil || tf.tap != nil {
                 depth = d
             } else if tracker.state == .locked, let s = tracker.imageSlab,
                       let part = PlaneFit.depthRegion(depth: d, depthIntrinsics: dk, view: tf.view, slab: s,

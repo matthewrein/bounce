@@ -150,6 +150,8 @@ public struct RecordingSettings: Codable, Equatable {
         t.readoutsFromSettledNormal = true
         t.lockKeepsNewestPerView = true
         t.ballGate = RecordingSettings.appBallGate
+        t.tapHints = true
+        t.tapSetsBall = true
         return t
     }
 

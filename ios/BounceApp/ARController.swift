@@ -154,6 +154,10 @@ final class ARController: NSObject, ARSessionDelegate {
     private var lastFloorY: Double? = nil
     private var lastFrameTime = 0.0
     private var lastDisplayTransform: CGAffineTransform = .identity
+    /// the last tap's mark (view points) and when it was made (camera clock), for `TapMark`
+    private var tapMark: (kind: TapMark.Kind, center: CGPoint, radius: CGFloat, at: Double)? = nil
+    /// how long a tap's mark lasts (s)
+    static let tapMarkSeconds = 0.8
     private var lastLens: CameraIntrinsics? = nil
     private var videoFormat: DiagnosticsReport.VideoFormat? = nil
     /// locks focus, exposure and white balance once the slab is locked and the camera has stopped adjusting them
@@ -683,16 +687,21 @@ final class ARController: NSObject, ARSessionDelegate {
         // one, never sooner than the tracker's minimum gap after the last run), or the recording wants it
         let t = f.timestamp
         let recImg = recorder != nil && cadence.needsImage(at: t, tracker: tracker)
-        let needImage = tracker.detectionDue(at: t, tap: tap != nil) || recImg
+        // (a tap makes the slab detector run only when it is taken for the slab: one on the ball's ring, or where a ball
+        // over the locked slab could be, is a ball hint, `SlabTracker.tapKind`; with tap hints, only while locked: before
+        // the lock a slab tap steers the scheduled searches, `SlabTracker.detectionDue(at:tap:)`. Its frame's LiDAR depth is
+        // read all the same: it places the tapped point)
+        let slabTap = tap.map { tracker.tapSeedsSlab($0, view: pview) } ?? false
+        let needImage = tracker.detectionDue(at: t, tap: slabTap) || recImg
         let ycc: YCCImage? = needImage ? f.ycc() : nil
         // the colour frame (chroma upsampled) only when the slab detector will run: it is all that reads it (an image
         // converted for the recording alone is recorded as it is)
-        let detects = tracker.detectorWillRun(at: t, tap: tap != nil, trackingNormal: f.trackingNormal)
+        let detects = tracker.detectorWillRun(at: t, tap: slabTap, trackingNormal: f.trackingNormal)
         let colorFrame = (detects ? ycc?.colorFrame : nil) ?? ColorFrame(gray: Plane(width: 2, height: 2))
 
-        // LiDAR depth, when the slab is locked (or for the recording)
+        // LiDAR depth, when the slab is locked (or for the recording, or on a slab tap's frame: where the tapped point is)
         var depth: (DepthMap, CameraIntrinsics)? = nil
-        if tracker.state == .locked || recImg { depth = f.depth() }
+        if tracker.state == .locked || recImg || slabTap { depth = f.depth() }
 
         // a full-resolution crop around the slab and the space above it, for the ball
         var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil, crop: BallImageCrop? = nil
@@ -718,6 +727,22 @@ final class ARController: NSObject, ARSessionDelegate {
                               slabDetail: slabDetail, exposureDuration: f.exposureDuration)
         let out = tracker.process(tf)
         lastOutput = out
+        // a tap's brief mark: where the finger was (a slab or a ball tap), or the dismissed ring
+        if let tk = out.tap {
+            switch tk.kind {
+            case .slab: if let p = tapView { tapMark = (kind: TapMark.Kind.slab, center: p, radius: CGFloat(22), at: t) }
+            case .ball: if let p = tapView { tapMark = (kind: TapMark.Kind.ball, center: p, radius: CGFloat(16), at: t) }
+            case .dismissBall, .clearSetBall:
+                // the dismissed ring, or the cleared set ball's mark, crossed out where it was
+                if let c = tk.ballCenter, let p = toView(c, full, vp) {
+                    var r: CGFloat = 12
+                    if let e = toView(c + full.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * tracker.settings.ball.radius, full, vp) {
+                        r = max(8, CGFloat(hypot(e.x - p.x, e.y - p.y)))
+                    }
+                    tapMark = (kind: tk.kind == .clearSetBall ? TapMark.Kind.cleared : TapMark.Kind.dismissed, center: p, radius: r, at: t)
+                }
+            }
+        }
         // what the capture kit's frames are recorded with until the next processed frame
         kitLock.lock(); kitLatest = (out, tracker.settings.ball.radius); kitLock.unlock()
         if out.ballSearched { lastBallCrop = crop }
@@ -752,7 +777,10 @@ final class ARController: NSObject, ARSessionDelegate {
         }
 
         // overlay, projected for the view, the readouts and the developer line
-        let ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
+        var ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
+        // the demo's held ball when it is not drawn: where it is, for the UI tests (a ball the finder cannot see, to set by
+        // tapping it)
+        if isDemo, let d = demoScript, d.ballHidden, let b = d.heldBall(at: t, spec: AppSettings.slab) { ov.demoBall = toView(b, full, vp) }
         let hud = makeHUD(out)
         // the frame numbers for the developer line, once a second (camera clock; again at once if the clock went back)
         if t - framesLineTime >= 1 || t < framesLineTime {
@@ -901,6 +929,14 @@ final class ARController: NSObject, ARSessionDelegate {
 
     private func overlay(_ out: TrackerOutput, view: BounceCore.CameraView, processing pw: Int, _ ph: Int, viewport vp: CGSize) -> OverlayState {
         var o = OverlayState()
+        if let m = tapMark {
+            let age = lastFrameTime - m.at
+            if age >= 0 && age < ARController.tapMarkSeconds {
+                o.tapMark = TapMark(kind: m.kind, center: m.center, radius: m.radius, fade: 1 - age / ARController.tapMarkSeconds)
+            } else if age >= ARController.tapMarkSeconds || age < -1 {
+                tapMark = nil
+            }
+        }
         if let m = out.measurement, out.state != .locked {
             // a detection that is not locked yet (processing pixels -> normalised image -> view)
             o.measured = m.map { q in
@@ -919,11 +955,20 @@ final class ARController: NSObject, ARSessionDelegate {
             if !o.settling { o.landing = toView(path.landing, view, vp) }
             o.normalTip = toView(path.start + path.direction * 0.08, view, vp)
         }
+        o.dismissed = tracker.dismissedSpots.compactMap { toView($0.near, view, vp) }
         if let b = out.ball {
             o.ball = toView(b.center, view, vp)
             let r = tracker.settings.ball.radius
             if let c = o.ball, let edge = toView(b.center + view.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * r, view, vp) {
                 o.ballRadius = CGFloat(hypot(edge.x - c.x, edge.y - c.y))
+            }
+        }
+        // a ball the owner set by tapping it: its own mark (the tracker shows no ring meanwhile)
+        if let b = out.setBall {
+            o.setBall = toView(b.center, view, vp)
+            let r = tracker.settings.ball.radius
+            if let c = o.setBall, let edge = toView(b.center + view.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * r, view, vp) {
+                o.setBallRadius = CGFloat(hypot(edge.x - c.x, edge.y - c.y))
             }
         }
         return o
@@ -939,7 +984,7 @@ final class ARController: NSObject, ARSessionDelegate {
             if out.lockUnconfirmed {
                 h.status = "Checking"
             } else {
-                h.status = out.ball != nil ? "Slab locked · ball in view" : "Slab locked"
+                h.status = out.ball != nil ? "Slab locked · ball in view" : out.setBall != nil ? "Slab locked · ball set" : "Slab locked"
                 // the tilt is not shown until its honest uncertainty is small enough (TrackerOutput.angleSettled)
                 if !out.angleSettled { h.status += " · settling" }
             }
@@ -951,7 +996,7 @@ final class ARController: NSObject, ARSessionDelegate {
             h.apex = Format.length(r.apexHeight)
             h.landing = h.settling ? HUDState.settlingText : Format.length(r.landingDistance)
             h.air = String(format: "%.2f s", r.airTime)
-            h.drop = Format.length(r.dropHeight) + (r.dropFromBall ? " (ball)" : "")
+            h.drop = Format.length(r.dropHeight) + (r.dropFromSetBall == true ? " (set)" : r.dropFromBall ? " (ball)" : "")
         }
         h.demo = isDemo
         return h

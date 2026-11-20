@@ -53,6 +53,8 @@ final class RecordingFormatTests: XCTestCase {
         s.idleBallAfter = 0.4; s.idleBallInterval = 0.25
         var gate = BallGateSettings(); gate.sightings = 4; gate.acrossMetres = 0.008; gate.lidarSurfaceMetres = nil
         s.ballGate = gate
+        s.tapHints = true; s.tapSlackFraction = 0.04; s.tapBallSeconds = 1.5; s.tapDismissSeconds = 15; s.tapDismissMax = 3; s.tapSlabFirstSeconds = 0.8
+        s.tapSetsBall = true; s.tapAcceptSeconds = 0.25; s.tapSetMaxHeight = 2.5
         for c in Mirror(reflecting: s).children where c.label != "shapeLimits" {
             let d = Mirror(reflecting: TrackerSettings()).children.first { $0.label == c.label }!
             XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes \(c.label!)")

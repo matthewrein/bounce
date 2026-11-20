@@ -38,7 +38,11 @@ public struct ReplayRunner {
     public enum Source: Equatable {
         /// run the detector (slab finder / ball finder) given to `replay` on the recorded pixels
         case run
-        /// use the phone's own recorded results (the tracker alone is replayed, exactly)
+        /// use the phone's own recorded results (the tracker alone is replayed, exactly, with one exception: with tap
+        /// hints, a slab tap's growth before the lock is recorded among the frame's detections without its mark, so it is
+        /// replayed as one of the search's outlines (`honestRestart` then counts it), and the probes after a tap while
+        /// locked are not recorded at all (replayed as finding nothing). A recording with slab taps replays exactly with
+        /// `.run` on its images.)
         case recorded
     }
 
@@ -100,6 +104,8 @@ public struct ReplayRunner {
         var tracker = makeTracker(override ?? settings)
         var steps: [Step] = []
         steps.reserveCapacity(reader.frames.count)
+        /// the first slab tap with tap hints replayed on the phone's detections (`Source.recorded`), when there was one
+        var firstHintedSlabTap: Double? = nil
         let blank = ColorFrame(gray: Plane(width: 2, height: 2))
 
         for (i, f) in reader.frames.enumerated() {
@@ -117,8 +123,10 @@ public struct ReplayRunner {
             }
 
             // The processing image, converted (as the app does) only when the tracker will run the detector on it: on a
-            // tap or when a detection is due. Other frames get a blank, as in the app.
-            let detects = tracker.detectionDue(at: f.timestamp, tap: f.tapPoint != nil)
+            // tap taken for the slab (`SlabTracker.tapSeedsSlab`) or when a detection is due. Other frames get a blank, as
+            // in the app.
+            let slabTap = f.tapPoint.map { tracker.tapSeedsSlab($0, view: f.view) } ?? false
+            let detects = tracker.detectionDue(at: f.timestamp, tap: slabTap)
             let wantImage = f.hasImage && ((detects && options.detections == .run) || (f.ballIntrinsics != nil && f.ballFile == nil)
                                            || (options.ballFromProcessingFrame && f.output == nil))
             let img: YCCImage? = wantImage ? try reader.image(for: f) : nil
@@ -143,7 +151,8 @@ public struct ReplayRunner {
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
             ball.prepare(recorded: nil)
             let phoneRan = f.output?.ballSearched == true
-            // the finder's own result on the phone: what the ball gate held back, else what was shown (the same, without a gate)
+            // the finder's own result on the phone: what was held back (by the ball gate, or while a set ball stood), else
+            // what was shown (the same)
             let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = (f.output?.ballFound ?? f.output?.ball).flatMap { b in
                 b.count == 6 ? (f.view.toCamera(Vec3(b[0], b[1], b[2])), Vec2(b[3], b[4]), b[5]) : nil
             }
@@ -172,11 +181,17 @@ public struct ReplayRunner {
                                   slabDetail: slabDetail.map { d in { _ in d } }, exposureDuration: f.exposureDuration)
             let out = tracker.process(tf)
             if let n = det.note { subs.append(n) }
+            // (with the phone's detections, a slab tap with tap hints is where such a replay may stop being exact: its
+            // growths and probes are not recorded, `Source.recorded`; the report says so)
+            if options.detections == .recorded, tracker.settings.tapHints, out.tap?.kind == .slab, firstHintedSlabTap == nil {
+                firstHintedSlabTap = f.timestamp
+            }
             var diffs: [String] = []
             if let phone = f.output { diffs = RecordedOutput(out).differences(from: phone, tolerances: options.tolerances) }
             steps.append(Step(frame: f, output: out, differences: diffs, substitutions: subs))
         }
-        let report = ReplayReport(steps: steps, session: session, settingsGiven: override != nil, skippedLines: reader.skippedLines)
+        let report = ReplayReport(steps: steps, session: session, settingsGiven: override != nil, skippedLines: reader.skippedLines,
+                                  hintedSlabTapOnRecorded: firstHintedSlabTap)
         return Result(steps: steps, tracker: tracker, report: report)
     }
 }
@@ -206,7 +221,10 @@ public struct ReplayReport: CustomStringConvertible {
     /// the replay matched the phone on every frame it could be compared on
     public var agrees: Bool { compared > 0 && differing == 0 }
 
-    public init(steps: [ReplayRunner.Step], session: RecordingSession, settingsGiven: Bool = false, skippedLines: Int = 0) {
+    /// `hintedSlabTapOnRecorded`: when the first slab tap with tap hints came, in a replay on the phone's detections
+    /// (`ReplayRunner.Source.recorded`), which does not replay its growths and probes (nil: none)
+    public init(steps: [ReplayRunner.Step], session: RecordingSession, settingsGiven: Bool = false, skippedLines: Int = 0,
+                hintedSlabTapOnRecorded: Double? = nil) {
         frames = steps.count
         var compared = 0, differing = 0, first: Int? = nil, counts: [String: Int] = [:], subs: [String: Int] = [:]
         var maxTilt = 0.0, maxOutline = 0.0, phoneLock: Double? = nil, replayLock: Double? = nil
@@ -244,6 +262,9 @@ public struct ReplayReport: CustomStringConvertible {
         if settingsGiven { notes.append("tracker settings given for the replay, not the phone's") }
         if session.tracker == nil { notes.append("the recording does not hold the tracker's settings: rebuilt from the owner's settings") }
         if skippedLines > 0 { notes.append("\(skippedLines) unreadable line(s) of frames.jsonl left out (cut short?)") }
+        if let t = hintedSlabTapOnRecorded {
+            notes.append(String(format: "a slab tap at %.2f s, on the phone's detections: its growths before the lock and its probes while locked are not recorded, so from there the replay need not match the phone (replaying the recorded images replays them)", t))
+        }
         self.notes = notes
     }
 
@@ -306,6 +327,15 @@ final class ReplaySlabDetector: SlabDetecting {
             return inner.refine(outline: outline, frame: frame, intrinsics: intrinsics, spec: spec, down: down, detail: detail)
         }
         return recordedRefined ?? []
+    }
+
+    /// a slab tap's growth (`SlabDetecting.probe`) on the recorded image, as on the phone (it leaves the real detector's
+    /// edge memory alone there too); without the image, or with the phone's detections (`Source.recorded`), nothing (the
+    /// phone's probes are not recorded: such a replay is not exact after a slab tap)
+    func probe(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?, seed: Vec2) -> [DetectedOutline] {
+        if !useRecorded && hasImage { return inner.probe(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed) }
+        if !useRecorded { note = "probe: none (no image recorded for the tap's growth)" }
+        return []
     }
 
     func forgetPixelMemory() { inner.forgetPixelMemory() }

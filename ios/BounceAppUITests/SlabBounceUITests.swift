@@ -876,4 +876,145 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")
         closeSettings(app)
     }
+
+    // MARK: tap hints (optional: the app is point and go without them)
+
+    /// Settings > Developer > Copy diagnostics: the tracker's counters (the tap counters among them), back on the main
+    /// screen afterwards.
+    func counts(_ app: XCUIApplication) throws -> [String: Int] {
+        openDeveloper(app)
+        let json = try readDiagnostics(app)
+        closeSettings(app)
+        return json["counts"] as? [String: Int] ?? [:]
+    }
+
+    /// Where an invisible marker is (window points): the "x,y" its text twin carries (`<id>At`, exact whatever frame the
+    /// accessibility tree gives the marker), or else its element's middle when that element is marker-sized (an element
+    /// made around a positioned view can be the whole screen, whose middle is not the marker); nil otherwise.
+    func markerPoint(_ app: XCUIApplication, _ id: String) -> CGPoint? {
+        let xy = label(app, id + "At").split(separator: ",").compactMap { Double($0) }
+        if xy.count == 2 { return CGPoint(x: xy[0], y: xy[1]) }
+        let e = element(app, id)
+        let screen = app.windows.firstMatch.frame
+        if e.exists, e.frame.width < 0.5 * screen.width, e.frame.height < 0.5 * screen.height {
+            return CGPoint(x: e.frame.midX, y: e.frame.midY)
+        }
+        return nil
+    }
+
+    /// A tap on the screen at a point of the window (points).
+    func tapAt(_ app: XCUIApplication, _ p: CGPoint) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0)).withOffset(CGVector(dx: p.x, dy: p.y)).tap()
+    }
+
+    /// A tap on the floor near a side of the screen, away from the demo's slab and the space over it, and above the
+    /// readouts (which are drawn over the tap layer and would take the tap themselves), once the tracker is running:
+    /// taken for the slab (a slab tap: the search looks there first), it never keeps the app from locking the slab, nor,
+    /// once locked, from keeping it (nothing is found there). The main screen shows no instructions for taps.
+    func testAStrayTapNeverCostsTheLock() throws {
+        let app = launch()
+        XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 20))
+        // the tracker is running once the status chip shows its state (the demo's tracker may start after launch)
+        let running = waitUntil(20) {
+            let s = label(app, "status")
+            return s.contains("Looking for the slab") || s.contains("Checking") || s.contains("Slab locked")
+        }
+        XCTAssertNotNil(running, "the tracker's state never showed; status \(label(app, "status"))")
+        let before = label(app, "status")
+        let frame = app.windows.firstMatch.frame
+        // well above the readouts' panel (its tilt value's top, less the label and padding over it, less a margin)
+        let tilt = element(app, "tilt")
+        let y = tilt.exists ? max(0.5 * frame.height, tilt.frame.minY - 60) : 0.7 * frame.height
+        tapAt(app, CGPoint(x: frame.width * 0.1, y: y))
+        let mark = element(app, "tapMark").waitForExistence(timeout: 2)
+        let locked = waitUntil(30) { label(app, "status").contains("Slab locked") }
+        XCTAssertNotNil(locked, "never locked after a stray tap; status \(label(app, "status"))")
+        // once locked, another stray tap: the lock stays
+        tapAt(app, CGPoint(x: frame.width * 0.9, y: y))
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(label(app, "status").contains("Slab locked"), "the lock went after a stray tap: \(label(app, "status"))")
+        screenshot(app, "stray taps")
+        let c = try counts(app)
+        summary("stray taps at y \(Int(y)) of \(Int(frame.height)): the first while \"\(before)\", locked \(String(format: "%.1f", locked ?? -1)) s "
+                + "after it, mark seen \(mark), counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        // both reached the tracker (the first: its mark, or the count of two)
+        XCTAssertTrue(mark || (c["tapSlab"] ?? 0) >= 2, "the first tap never reached the tracker (no mark, tapSlab \(c["tapSlab"] ?? 0))")
+        XCTAssertGreaterThanOrEqual(c["tapSlab"] ?? 0, 1, "the taps were taken for the slab")
+        XCTAssertEqual(c["tapBall"] ?? 0, 0)
+        XCTAssertEqual(c["tapDismiss"] ?? 0, 0)
+    }
+
+    /// The demo's held ball: a tap on its ring dismisses it (the ring goes at once and stays gone while the camera
+    /// drifts: its spot is passed over), and a tap where it is takes that back (a ball tap: the ball is looked for there
+    /// first and shown again). The diagnostics count both. (Where the dismissed ball is comes from an invisible marker,
+    /// "dismissedSpot"; BounceCore's DemoTapTests runs the same on the demo's frames.)
+    func testTapARingToDismissItAndTapAgainToTakeItBack() throws {
+        let app = launch(["demoBall": "0.30"])
+        XCTAssertNotNil(waitUntil(40) { label(app, "status").contains("ball in view") }, "the ball never showed")
+        var ringAt: CGPoint? = nil
+        _ = waitUntil(5) { ringAt = markerPoint(app, "ballRing"); return ringAt != nil }
+        guard let at = ringAt else { XCTFail("no ball ring marker"); return }
+        tapAt(app, at)
+        let gone = waitUntil(3) { !label(app, "status").contains("ball in view") }
+        XCTAssertNotNil(gone, "the dismissed ring stayed; status \(label(app, "status"))")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(label(app, "status").contains("ball in view"), "the dismissed ball came back: \(label(app, "status"))")
+        screenshot(app, "dismissed")
+        var spotAt: CGPoint? = nil
+        _ = waitUntil(3) { spotAt = markerPoint(app, "dismissedSpot"); return spotAt != nil }
+        guard let sp = spotAt else { XCTFail("no dismissed spot marker"); return }
+        tapAt(app, sp)
+        let back = waitUntil(8) { label(app, "status").contains("ball in view") }
+        screenshot(app, "taken back")
+        let c = try counts(app)
+        summary("dismiss and take back: gone after \(String(format: "%.1f", gone ?? -1)) s, back after \(String(format: "%.1f", back ?? -1)) s, "
+                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        XCTAssertNotNil(back, "the ball never came back after the second tap; status \(label(app, "status"))")
+        XCTAssertEqual(c["tapDismiss"] ?? 0, 1)
+        XCTAssertGreaterThanOrEqual(c["tapBall"] ?? 0, 1)
+        XCTAssertEqual(c["tapDismissLifted"] ?? 0, 1)
+    }
+
+    /// Tap to set the ball: the demo's held ball where the ball finder cannot see it (not drawn: "demoBallHidden"; where
+    /// it is comes from an invisible marker, "demoBall"). A tap there finds no ball in its box, so the ball is set at the
+    /// tap (the demo has no LiDAR: where the tapped line meets the upright plane through the slab's middle): its own mark
+    /// shows ("setBall", not the finder's ring "ballRing"), the status says so and the drop readout says it comes from the
+    /// set ball, matching the scene's truth. A tap on the mark clears it: the drop is the setting's again. The diagnostics
+    /// count both.
+    func testTapTheBallToSetItAndTapAgainToClearIt() throws {
+        var d = DemoScript(); d.ballHeight = 0.30
+        let app = launch(["demoBall": "0.30", "demoBallHidden": "YES"])
+        XCTAssertNotNil(waitUntil(40) { label(app, "status").contains("Slab locked") }, "never locked; status \(label(app, "status"))")
+        let dropBefore = label(app, "drop")
+        var ballAt: CGPoint? = nil
+        _ = waitUntil(5) { ballAt = markerPoint(app, "demoBall"); return ballAt != nil }
+        guard let at = ballAt else { XCTFail("no demo ball marker"); return }
+        XCTAssertFalse(element(app, "ballRing").exists, "the finder showed a ring for a ball that is not drawn")
+        tapAt(app, at)
+        let set = waitUntil(5) { label(app, "drop").contains("(set)") }
+        screenshot(app, "set")
+        let status = label(app, "status"), drop = label(app, "drop")
+        let tr = truth(d, at: 3)
+        XCTAssertNotNil(set, "the tap never set the ball; status \(status), drop \(drop)")
+        XCTAssertTrue(status.contains("ball set"), "status \(status)")
+        XCTAssertTrue(element(app, "setBall").exists || markerPoint(app, "setBall") != nil, "no set ball marker")
+        XCTAssertFalse(element(app, "ballRing").exists, "a set ball is not drawn as the finder's ring")
+        XCTAssertEqual(number(drop) ?? -99, tr.dropInches ?? 0, accuracy: 1.5, "the set ball's drop \(drop) against the truth")
+        // a tap on its mark clears it
+        var markAt: CGPoint? = nil
+        _ = waitUntil(3) { markAt = markerPoint(app, "setBall"); return markAt != nil }
+        guard let m = markAt else { XCTFail("no set ball marker to tap"); return }
+        tapAt(app, m)
+        let cleared = waitUntil(5) { !label(app, "drop").contains("(set)") && !label(app, "status").contains("ball set") }
+        screenshot(app, "cleared")
+        let c = try counts(app)
+        summary("tap to set: set after \(String(format: "%.1f", set ?? -1)) s, drop \(drop) (truth \(String(format: "%.1f", tr.dropInches ?? -1)) in, "
+                + "before \(dropBefore)), cleared after \(String(format: "%.1f", cleared ?? -1)) s (drop \(label(app, "drop"))), "
+                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        XCTAssertNotNil(cleared, "the set ball stayed after a tap on it; status \(label(app, "status")), drop \(label(app, "drop"))")
+        XCTAssertEqual(c["tapBallSet"] ?? 0, 1)
+        XCTAssertEqual(c["tapBallSetPlane"] ?? 0, 1, "the demo has no LiDAR: set on the plane")
+        XCTAssertEqual(c["tapSetCleared"] ?? 0, 1)
+        XCTAssertEqual(c["tapBallAccepted"] ?? 0, 0, "no ball to find")
+    }
 }

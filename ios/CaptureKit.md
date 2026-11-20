@@ -395,6 +395,8 @@ bounce-score --synthetic [--frames N] [--markdown] [--json out.json] [--video h2
              [--max-tilt-error DEG]
 bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drop-shrink N] [--drops-json out.json]
              [--truth-ball] [--markdown]
+bounce-score --taps <kit folder or a folder of kits> ... [--taps-truth FILE] [--taps-track FILE] [--taps-only ID,ID]
+             [--taps-lanes L,L] [--taps-json out.json] [--taps-trace]
 ```
 
 It prints kit ids, shot ids and numbers, never paths. `--fail-on-regression` exits with status 2 when a metric got
@@ -407,6 +409,38 @@ position id (`p4`) or `unmeasured`. An unmeasured shot has no true tilt: it repo
 and the tilt the app showed (`settledTiltReading`), with no error. The owner's first kit is scored with
 `--positions s07=p4,s08=unmeasured,s09=unmeasured,s10=unmeasured,s11=unmeasured,s12=unmeasured` (s07 was still at
 p4; s08-s12 were near level, about 0.5 ± 1.5°, with no flat-phone reading).
+
+**Simulated taps** (`KitTapBench`, `bounce-score --taps`, build n15's tap hints): instead of scoring, every video shot
+that should show the slab runs several times over one decode, once per lane, through the same per-frame path with the
+app's settings (tap hints on), each lane tapping as the owner might: `none` (no tap); `slab` (on the slab on the first
+frame, where the phone's live outline had its middle) and `slabLate` (the same 1 s in, if not locked by then); `ball`
+(once locked, where the ball really is, while the lane does not show it; needs `--taps-truth`) and `ballOff` (the same
+tap a ball radius and half a fingertip to the side); `dismiss` (on each false ring, up to three); and stray taps:
+`floorSearch` (on the floor beside the slab, on the first frame that falls between two of the lane's scheduled
+searches: a real finger lands on an ordinary frame), `floorConfirm` (the same while a candidate is being confirmed),
+`floor05` to `floor45` (the same at 0.5, 1, 1.5, 2, 3 and 4.5 s, if not locked by then; marked `/off` when the frame
+was between scheduled searches), `floorLocked` (on the floor 0.3 m from the lock, 0.5 s after it and then every 3 s,
+up to 4) and `slabOnLock` (on the locked slab's middle at those times). Tap to set the ball
+(`TrackerSettings.tapSetsBall`, `TapSetBall`): `setTrue` (once locked, before a drop's release cue and while the lane
+does not show the true ball, on a frame with LiDAR depth when the shot has any, a tap on the ball's middle where
+`--taps-track` has it on that frame), `setOff` (the same a ball radius and half a fingertip to the side), `setTrueAny`
+and `setOffAny` (the same on the first frame they can, with LiDAR depth or not: a kit keeps depth about once a second)
+and `slabFarOnLock` (once, 0.5 s after the lock, on the slab's top three quarters of the way to its far edge: a slab
+tap the tracker takes for a ball tap). Each reports what came of its tap in a table of its own: accepted at once (and
+whether that ball was the true one), set from LiDAR or from the plane (the set ball's drop height against the true
+one, from the track's circle and size on the tap's frame), or nothing; and both places worked out on the tap's frame,
+whichever was taken. A lane that can no longer tap without having tapped (`slabLate` or a fixed-time lane locked
+first) has run exactly as `none` and reports its result. Per lane it reports when the slab locked, how much of the
+shot it stayed locked (after a stray tap, against the untapped lane over the same frames), the lock's tilt and how far
+it ended from the untapped lane's, the ball scans and the rings shown (true or false), when the first true ball came,
+the false rings after a dismissal (tapped on the frame after a false ring first shows: no reaction time) and the
+tracker's tap counters. `--taps-truth` is where the ball is, read by eye from the private clips and kept outside the
+repository with them: `{"<kit id>": {"<shot id>": {"frame": N, "x": X, "y": Y, "r": R}}}` (video pixels on one frame;
+the ball is taken as still in the world); `--taps-track` is the ball's circle on every frame it is seen (`{"<kit id>":
+{"<shot id>": {"<frame>": [X, Y, R]}}}`, video pixels), private in the same way. `--taps-only` picks shots (ids or
+prefixes such as `s09`), `--taps-lanes` picks lanes, `--taps-json` writes the JSON (again after every shot) and
+`--taps-trace` logs each lane's tracker events. It prints shot ids and numbers only. The taps are simulated on
+recorded clips: where a real finger lands, and which frame it reaches, are not.
 
 **From a video frame to the tracker** (`KitFramePipeline`), as `ARController.handle` does it: the processing frame is
 the image shrunk by an integer box factor (`YCCImage.fromBiplanar`), converted only when `SlabTracker.detectionDue` (the

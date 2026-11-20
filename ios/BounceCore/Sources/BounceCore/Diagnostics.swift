@@ -146,6 +146,33 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var angleSettled: Bool?
     public var viewGroups: Int?
     public var settledTiltDegrees: Double?
+    /// The owner's taps (`TrackerSettings.tapHints`; how many of each kind: `counts`' "tap..." keys): how long a slab tap
+    /// took to lead to a lock and a ball tap to the first ball found in its box (s; the right ball or not: "tapBallFound"
+    /// counts those taps, "tapBallExpired" the taps whose box found none), and what is in effect now; nil before the
+    /// first tap
+    public var taps: Taps?
+    public struct Taps: Codable, Equatable {
+        public var slabTapToLockSeconds: RunningStats
+        public var ballTapToBallSeconds: RunningStats
+        public var dismissedSpots: Int
+        public var ballTapSearching: Bool
+        /// Tap to set the ball (`TrackerSettings.tapSetsBall`; "tapBallAccepted", "tapBallSet", "tapBallSetLidar",
+        /// "tapBallSetPlane", "tapBallSetNothing", "tapSetCleared", "tapSetReplacedBy..." and "tapSetEnded" count what came
+        /// of the ball taps): the ball the owner set, if one stands, and what the latest ball taps did (`SlabTracker
+        /// .tapLog`). nil in older reports.
+        public var setBall: SetBallNote? = nil
+        public var log: [TapLogEntry]? = nil
+    }
+    /// A ball the owner set by tapping it: its centre (world, m), where its place came from ("lidar": LiDAR's range under
+    /// the finger; "plane": the upright plane through the slab's middle), the drop height it gave when set and gives over
+    /// the lock now (m; nil: it no longer lands on the slab), and when it was set (camera clock, s).
+    public struct SetBallNote: Codable, Equatable {
+        public var center: [Double]
+        public var source: SetBallSource
+        public var dropHeightWhenSet: Double
+        public var dropHeightNow: Double?
+        public var setAt: Double
+    }
 
     /// The frame and units of every field, as written into `frames`.
     public static let fieldFrames: [String: String] = [
@@ -172,6 +199,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
         "tiltSigmaDegrees": "the tilt's honest uncertainty (deg, 1 sigma, both axes) over the lock's views (each its newest detections, one view's uncertainty); angleSettled: the tilt is shown (else 'settling'); viewGroups: views of the slab more than 7.5 deg apart; settledTiltDegrees: its normal's tilt (what is shown once settled)",
         "depthChecks": "LiDAR's checks of the lock's top while locked: checks, used, rejected per reason (points, angle, inliers, offset); offsetMm: the lock's centre above LiDAR's plane less the dish's offset (mm); angleDegrees: LiDAR's plane to the image normal (deg); rangeRatio: LiDAR's range to the corner plane over the picture's along the line of sight (k); each count, min, max, median of the latest 101, last",
+        "taps": "the owner's taps: slab tap to lock and ball tap to a ball in its box (s); setBall: a ball set by tapping it, world centre (m), source (lidar or plane), drop height when set and now (m), set at (camera clock s); log: what the latest ball taps did (camera clock s, event, source, world centre m, drop height m, note)",
         "videoFormatChange": "the last video format change (full image size, nominal fps), the camera clock of the frame it was noted on, and what showed it (basis: size, frame-steps, time)",
     ]
 
@@ -211,6 +239,19 @@ public struct DiagnosticsReport: Codable, Equatable {
             angleSettled = tracker.angleSettled
             viewGroups = tracker.viewGroupCount
             settledTiltDegrees = tracker.settledNormal.map { DiagnosticsReport.r2(Units.degrees($0.angle(to: -ARKitConvention.worldDown))) }
+        }
+        if tracker.counts.keys.contains(where: { $0.hasPrefix("tap") }) {
+            taps = Taps(slabTapToLockSeconds: tracker.tapSlabLockSeconds.rounded, ballTapToBallSeconds: tracker.tapBallFoundSeconds.rounded,
+                        dismissedSpots: tracker.dismissedSpots.count, ballTapSearching: tracker.ballHint != nil)
+            if let b = tracker.setBall {
+                let st = tracker.settings
+                let now = tracker.slab.flatMap { TapSetBall.dropHeight(center: b.center, slab: $0, spec: st.spec, ball: st.ball, down: ARKitConvention.worldDown,
+                                                                      rule: st.launchRule) }
+                taps?.setBall = SetBallNote(center: b.center.array.map(DiagnosticsReport.r4), source: b.source,
+                                            dropHeightWhenSet: DiagnosticsReport.r4(b.dropHeight), dropHeightNow: now.map(DiagnosticsReport.r4),
+                                            setAt: DiagnosticsReport.r4(b.time))
+            }
+            if !tracker.tapLog.isEmpty { taps?.log = tracker.tapLog }
         }
         if let v = view {
             camera = Camera(view: v, slab: tracker.slab)

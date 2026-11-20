@@ -25,7 +25,10 @@ final class ReplayPhoneTests: XCTestCase {
     func standard() throws -> (folder: URL, run: AppLoopSim.Run) {
         if let s = ReplayPhoneTests.shared { return s }
         let folder = ReplayPhoneTests.sharedFolder.appendingPathComponent("s.bouncerec")
-        let s = (folder, try sim().run(recordingTo: folder))
+        var x = sim()
+        x.floorTapAt = 1.2
+        x.slabTapAt = 0
+        let s = (folder, try x.run(recordingTo: folder))
         ReplayPhoneTests.shared = s
         return s
     }
@@ -46,7 +49,15 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(rec.frames.count, phone.outputs.count, "a line for every processed frame")
         // the session exercised what it should
         let allEvents = phone.outputs.flatMap { $0.events }
-        for e in ["tap", "locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
+        for e in ["locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
+        // the taps: on the slab on the first frame (a slab tap: the search starts there, its place from LiDAR, "tap"), on
+        // the locked slab (with the app's tap hints it looks for the ball there, "tap-ball"; n11 started the slab search
+        // over, "tap"), and on the floor beside it (a slab tap: looked at, the lock kept, "tap-slab")
+        XCTAssertTrue(allEvents.contains("tap"), "a slab tap before the lock (the search starts over there) in \(allEvents)")
+        XCTAssertTrue(allEvents.contains("tap-ball"), "a ball tap in \(allEvents)")
+        XCTAssertTrue(allEvents.contains("tap-slab"), "a slab tap in \(allEvents)")
+        XCTAssertFalse(allEvents.contains("tap-slab-elsewhere"))
+        XCTAssertGreaterThan(phone.tracker.counts["tapSlabProbes"] ?? 0, 0, "looked at on the replayed frames too")
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .reset } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .settings && $0.settings?.launchRule == .dishNormal } == true })
         XCTAssertTrue(rec.frames.contains { $0.controls?.contains { $0.kind == .worldDiscontinuity } == true })
@@ -358,6 +369,35 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertTrue(run.report.agrees, run.report.description)
         var o = ReplayRunner.Options(); o.ball = .recorded; o.detections = .recorded
         let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: TwoScanDisc(), options: o)
+        XCTAssertTrue(recorded.report.agrees, recorded.report.description)
+    }
+
+    /// Tap to set the ball (`TrackerSettings.tapSetsBall`) replays exactly: a tap where the ball will be held, before the
+    /// finder sees it, sets it there (the recording keeps the whole depth map on a tap's frame, which places it); the
+    /// finder's finds are held back while it stands (recorded as `ballFound`) until two close to it replace it. Replayed
+    /// running the ball finder, and with the phone's ball results.
+    func testATapSetBallReplaysExactly() throws {
+        var s = sim()
+        let b = try XCTUnwrap(s.ball)
+        s.ballFrom = 3.0; s.duration = 4.5
+        s.tapAt = nil; s.settingsAt = nil; s.resetAt = nil; s.discontinuityAt = nil; s.limited = nil
+        s.ballTapAt = (2.0, b)
+        XCTAssertTrue(RecordingSettings().trackerSettings.tapSetsBall, "the app sets a tapped ball")
+        let folder = tmp.appendingPathComponent("tapset.bouncerec")
+        let phone = try s.run(recordingTo: folder)
+        let events = phone.outputs.flatMap { $0.events }
+        XCTAssertTrue(events.contains("tap-ball-set"), "\(events)")
+        XCTAssertTrue(events.contains("tap-set-replaced"), "\(events)")
+        XCTAssertTrue(phone.outputs.contains { $0.readouts?.dropFromSetBall == true })
+        XCTAssertTrue(phone.outputs.contains { $0.ballFound != nil }, "held back while the set ball stood")
+        let rec = try RecordingReader(folder: folder)
+        XCTAssertTrue(rec.frames.contains { $0.output?.ballFound != nil })
+        let tapFrame = try XCTUnwrap(rec.frames.firstIndex { $0.tap != nil })
+        XCTAssertNotNil(rec.frames[tapFrame].depthFile, "the tap's frame keeps its depth")
+        let run = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: DiscBallLocator())
+        XCTAssertTrue(run.report.agrees, run.report.description)
+        var o = ReplayRunner.Options(); o.ball = .recorded; o.detections = .recorded
+        let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: DiscBallLocator(), options: o)
         XCTAssertTrue(recorded.report.agrees, recorded.report.description)
     }
 }

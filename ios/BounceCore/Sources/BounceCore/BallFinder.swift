@@ -2131,6 +2131,10 @@ public final class BallLocator {
     public var options: Options
     /// the last observation (nil when no ball is shown)
     public private(set) var current: BallObservation?
+    /// What the owner's taps say for the next scans (`BallSearchHints`, set by the tracker before each scan): a box to
+    /// look in first, at the radii a ball has there (a tap on the ball), and circles where any ball is passed over
+    /// (dismissed rings). Empty: none.
+    public var searchHints = BallSearchHints()
 
     /// a ball remembered relative to the slab: its centre in the slab's axes (along axisU, axisV, normal, from the centre)
     struct Anchored {
@@ -2259,11 +2263,18 @@ public final class BallLocator {
                     .map { SearchBand(region: box, radii: $0.radii, scale: $0.scale) }
                 : []
         }
+        // A ball tap (`searchHints`): its box first, at the radii a ball has along the tapped line of sight
+        var tapBands: [SearchBand]? = nil
+        if let box = searchHints.region?.clamped(width: K.width, height: K.height), let r = searchHints.radii, !box.isEmpty, r.upperBound > r.lowerBound {
+            tapBands = Self.bands(radii: r, minSearchRadius: options.minSearchRadius, width: K.width, height: K.height) { _, _ in box }
+                .map { SearchBand(region: box, radii: $0.radii, scale: $0.scale) }
+        }
         var part: Anchored? = nil
         var partials: [Anchored] = []
         var chosen: (BallCircle, Vec3, DropPoint)? = nil
-        let passes: [(bands: [SearchBand], box: Bool)] = (boxBands.map { [($0, true)] } ?? []) + [(whole, false)]
-        for (bands, inBox) in passes where chosen == nil {
+        let passes: [(bands: [SearchBand], box: Bool, tap: Bool)] = (tapBands.map { [($0, false, true)] } ?? [])
+            + (boxBands.map { [($0, true, false)] } ?? []) + [(whole, false, false)]
+        for (bands, inBox, inTap) in passes where chosen == nil {
             var circles: [BallCircle] = []
             for band in bands {
                 let up = Self.imageUp(at: band.region.center, depth: slab.center.length, intrinsics: K, down: g)
@@ -2290,12 +2301,18 @@ public final class BallLocator {
             if options.stillPartialCeiling != nil { partials += placed.filter { $0.0.partial }.map { anchor($0.1, slab) } }
 
             for (c, B, d) in placed {
+                // a ring the owner dismissed: passed over wherever it turns up
+                if searchHints.avoids(c.center) { continue }
                 guard d.onSlab || !options.requireOnSlab, d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3 else { continue }
                 if c.partial {
                     // the web app's size floor for a partial find, "at a size that puts it no further away than the slab"
                     // (radius at least 0.9x that of a ball at the slab's depth), here as a distance; and a size that puts it
-                    // where a held ball can be
-                    if B.length > slab.center.length / 0.9 || d.dropHeight < (c.lattice || c.arc ? options.minLatticePartialHeight ?? options.minHeight : options.minPartialHeight) { continue }
+                    // where a held ball can be (where the owner tapped the ball, any height it is looked for at: the tap
+                    // says a ball is there; a reading on the lattice's evidence, or an arc of it, is held to the whole
+                    // outline's least height, `minLatticePartialHeight`)
+                    let partialFloor: Double = inTap ? options.minHeight
+                        : (c.lattice || c.arc ? (options.minLatticePartialHeight ?? options.minHeight) : options.minPartialHeight)
+                    if B.length > slab.center.length / 0.9 || d.dropHeight < partialFloor { continue }
                     // only part of the outline seen: report it only once the same ball turns up on two scans in a row
                     if part == nil { part = anchor(B, slab) }
                     let again = pending.map { c.center.distance(to: $0.center) < $0.radius * 0.5 && abs(c.radius - $0.radius) < $0.radius * 0.25 } ?? false
@@ -2319,6 +2336,7 @@ public final class BallLocator {
                let B = Bounce.ballCenter(pixel: c.center, radiusPixels: c.radius, intrinsics: K, ball: ball, model: .imageCircle),
                let d = Bounce.drop(ballCenter: B, pose: slab, spec: spec, ball: ball, down: g),
                d.onSlab || !options.requireOnSlab, d.dropHeight >= options.minHeight, d.dropHeight <= options.maxHeight + 0.3,
+               !searchHints.avoids(c.center),
                Self.streakIsFlight(c, from: prev.center, up: Self.imageUp(at: c.center, depth: B.length, intrinsics: K, down: g)) {
                 chosen = (c, B, d)
             }

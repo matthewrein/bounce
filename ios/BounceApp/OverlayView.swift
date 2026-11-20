@@ -33,6 +33,18 @@ struct OverlayView: View {
                     ctx.stroke(p, with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, dash: [3, 4]))
                 }
             }
+            // a ball the owner set by tapping it: its own mark, not the finder's ring (a dashed yellow ring with a dot in the
+            // middle), and its drop line
+            if let b = o.setBall {
+                let r = max(o.setBallRadius, 6)
+                ctx.stroke(Path(ellipseIn: CGRect(x: b.x - r, y: b.y - r, width: 2 * r, height: 2 * r)), with: .color(.yellow),
+                           style: StrokeStyle(lineWidth: 2.5, dash: [5, 3]))
+                ctx.fill(Path(ellipseIn: CGRect(x: b.x - 3, y: b.y - 3, width: 6, height: 6)), with: .color(.yellow))
+                if let s = o.start {
+                    var p = Path(); p.move(to: b); p.addLine(to: s)
+                    ctx.stroke(p, with: .color(.yellow), style: StrokeStyle(lineWidth: 1.5, dash: [3, 4]))
+                }
+            }
             // the bounce
             if o.path.count > 1 {
                 var p = Path(); p.addLines(o.path)
@@ -46,6 +58,29 @@ struct OverlayView: View {
             if let l = o.landing, !o.settling {
                 ctx.stroke(Path(ellipseIn: CGRect(x: l.x - 9, y: l.y - 9, width: 18, height: 18)), with: .color(.green), lineWidth: 2.5)
                 ctx.draw(Text("lands").font(.caption.bold()).foregroundColor(.green), at: CGPoint(x: l.x, y: l.y + 18))
+            }
+            // a tap's brief mark: a ring spreading from the finger (slab: white; ball: orange, dashed), or the dismissed
+            // ball's ring crossed out in red (a cleared set ball's mark: in yellow), fading
+            if let m = o.tapMark {
+                let a = max(0, min(1, m.fade))
+                let grow = CGFloat(1 - a) * 10
+                let r = m.radius
+                let rect = CGRect(x: m.center.x - r, y: m.center.y - r, width: 2 * r, height: 2 * r)
+                switch m.kind {
+                case .slab:
+                    ctx.stroke(Path(ellipseIn: rect.insetBy(dx: -grow, dy: -grow)), with: .color(.white.opacity(0.9 * a)), lineWidth: 2)
+                case .ball:
+                    ctx.stroke(Path(ellipseIn: rect.insetBy(dx: -grow, dy: -grow)), with: .color(.orange.opacity(0.9 * a)),
+                               style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                case .dismissed, .cleared:
+                    let c: Color = m.kind == .cleared ? .yellow : .red
+                    ctx.stroke(Path(ellipseIn: rect), with: .color(c.opacity(a)), lineWidth: 2.5)
+                    let k = r * 0.7
+                    var x = Path()
+                    x.move(to: CGPoint(x: m.center.x - k, y: m.center.y - k)); x.addLine(to: CGPoint(x: m.center.x + k, y: m.center.y + k))
+                    x.move(to: CGPoint(x: m.center.x + k, y: m.center.y - k)); x.addLine(to: CGPoint(x: m.center.x - k, y: m.center.y + k))
+                    ctx.stroke(x, with: .color(c.opacity(a)), lineWidth: 2.5)
+                }
             }
         }
         .allowsHitTesting(false)

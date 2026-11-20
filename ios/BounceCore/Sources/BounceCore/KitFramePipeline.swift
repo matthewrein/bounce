@@ -239,16 +239,19 @@ public struct KitFramePipeline {
     /// The `TrackerFrame` the app would build for this video frame, given the tracker it is about to be handed to (its
     /// state decides what is converted, as in the app). `image`: the decoded video frame (nil if it could not be read:
     /// the detector then gets the blank). `depth`: loads this frame's depth, called only while the slab is locked.
-    /// nil when the frame's pose or intrinsics are not usable.
+    /// `tap`: a tap to hand the tracker with this frame (pixels of the processing frame; the tap bench's simulated
+    /// taps), converted for as the app does (`SlabTracker.tapSeedsSlab`). nil when the frame's pose or intrinsics are not
+    /// usable.
     public func frame(image: YCCImage?, kitFrame f: KitFrame, tracker: SlabTracker,
-                      depth: () -> (DepthMap, CameraIntrinsics)? = { nil }) -> Frame? {
+                      depth: () -> (DepthMap, CameraIntrinsics)? = { nil }, tap: Vec2? = nil) -> Frame? {
         guard let vs = views(f) else { return nil }
         let video = vs.video, pview = vs.processing, t = f.time
         // only convert the image when the detector will run on it
-        let converted = image != nil && tracker.detectionDue(at: t)
+        let slabTap = tap.map { tracker.tapSeedsSlab($0, view: pview) } ?? false
+        let converted = image != nil && tracker.detectionDue(at: t, tap: slabTap)
         let colorFrame = converted ? processingImage(image!).colorFrame : KitFramePipeline.blank
-        // LiDAR depth, when the slab is locked
-        let d: (DepthMap, CameraIntrinsics)? = tracker.state == .locked ? depth() : nil
+        // LiDAR depth, when the slab is locked (and on a slab tap's frame, for where the tapped point is, as the app does)
+        let d: (DepthMap, CameraIntrinsics)? = tracker.state == .locked || slabTap ? depth() : nil
         // the ball finder's crop of the full-resolution image, when it is due
         var ballPlane: Plane? = nil, ballK: CameraIntrinsics? = nil, crop: BallImageCrop? = nil
         if tracker.state == .locked, tracker.ballDue(at: t), let s = tracker.slab, let img = image,
@@ -256,7 +259,7 @@ public struct KitFramePipeline {
             ballPlane = b.image; ballK = b.intrinsics; crop = b.crop
         }
         var tf = TrackerFrame(timestamp: t, view: pview, frame: colorFrame, depth: d?.0, depthIntrinsics: d?.1,
-                              ballImage: ballPlane, ballIntrinsics: ballK, tap: nil, floorY: nil, trackingNormal: f.tracking.isNormal)
+                              ballImage: ballPlane, ballIntrinsics: ballK, tap: tap, floorY: nil, trackingNormal: f.tracking.isNormal)
         if let img = image { tf.slabDetail = { q in self.slabDetail(img, outline: q, processing: pview, video: video) } }
         tf.exposureDuration = f.exposure
         return Frame(tracker: tf, video: video, converted: converted, ballCrop: crop)
