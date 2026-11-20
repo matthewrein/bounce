@@ -2,6 +2,15 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
+
+Bug fix on top of n19; Developer shows **n20**. Before the lock, the slab search often drops its candidate for a moment
+and starts again; n19's cue then said "Point at the slab" although the slab was in the picture (5.9 s of that on your
+first kit, 15.4 s on your second, flickering about once a second). The cue now remembers where it last saw the slab for
+2.5 s while not locked, so it keeps giving the right advice ("Lower the phone", "Hold the phone steady"). Replayed on both
+kits: every wrong "Point at the slab" is gone, the shot without a slab still says it, and nothing but the cue changed on
+any frame. Pointing away before a lock now shows "Point at the slab" after 3.6 s instead of 2 s.
+
 ## Build n19 (20 November 2026): the slab held in the room from all its views
 
 Small build on top of n18; Developer shows **n19**.
