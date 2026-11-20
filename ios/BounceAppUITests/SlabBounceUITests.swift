@@ -512,7 +512,9 @@ final class SlabBounceUITests: XCTestCase {
             return
         }
         XCTAssertLessThanOrEqual(d1 - d0, 2, "Developer redrew \(d1 - d0) times in \(watch) s with nothing touched")
-        XCTAssertGreaterThanOrEqual(tops.count, 3, "the Pre-flight row was not on screen: \(describe(app))")
+        // at least 2 reads of the row's top: on a slow shared Simulator a pass of queries can take 4-5 s, and n17's run
+        // got 2 in its 10 s (spread 0.0 pt, 0 redraws); the line's height check below is the deterministic part
+        XCTAssertGreaterThanOrEqual(tops.count, 2, "the Pre-flight row was not on screen: \(describe(app))")
         XCTAssertLessThanOrEqual(spread, 1.0, "the Pre-flight row moved \(spread) pt while the live line changed (tops \(tops))")
         // the line's height does not follow its text: the same at every read (through the reset and the numbers'
         // changes), and room for more lines than the demo's text needs (16 kept, about 11 used; 14 asked here, so a
