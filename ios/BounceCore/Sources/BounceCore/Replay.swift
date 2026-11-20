@@ -366,6 +366,9 @@ final class ReplayBallLocator: BallLocating {
     /// The phone's, on a frame whose result is the phone's; else the real finder's (the idle ball rate reads it).
     var awaitsConfirmation: Bool { recordedAwaits ?? inner?.awaitsConfirmation ?? false }
     var heldOver: Bool { recordedHeldOver ?? inner?.heldOver ?? false }
+    /// the owner's taps reach the real finder, as on the phone (a ball tap's box, the dismissed spots); a frame whose
+    /// result is the phone's does not search
+    func setSearchHints(_ hints: BallSearchHints) { inner?.setSearchHints(hints) }
 
     func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
         if let r = recorded { return r }

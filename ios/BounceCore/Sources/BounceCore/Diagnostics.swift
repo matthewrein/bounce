@@ -163,6 +163,42 @@ public struct DiagnosticsReport: Codable, Equatable {
         public var setBall: SetBallNote? = nil
         public var log: [TapLogEntry]? = nil
     }
+    /// The ball's recent history (n16; `SlabTracker.ballLog`, `BallLogEntry`): the latest events (at most 20, oldest
+    /// first) of what the ball gate made of the finder's finds and what taps did with the ball, so a paste shows where a
+    /// wrong ball came from. nil: nothing yet, or an older report.
+    public var ballHistory: [BallEvent]?
+    /// One entry of `ballHistory` (`BallLogEntry`, whose doc lists the events): when (camera clock s; `until` and `count`
+    /// for a run of the same event kept as one, whose other fields are the latest's), what happened and why, where the
+    /// ball came from ("finder", "tap", "set"), its centre (world, m), its bottom over the slab's top face (m), its circle
+    /// (x, y, radius) in the full camera image's pixels, and LiDAR's depth at its centre less the centre's (m).
+    public struct BallEvent: Codable, Equatable {
+        public var time: Double
+        public var until: Double?
+        public var count: Int?
+        public var event: String
+        public var why: String?
+        public var source: String
+        public var center: [Double]?
+        public var heightOverTop: Double?
+        public var circle: [Double]?
+        public var lidar: Double?
+
+        public init(time: Double, until: Double? = nil, count: Int? = nil, event: String, why: String? = nil, source: String,
+                    center: [Double]? = nil, heightOverTop: Double? = nil, circle: [Double]? = nil, lidar: Double? = nil) {
+            self.time = time; self.until = until; self.count = count; self.event = event; self.why = why; self.source = source
+            self.center = center; self.heightOverTop = heightOverTop; self.circle = circle; self.lidar = lidar
+        }
+
+        /// A tracker's entry, its circle in the pixels of the full camera image (`full`; nil: the circle is left out).
+        public init(_ e: BallLogEntry, full: CameraIntrinsics?) {
+            self.init(time: (e.time * 1000).rounded() / 1000, until: e.until.map { ($0 * 1000).rounded() / 1000 }, count: e.count > 1 ? e.count : nil,
+                      event: e.event, why: e.why, source: e.source, center: e.center.map { $0.array.map(DiagnosticsReport.r4) },
+                      heightOverTop: e.heightOverTop.map(DiagnosticsReport.r4), lidar: e.lidar.map(DiagnosticsReport.r4))
+            if let n = e.circle, n.count == 3, let K = full {
+                circle = [DiagnosticsReport.r2(K.cx + n[0] * K.fx), DiagnosticsReport.r2(K.cy + n[1] * K.fy), DiagnosticsReport.r2(n[2] * K.fx)]
+            }
+        }
+    }
     /// A ball the owner set by tapping it: its centre (world, m), where its place came from ("lidar": LiDAR's range under
     /// the finger; "plane": the upright plane through the slab's middle), the drop height it gave when set and gives over
     /// the lock now (m; nil: it no longer lands on the slab), and when it was set (camera clock, s).
@@ -199,6 +235,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
         "tiltSigmaDegrees": "the tilt's honest uncertainty (deg, 1 sigma, both axes) over the lock's views (each its newest detections, one view's uncertainty); angleSettled: the tilt is shown (else 'settling'); viewGroups: views of the slab more than 7.5 deg apart; settledTiltDegrees: its normal's tilt (what is shown once settled)",
         "depthChecks": "LiDAR's checks of the lock's top while locked: checks, used, rejected per reason (points, angle, inliers, offset); offsetMm: the lock's centre above LiDAR's plane less the dish's offset (mm); angleDegrees: LiDAR's plane to the image normal (deg); rangeRatio: LiDAR's range to the corner plane over the picture's along the line of sight (k); each count, min, max, median of the latest 101, last",
+        "ballHistory": "the ball's latest events, oldest first (at most 20): time (camera clock s; until, count: a run of one event kept as one, its other fields the latest's); event: the ball gate's verdict on a find (accepted, kept, heldOver: shown; waiting: not yet, fewer than three agreeing finds, why heldOver: a hold-over of a ball not shown; refused, why offTop, tooLow, tooHigh, surface (LiDAR) or disagree (not where the shown ball was, which ends it); found: no gate), gone (the ring went, nothing found), tapAccepted (a find under a ball tap, shown at once), set (why lidar or plane), nothing (a ball tap that set nothing, why), cleared, replaced (why find, tap or set), ended (why: the lock) for a ball set by a tap, dismissed (a ring tapped away); source: finder, tap (the ring a tap accepted: it shows whatever the gate's verdict) or set (the ball a tap set); center: world (m); heightOverTop: the ball's bottom over the slab's top face (m); circle: x, y, radius in full camera image pixels; lidar: LiDAR's depth at the centre less the centre's (m)",
         "taps": "the owner's taps: slab tap to lock and ball tap to a ball in its box (s); setBall: a ball set by tapping it, world centre (m), source (lidar or plane), drop height when set and now (m), set at (camera clock s); log: what the latest ball taps did (camera clock s, event, source, world centre m, drop height m, note)",
         "videoFormatChange": "the last video format change (full image size, nominal fps), the camera clock of the frame it was noted on, and what showed it (basis: size, frame-steps, time)",
     ]
@@ -228,6 +265,11 @@ public struct DiagnosticsReport: Codable, Equatable {
     /// `lens`, the full image's), the ball crop's frame and the floor.
     public mutating func addTracker(_ tracker: SlabTracker, view: CameraView?, lens: CameraIntrinsics? = nil, output: TrackerOutput? = nil,
                                     ballCrop: BallImageCrop? = nil, floorY: Double? = nil, slabCrop: SlabImageCrop? = nil) {
+        // the ball's history, its circles in the full camera image's pixels
+        if !tracker.ballLog.isEmpty {
+            let full = lens ?? self.lens.map { CameraIntrinsics(fx: $0.fx, fy: $0.fy, cx: $0.cx, cy: $0.cy, width: $0.width, height: $0.height) }
+            ballHistory = tracker.ballLog.map { BallEvent($0, full: full) }
+        }
         self.slabCrop = slabCrop ?? output?.slabDetail?.crop
         imageSlab = tracker.imageSlab.map(Pose.init)
         depthFused = output?.depthFused

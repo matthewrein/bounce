@@ -336,7 +336,7 @@ final class TapHintTests: XCTestCase {
     /// on it or not: with tap hints the search goes on as without the tap (its outlines elsewhere are never set aside,
     /// nothing is grown where it has some, and the tap runs no search of its own and does not move the searches'
     /// schedule), so it searches on the same frames and locks when and where it would have; n11 held the search to the
-    /// tapped pixel for the seed's whole `seedTimeout`. (n15 as first built searched on the tap's own frame and moved the
+    /// tapped pixel for the seed's whole `seedTimeout`. (tap hints as first built searched on the tap's own frame and moved the
     /// schedule to it: a tap on frame 4 at 60 fps searched on frames 4, 12, 20 instead of 8, 16, 24, and the lock came
     /// sooner or later with the frame the tap landed on; on the owner's clips that cost marginal shots their lock.)
     func testAStrayTapBeforeTheLockCostsNothing() {

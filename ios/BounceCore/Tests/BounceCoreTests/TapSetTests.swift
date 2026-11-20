@@ -262,6 +262,31 @@ final class TapSetTests: XCTestCase {
         XCTAssertNotNil(last.setBall)
     }
 
+    func testTheBallGateIsBypassedForABallATapAccepts() throws {
+        // the app's ball gate shows the finder's ball from its third agreeing find; a ball found under a ball tap is shown
+        // on its first, and the gate's verdict on it is noted in the ball's history (source "tap")
+        let balls = ScriptedBalls()
+        var (tr, det, v, k) = lockedTracker(balls: balls)
+        XCTAssertNotNil(tr.settings.ballGate)
+        for _ in 0..<12 { step(tr, det, balls, v, Double(k) / 60); k += 1 }
+        let B = slab.center + up * 0.30 - slab.axisV * 0.04
+        step(tr, det, balls, v, Double(k) / 60, tap: v.project(world: B)!); k += 1
+        balls.balls = [B]
+        var accepted: TrackerOutput? = nil
+        for _ in 0..<30 {
+            let o = step(tr, det, balls, v, Double(k) / 60); k += 1
+            if o.events.contains("tap-ball-accepted") { accepted = o; break }
+            XCTAssertNil(o.ball)
+        }
+        let o = try XCTUnwrap(accepted)
+        XCTAssertEqual(o.ballGateVerdict, .waiting, "the gate alone would not show it yet")
+        XCTAssertLessThan(try XCTUnwrap(o.ball).center.distance(to: B), 0.01)
+        XCTAssertTrue(o.ballUserConfirmed)
+        XCTAssertNil(o.ballFound, "shown: nothing held back")
+        XCTAssertEqual(tr.ballLog.suffix(2).map { $0.event }, ["tapAccepted", "waiting"])
+        XCTAssertEqual(tr.ballLog.last?.source, "tap")
+    }
+
     // MARK: how a set ball ends
 
     /// A locked tracker with a ball set on the plane over the slab's middle (no ball found), and k.
@@ -404,7 +429,7 @@ final class TapSetTests: XCTestCase {
         var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(app)) as! [String: Any]
         for k in ["tapSetsBall", "tapAcceptSeconds", "tapSetMaxHeight"] { XCTAssertNotNil(json.removeValue(forKey: k), k) }
         let old = try JSONDecoder().decode(TrackerSettings.self, from: JSONSerialization.data(withJSONObject: json))
-        XCTAssertFalse(old.tapSetsBall, "an n15 recording replays its ball taps as n15 took them")
+        XCTAssertFalse(old.tapSetsBall, "a recording without the key replays its ball taps as they were taken (no tap to set)")
         var expect = app; expect.tapSetsBall = false
         XCTAssertEqual(old, expect, "nothing else changes")
         // readouts without a set ball are written as before (no new key) and older ones read back
