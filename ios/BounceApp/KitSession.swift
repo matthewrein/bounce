@@ -638,7 +638,8 @@ final class KitSession: ObservableObject {
             } ?? ""
             AppLog.info("kit", "shot \(spec.id) committed: \(r.frames) frames, \(seconds), \(video), depth \(r.depthFrames), "
                         + "motion \(r.motionSamples), check \(q.verdict.rawValue)" + tiltWords)
-            if let warning = committed.tiltCheck?.message {
+            // only the drops offer "Take the reading again", so only they are told to retake it
+            if let warning = committed.tiltCheck?.message(offersRetake: spec.requiresTruth) {
                 AppLog.warn("kit", "shot \(spec.id): " + warning)
                 notice = warning
                 tiltDisagrees = spec.requiresTruth

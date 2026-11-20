@@ -275,7 +275,10 @@ final class KitTiltedDropsTests: XCTestCase {
         let c = KitTiltCheck(appTiltDegrees: 0.3, appSigmaDegrees: 0.8, appSettled: true, appFrames: 120, truthTiltDegrees: 17.2)
         XCTAssertTrue(c.disagrees)
         XCTAssertEqual(c.differenceDegrees, 16.9, accuracy: 1e-9)
-        XCTAssertEqual(c.message, "The app reads 0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading.")
+        // a drop offers "Take the reading again", so it is told to retake the reading; any other shot is only asked
+        XCTAssertEqual(c.message(offersRetake: true),
+                       "The app reads 0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading.")
+        XCTAssertEqual(c.message(offersRetake: false), "The app reads 0.3° but the phone-on-slab reading says 17.2°: has the slab moved since its reading?")
         XCTAssertEqual(c.line(shot: "s10-drop1"), "s10-drop1: the app read 0.3°, the phone-on-slab reading 17.2° (16.9° apart)")
         // even unsettled, a sure reading that far off flags (16.9° against 2 x 2.5°)
         XCTAssertTrue(KitTiltCheck(appTiltDegrees: 0.3, appSigmaDegrees: 2.5, appSettled: false, appFrames: 40, truthTiltDegrees: 17.2).disagrees)
@@ -285,7 +288,8 @@ final class KitTiltedDropsTests: XCTestCase {
         // 1.2° against 1.0°, sigma 2.5: agrees
         let near = KitTiltCheck(appTiltDegrees: 1.2, appSigmaDegrees: 2.5, appSettled: false, appFrames: 30, truthTiltDegrees: 1.0)
         XCTAssertFalse(near.disagrees)
-        XCTAssertNil(near.message)
+        XCTAssertNil(near.message(offersRetake: true))
+        XCTAssertNil(near.message(offersRetake: false))
         XCTAssertEqual(near.differenceDegrees, 0.2, accuracy: 1e-12)
         XCTAssertFalse(try XCTUnwrap(KitTiltCheck.make(stats: frames(30, tilt: 1.2, sigma: 2.5, settled: false), truthDegrees: 1.0)).disagrees)
         // a still, unsettled single view: 4.5° off but its sigma is 3°: not raised

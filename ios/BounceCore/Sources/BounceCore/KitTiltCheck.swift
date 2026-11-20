@@ -70,12 +70,15 @@ public struct KitTiltCheck: Codable, Equatable {
                             truthTiltDegrees: t)
     }
 
-    /// What the kit says after the shot when they disagree, else nil: "The app reads 0.3° but the phone-on-slab reading
-    /// says 17.2°: has the slab moved? Retake the reading."
-    public var message: String? {
+    /// What the kit says after the shot when they disagree, else nil. Only a shot whose review offers "Take the reading
+    /// again" (`offersRetake`: the drops, `KitShotSpec.requiresTruth`) is told to retake it: "The app reads 0.3° but the
+    /// phone-on-slab reading says 17.2°: has the slab moved? Retake the reading." Any other shot is only asked: "The app
+    /// reads 10.7° but the phone-on-slab reading says 19.9°: has the slab moved since its reading?" (its screen has no
+    /// way to retake the reading, and the app's own tilt can be off on a still shot with the slab unmoved).
+    public func message(offersRetake: Bool) -> String? {
         guard disagrees else { return nil }
-        return String(format: "The app reads %.1f° but the phone-on-slab reading says %.1f°: has the slab moved? Retake the reading.",
-                      appTiltDegrees, truthTiltDegrees)
+        let ending = offersRetake ? "has the slab moved? Retake the reading." : "has the slab moved since its reading?"
+        return String(format: "The app reads %.1f° but the phone-on-slab reading says %.1f°: %@", appTiltDegrees, truthTiltDegrees, ending)
     }
 
     /// One line for summaries: "s10-drop1: the app read 0.3°, the reading 17.2° (16.9° apart)".

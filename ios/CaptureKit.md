@@ -86,10 +86,13 @@ standard deviation over the same frames. They **disagree** when they are more th
 deviations apart, so a still, unsettled single view cannot raise it (without a standard deviation only a settled tilt
 can). shot.json and the shot's line in kit.json carry `tiltCheck` { `appTiltDegrees`, `appSigmaDegrees`, `appSettled`,
 `appFrames`, `truthTiltDegrees`, `differenceDegrees`, `disagrees` } (absent in older kits, and for shots without a true
-tilt or with fewer than 3 locked frames). When it disagrees, the shot's review says, for example, "The app reads 0.3° but
-the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading."; after a drop it also offers **Take the
-reading again**, which sets the slab position up again from its flat-phone shot (`restartPosition`, as "Yes, it moved" on
-Resume: the drop just taken keeps the earlier reading and its flag; the reading comes next, then the drops not taken yet).
+tilt or with fewer than 3 locked frames). When it disagrees after a drop (`requiresTruth`), the shot's review says, for
+example, "The app reads 0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading." and offers
+**Take the reading again**, which sets the slab position up again from its flat-phone shot (`restartPosition`, as "Yes, it
+moved" on Resume: the drop just taken keeps the earlier reading and its flag; the reading comes next, then the drops not
+taken yet). After any other shot it only asks, with no button: "... says 19.9°: has the slab moved since its reading?"
+(`KitTiltCheck.message(offersRetake:)`), since the app's own tilt can be off on a still shot with the slab unmoved (kit 1,
+n10: 9.3° off on s05-tilt2-still, 5.9° on s05-tilt3-still). To retake a reading there: Quit, Resume, "Yes, it moved".
 The end screen lists such shots ("Tilt check: ..."), as do `bounce-kit check` (a note) and the score report (a note).
 
 ### Slab positions

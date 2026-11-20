@@ -21,10 +21,12 @@ slab:
   phone-on-slab reading first: the drops need the slab's tilt measured right before them.", **Start** is greyed out, and
   **Take the reading** goes back to it. **Skip** still works.
 - **A tilt check after every shot.** The app compares its own tilt during the shot with the phone-on-slab reading. If
-  they are more than 3° apart (and the app is sure of its number), the shot's check says, for example: "The app reads
-  0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading." After a drop it also offers
-  **Take the reading again** (tilt the slab again first if it was levelled). The end screen lists such shots, and
-  kit.json and shot.json record the check (`tiltCheck`) for every shot.
+  they are more than 3° apart (and the app is sure of its number), a drop's check says, for example: "The app reads
+  0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading." and offers **Take the
+  reading again** (tilt the slab again first if it was levelled). Other shots only ask "has the slab moved since its
+  reading?" with no button (the app's own tilt can be off on a still shot: in kit 1 it read 9.3° low on s05 with the
+  slab unmoved). The end screen lists such shots, and kit.json and shot.json record the check (`tiltCheck`) for every
+  shot.
 
 The kit now has 29 shots (one more reading); kits started before this build carry on with the old plan and score as
 before.
