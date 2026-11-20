@@ -2,6 +2,64 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n15 (19 November 2026): the lattice ball finder
+
+Small build on top of n14; only the ball finder changes (the slab, the tilt, the bounce and the screens are as in
+n14). Developer shows **n15**. There is still nothing to set: point the phone and hold the ball over the slab.
+
+**What changed**
+- The app now looks for your ball as it is: a dark, open titanium lattice held in your fingertips. Until n14 it looked
+  for a shiny solid ball. It wanted a bright highlight on the ball, which the dark lattice over your white play mat
+  never has; it wanted the whole outline, or a whole half of it, where your thumb and two fingers hide a third to a
+  half; and it ignored a ball found from part of its outline less than 20 cm (8 in) above the slab.
+- Now a ball also counts when it is darker than the floor around it, much darker right at its edge and finely patterned
+  inside (a printed ring or a toy ball is not); its outline can be read from the arcs between your fingers; a lattice
+  ball found from part of its outline counts from 5 cm (2 in) above the slab; and one that looks more like a flat
+  circle printed on the floor than a ball is dropped.
+
+**Checked on your real clips** (your two kits' videos replayed through the n15 code, in private, against the ball's
+place marked by hand; "of 50" is the app's own ball search, every 0.1 s, on the slab lock the phone itself had while
+recording), n14 then n15:
+- The ball held over the slab, found on the ball:
+  - first kit (wooden floor): 2 ft 49 -> 49 of 50, 1 ft 5 -> 45 of 50. At 4 in the phone never locked the slab, so
+    this one is on the scorer's own lock: n14 found it in none of its 10 searches, n15 in 16 of 18.
+  - second kit (white play mat): 2 ft 0 -> 48 of 50, 4 in 0 -> 33 of 50, 1 ft 0 -> 5 of 50 (still weak).
+- A ball reported where there is none:
+  - ball held: none, except once on the second kit's 1 ft shot, where n15 took the tip of your thumb for the ball (and
+    3 times in the scorer's replay of a drop, before the release).
+  - the slab alone (the scan, the stills and the arcs): first kit none -> none; second kit 33 -> 39 of 1,050 searches.
+    The 6 more are a black leaf printed on your mat (on the 12° arc). The other 33 are as in n14: the green toy ball,
+    the road's turn and the car-wheel prints on the mat. So on your mat n15 reports a little more that is not there,
+    not less. (In the scorer's own replay, which locks the slab a little differently: first kit 4 -> 5, the extra one
+    at the picture's edge where n14 had its 4; second kit 5 -> 12, the same leaf.)
+  - the first kit's ball on the floor at 3 ft: 9 of 50 searches took a black crate at the picture's edge, as n14 did.
+- The falling ball: the app looks for the ball about 10 times a second, not on every frame, so a 1 ft drop (about a
+  quarter of a second in the air) gives it two or three looks at the falling ball at best. To see how well the finder
+  sees a falling ball, the kit's scorer follows it on every frame of the 60 fps drop clips (its "dense track", for
+  measuring drops; the app does not do this). Fall and bounce frames found on the ball: first kit 10 -> 48 of 113 (the
+  falls alone 1 -> 23 of 52), second kit 4 -> 29 of 101 (the falls 1 -> 8 of 42). Frames where it followed something
+  else, your open hand just after the release: 23 -> 24 and 17 -> 22. With your first kit's ball resting in the dish,
+  the dense track wanders to the end of a stool's leg beside the slab on 99 of 144 frames (n14: 35); the app's own
+  search reports nothing there.
+
+**Only on test pictures**: the lattice ball as the app's test scenes and its demo now draw it (a 30 mm shell of 1.6 mm
+holes, not a picture of your ball): held in the fingers over wood and over a mat, 8 of 8 found, the drop height within
+1 cm; the mat's prints and a toy ball, nothing reported; a falling lattice ball, 8 of 15 frames (most of the last 20 cm
+before the slab not).
+
+**Only compiled**: no screen changed. GitHub's checks build the app with the new finder and run its demo in the
+Simulator, but it has not run on a phone.
+
+**Cost** (measured on a Linux computer here, on test pictures, not on a phone): a search of the space above the slab
+takes about 1.5 times as long as n14's on the tests' crops of that space, 1.2 times over bare wood, 1.5 times over the
+mat with its prints and 1.9 times with the lattice held over the mat (1.05-1.09 times on whole camera pictures);
+following a ball already found, 1.03-1.09 times. Not timed on your iPhone.
+
+**Try**: over the play mat, hold the ball about 2 ft, 1 ft and 4 in above the middle of the slab: the label should say
+**Slab locked · ball in view** and the drop height "(ball)". At 1 ft it may come and go: say how often. Then, with no
+ball, sweep the phone over the mat's prints (the leaf, the car wheels, the toy balls): if "ball in view" shows, say
+where. On the wooden floor the held ball should be found at every height.
+
 ## Build n14 (19 November 2026): screens that hold still
 
 Small build on top of n13; nothing about the slab, the ball or the bounce changes. Developer shows **n14**.
