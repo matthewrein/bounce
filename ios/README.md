@@ -16,6 +16,12 @@ re-check brings a smaller deviation, and it goes only when the lock is lost or t
 near the slab, which widens the estimate for a while, no longer takes it back to "settling". Apex, Lands and the drop point
 use the same held value.
 
+**After changing the slab's tilt, point the phone away for a moment (or step closer) so the app locks again.** A small
+change (a few degrees) can keep the lock, and then the held number stays until the app notices the slide: measured on the
+demo at 4 ft and 62 deg down, 8 to 5 deg kept showing "7.8° ±1.4" for 5.4 s (at the usual 48 deg and 0.85 m it re-locks
+within about a second). No simple check on the estimate separates that from a hand near the slab yet, so the number is
+not dropped on its own.
+
 **Replayed on your two kits** (all video shots, the app's whole per-frame path; n16 is n17's slab and settle rule):
 
 | | n16 / n17 | n18 |

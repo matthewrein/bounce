@@ -82,7 +82,7 @@ final class DemoSettleTests: XCTestCase {
     /// geometry (1920x1440 edges, 480x360 frame) the same view settles from one side of the slab and not from the other
     /// (sigma 0.73 against 1.35-1.6). n18 (the app shows the tilt from 2 deg, `RecordingSettings.appSettleDegrees`): where
     /// it shows here, it shows with its ± (the shown estimate's deviation over 1 deg) and the truth inside it.
-    func testFourFeetAt62DegreesStaysSettling() {
+    func testFourFeetAt62DegreesShowsWithItsDeviation() {
         var d = DemoScript(); d.distance = Units.feet(4); d.elevation = 62
         let r = run(d, seconds: 5)
         let sig = r.frames.compactMap { $0.locked ? $0.sigma : nil }

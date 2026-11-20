@@ -415,7 +415,7 @@ final class KitScoreRun {
                 // tilt as shown, from the settled normal, is scored apart (settled*)
                 r.tilt = Units.degrees(s.tilt(down: down))
                 r.normal = s.normal
-                if tracker.honestRefreshes != refreshes, let n = tracker.settledNormal, let C = tracker.settledCovariance { r.honest = (n, C) }
+                if tracker.honestRefreshes != refreshes, let n = tracker.honestNormal, let C = tracker.settledCovariance { r.honest = (n, C) }
                 r.corners = s.topCorners
                 let v = pf.tracker.view
                 r.inPicture = s.topCorners.contains { v.project(world: $0).map { v.intrinsics.contains($0) } ?? false }

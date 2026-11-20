@@ -740,6 +740,9 @@ public final class SlabTracker {
     /// the honest estimate's covariance across its normal (world, rad^2) while locked, and how many times it has been
     /// refreshed (for scoring it once per refresh)
     var settledCovariance: Mat3? { state == .locked ? honest.cov : nil }
+    /// the honest estimate's current normal (world) while locked, whatever the tilt shows (`settledNormal` is the held
+    /// one with `SettleSettings.holdShown`); scored with `settledCovariance`
+    var honestNormal: Vec3? { state == .locked ? honest.normal : nil }
     var honestRefreshes: Int { honest.refreshCount }
     public var viewGroupCount: Int { state == .locked ? honest.groups.count : 0 }
     /// rectangular slabs: the long side's direction (world) the evidence so far favours
