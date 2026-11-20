@@ -339,6 +339,21 @@ public struct TrackerSettings: Equatable {
     /// A slab tap lasts this long (s of normal tracking), unless the candidate being confirmed lies under the finger (then
     /// until the lock, at most `seedTimeout`).
     public var tapSlabFirstSeconds: Double = 1
+    /// Tap to set the ball (`TapSetBall`; with `tapHints`). Off (the default, so older recordings replay as the phone ran
+    /// them): a ball tap only looks there first (n15). On (the app's, `RecordingSettings.trackerSettings`): a ball the
+    /// finder finds in the tap's box within `tapAcceptSeconds`, under the finger, is accepted at once
+    /// (`TrackerOutput.ballUserConfirmed`); with none found by then, the ball is set at the tap (`TrackerOutput.setBall`:
+    /// LiDAR's range there or the upright plane through the slab's middle, the nearer of those that put it over the slab's
+    /// top at a drop height up to `tapSetMaxHeight`; nothing where neither does, or where LiDAR reads the slab's own top
+    /// under the finger: `TapSetBall.Candidates`), and its drop height is used until a tap on it clears it, another ball
+    /// tap sets or finds one, the finder finds a ball close to it on two searches in a row, or the lock is lost, moves or
+    /// is reset. A tap on a set ball clears it (`TrackerTapKind.clearSetBall`).
+    public var tapSetsBall = false
+    /// how soon after a ball tap (s) a ball found in its box is accepted at once (the finder searches every
+    /// `ballInterval`: about three searches)
+    public var tapAcceptSeconds: Double = 0.3
+    /// the highest drop height a set ball may give (m): the app's highest drop height setting, 10 ft
+    public var tapSetMaxHeight: Double = Units.feet(10)
 
     // LiDAR.
     /// the depth plane is averaged over about this long (s) in world space before it is fused
@@ -458,6 +473,9 @@ public struct Readouts: Equatable, Codable {
     /// drop height used (m), and whether it came from the ball
     public var dropHeight: Double
     public var dropFromBall: Bool
+    /// while a ball the owner set by tapping it stands (`TrackerOutput.setBall`): whether the drop came from it (then
+    /// `dropFromBall` too); nil otherwise (so readouts without one are written and compared as before)
+    public var dropFromSetBall: Bool? = nil
 }
 
 /// Count, smallest, largest and last of a value (e.g. the misfit of rejected outlines).
@@ -581,6 +599,17 @@ public struct TrackerOutput {
     /// a ball tap's search is on (`SlabTracker.ballHint`), and how many dismissed rings' spots are passed over
     public var ballHintActive: Bool = false
     public var dismissedSpots: Int = 0
+    /// Tap to set the ball (`TrackerSettings.tapSetsBall`): the ball the owner set (drawn with its own mark, not the
+    /// finder's ring: `ball` is nil while it stands, and the drop is taken from it); whether the ring shown (`ball`) is a
+    /// ball a tap accepted at once; and whether a ball tap is waiting for the finder (its first `tapAcceptSeconds`)
+    public var setBall: SetBall? = nil
+    public var ballUserConfirmed: Bool = false
+    public var ballTapPending: Bool = false
+    /// On a frame the ball finder ran on: its own result when it was not shown (`ball` is then nil): while a set ball
+    /// stands, the finder's finds are held back (`SlabTracker.followTappedBalls`). A recording keeps it, so a replay that
+    /// uses the phone's ball results gets what the finder found. (n15's ball gate, ship-d, adds the same field for what
+    /// the gate holds back: one field serves both.)
+    public var ballFound: (center: Vec3, circle: Vec2, radius: Double)? = nil
 }
 
 /// The per-frame logic shared by the app and the replay tests: search, confirm, lock the slab in world space so its
@@ -650,6 +679,11 @@ public final class SlabTracker {
     /// or not), for diagnostics
     public private(set) var tapSlabLockSeconds = RunningStats()
     public private(set) var tapBallFoundSeconds = RunningStats()
+    /// Tap to set the ball (`TrackerSettings.tapSetsBall`, `TapSetBall`): the ball the owner set (world), until it is
+    /// cleared or replaced; and what the ball taps did, latest last (at most `tapLogSize`), for diagnostics
+    public private(set) var setBall: SetBall?
+    public private(set) var tapLog: [TapLogEntry] = []
+    public static let tapLogSize = 12
     /// after a world-frame discontinuity, until the lock is seen again where it should be
     public var lockUnconfirmed: Bool { unconfirmed != nil }
     /// the last `detectionLogSize` runs of the slab detector, oldest first (for diagnostics)
@@ -756,6 +790,13 @@ public final class SlabTracker {
     /// when the slab tap that has not led to a lock yet was made, and when the ball tap
     private var slabTapTime: Double?
     private var ballTapTime: Double?
+    /// Tap to set the ball: a ball tap waiting `tapAcceptSeconds` for the finder (when, where, the places it would set the
+    /// ball at, and its line of sight (world) with the finger's slack as an angle, all from its own frame); the ball a tap
+    /// accepted at once (world centre, followed while the finder keeps finding it there); the finder's finds close to the
+    /// set ball on the latest searches in a row (world)
+    private var pendingBallTap: (time: Double, pixel: Vec2, candidates: TapSetBall.Candidates, origin: Vec3, direction: Vec3, slack: Double)?
+    private var acceptedBall: Vec3?
+    private var setSightings: [Vec3] = []
     private var sideEvidence = 0.0
     private var depthEstimate: DepthEstimate?
     private var fusing = false
@@ -1095,6 +1136,9 @@ public final class SlabTracker {
             case let .dismiss(center, r):
                 tapNote = TrackerTap(kind: .dismissBall, pixel: tp, ballCenter: center, ballRadiusPixels: r)
                 dismissBall(center, r, f, &events)
+            case let .clearSetBall(center, r):
+                tapNote = TrackerTap(kind: .clearSetBall, pixel: tp, ballCenter: center, ballRadiusPixels: r)
+                clearSetBall(t, &events)
             }
         }
         if tapResetPending {
@@ -1215,8 +1259,9 @@ public final class SlabTracker {
         out.angleSettled = angleSettled
         out.viewGroups = viewGroupCount
         out.tap = tapNote
-        // a re-lock (the slab moved, or its outline moved onto the top): the ball tap and the dismissed spots go
-        if events.contains("relocked") { clearTapBall() }
+        // a re-lock (the slab moved, or its outline moved onto the top): the ball tap and the dismissed spots go (and a set
+        // ball: the slab it was set over moved)
+        if events.contains("relocked") { clearTapBall("moved") }
         out.ballHintActive = ballHint != nil; out.dismissedSpots = dismissedSpots.count
         guard state == .locked, let s = slab else { return out }
         out.outline = project(s, f.view)
@@ -1243,6 +1288,11 @@ public final class SlabTracker {
                             if let t0 = ballTapTime { tapBallFoundSeconds.add(t - t0) }
                             ballTapTime = nil
                         }
+                        // tap to set the ball: found in the box while the tap waits, and under the finger, it is accepted at once
+                        if settings.tapSetsBall, let p = pendingBallTap, let w = ballState, TapSetBall.underFinger(w.center, origin: p.origin, direction: p.direction,
+                                                                                                                 slack: p.slack, ball: settings.ball) {
+                            acceptTappedBall(w, t, &out.events)
+                        }
                         ballHint = TapHints.recentred(h, on: f.view.toWorld(b.center), from: f.view.position)
                     }
                 }
@@ -1251,10 +1301,22 @@ public final class SlabTracker {
             let awaits = loc.awaitsConfirmation
             out.ballAwaitsConfirmation = awaits
             if ballState == nil && !awaits { emptyBallScans = emptyBallScans ?? t } else { emptyBallScans = nil }
+            // tap to set the ball: the accepted ball while the finder keeps finding it, the set ball against this find (held
+            // back while the set ball stands)
+            if settings.tapSetsBall {
+                followTappedBalls(ballState, bk, f, &out.events)
+                if setBall != nil, let b = ballState { out.ballFound = b }
+            }
         }
         // a new lock, a re-lock or a discontinuity: the ball is looked for at the usual rate again
         if events.contains(where: { $0 == "locked" || $0 == "relocked" || $0.hasPrefix("lock-unconfirmed") }) { emptyBallScans = nil }
-        out.ball = ballState
+        // tap to set the ball: a ball tap that found nothing in its first `tapAcceptSeconds` sets the ball at the tap
+        if settings.tapSetsBall { resolveBallTap(t, &out.events) }
+        // what the app shows: the finder's ring, or (instead) the ball the owner set, which the drop is then taken from
+        out.ball = shownRing
+        out.setBall = setBall
+        out.ballUserConfirmed = out.ball != nil && acceptedBall != nil
+        out.ballTapPending = pendingBallTap != nil
 
         // the bounce, in world coordinates: from the lock, or once the tilt is settled (and the settings say so) from the
         // lock's centre with the settled normal
@@ -1264,11 +1326,12 @@ public final class SlabTracker {
             shown = SlabPose(center: s.center, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
         }
         let floorBelow = f.floorY.map { s.center.y - $0 }.flatMap { $0 > 0.005 && $0 < 1.0 ? $0 : nil }
-        let res = Bounce.compute(pose: shown, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: ballState?.center,
+        let res = Bounce.compute(pose: shown, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: setBall?.center ?? out.ball?.center,
                                  defaultDropHeight: settings.defaultDropHeight, rule: settings.launchRule, floorBelowCenter: floorBelow)
         out.path = res.path; out.drop = res.drop
         out.readouts = Readouts(tiltDegrees: Units.degrees(shown.tilt(down: downW)), apexHeight: res.path.apexHeight, landingDistance: res.path.range,
                                 airTime: res.path.airTime, dropHeight: res.drop?.dropHeight ?? settings.defaultDropHeight, dropFromBall: res.drop != nil)
+        if setBall != nil { out.readouts?.dropFromSetBall = res.drop != nil }
         out.ballHintActive = ballHint != nil; out.dismissedSpots = dismissedSpots.count
         return out
     }
@@ -1773,7 +1836,7 @@ public final class SlabTracker {
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
         honest.reset()
-        clearTapBall(); endTapChallenge(); probeHits = []
+        clearTapBall("lost"); endTapChallenge(); probeHits = []
         events.append("lost"); bump("lost")
     }
 
@@ -1786,7 +1849,7 @@ public final class SlabTracker {
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"; learnedProfile = nil
         honest.reset()
-        clearTapBall(); endTapChallenge(); probeHits = []
+        clearTapBall("reset"); endTapChallenge(); probeHits = []
     }
 
     /// The processing frame changed size (ARKit re-ran with another video format; the caller also treats it as a
@@ -1832,7 +1895,7 @@ public final class SlabTracker {
         lastMeasured = nil
         seed = nil   // its world point is in the old frame
         slabTapTime = nil; endTapChallenge(); probeHits = []
-        clearTapBall()   // so are the ball tap's line and the dismissed spots
+        clearTapBall("world frame: " + reason)   // so are the ball tap's line, the dismissed spots and a set ball
         switch state {
         case .locked:
             unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
@@ -2083,6 +2146,7 @@ public final class SlabTracker {
         case slab
         case ball(BallTapHint)
         case dismiss(Vec3, Double)
+        case clearSetBall(Vec3, Double)
     }
 
     /// What a tap at pixel p of the processing frame (camera `view`) would be taken for now: with tap hints, while the
@@ -2095,6 +2159,7 @@ public final class SlabTracker {
         case .slab: return .slab
         case .ball: return .ball
         case .dismiss: return .dismissBall
+        case .clearSetBall: return .clearSetBall
         }
     }
 
@@ -2132,10 +2197,17 @@ public final class SlabTracker {
     private func tapMeaning(_ p: Vec2, _ v: CameraView) -> TapMeaning {
         guard settings.tapHints, state == .locked, let s = slab else { return .slab }
         let K = v.intrinsics, slack = TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height)
-        if let b = ballState {
+        // (the ring the app shows: none while a set ball stands, whose own mark is shown instead)
+        if let b = shownRing {
             let bc = v.toCamera(b.center)
             if let c = K.project(bc), let r = Bounce.imageRadius(ballCenter: bc, intrinsics: K, ball: settings.ball),
                c.distance(to: p) <= 1.5 * r + slack { return .dismiss(b.center, r) }
+        }
+        // a set ball under the finger (as near as a ring would be): cleared
+        if settings.tapSetsBall, let b = setBall {
+            let bc = v.toCamera(b.center)
+            if let c = K.project(bc), let r = Bounce.imageRadius(ballCenter: bc, intrinsics: K, ball: settings.ball),
+               c.distance(to: p) <= 1.5 * r + slack { return .clearSetBall(b.center, r) }
         }
         let (o, d) = v.ray(through: p)
         let range = s.center.distance(to: v.position)
@@ -2227,6 +2299,16 @@ public final class SlabTracker {
         ballHint = h; ballTapTime = f.timestamp
         bump("tapBall"); events.append("tap-ball")
         let K = f.view.intrinsics, slack = TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height)
+        // tap to set the ball: where the ball would be set if the finder finds none in time, from this frame's line of
+        // sight and LiDAR (the phone moves on meanwhile)
+        if settings.tapSetsBall, let s = slab {
+            let c = TapSetBall.candidates(tap: tp, view: f.view, depth: f.depth, depthIntrinsics: f.depthIntrinsics, slab: s, spec: settings.spec,
+                                          ball: settings.ball, rule: settings.launchRule, maxHeight: settings.tapSetMaxHeight,
+                                          depthTolerance: settings.depthMaxOffsetFraction)
+            let (o, d) = f.view.ray(through: tp)
+            pendingBallTap = (f.timestamp, tp, c, o, d, slack / f.view.intrinsics.focal)
+            logTap(TapLogEntry(time: f.timestamp, event: "tap", note: String(format: "%.0f,%.0f", tp.x, tp.y)))
+        }
         let before = dismissedSpots.count
         dismissedSpots.removeAll { spot in TapHints.avoidCircle(spot, view: f.view).map { $0.covers(tp, margin: slack) } ?? false }
         if dismissedSpots.count < before { bump("tapDismissLifted"); events.append("dismiss-lifted") }
@@ -2242,7 +2324,7 @@ public final class SlabTracker {
             let most = max(1, settings.tapDismissMax)
             if dismissedSpots.count > most { dismissedSpots.removeFirst(dismissedSpots.count - most) }
         }
-        ballState = nil; ballLocator?.reset(); ballHint = nil; ballTapTime = nil
+        ballState = nil; ballLocator?.reset(); ballHint = nil; ballTapTime = nil; acceptedBall = nil
         lastBall = -.infinity; emptyBallScans = nil
         bump("tapDismiss"); events.append("tap-dismiss")
     }
@@ -2261,9 +2343,115 @@ public final class SlabTracker {
         if dismissedSpots.count < before { bump("tapDismissExpired") }
     }
 
-    /// The ball tap's search and the dismissed spots end (the lock changed, was lost or reset, or the world frame jumped).
-    private func clearTapBall() {
+    /// The ball tap's search and the dismissed spots end (the lock changed, was lost or reset, or the world frame jumped:
+    /// `why`), and so do a set ball, a ball tap waiting for the finder and the accepted ball.
+    private func clearTapBall(_ why: String) {
         ballHint = nil; ballTapTime = nil; dismissedSpots = []
+        if setBall != nil { bump("tapSetEnded"); logTap(TapLogEntry(time: lastFrameTime, event: "ended", note: why)) }
+        setBall = nil; pendingBallTap = nil; acceptedBall = nil; setSightings = []
+    }
+
+    // MARK: tap to set the ball
+
+    /// The ring the app shows for the ball: the finder's ball, unless a set ball stands (its own mark is shown instead,
+    /// and the finder's finds elsewhere are not shown: `followTappedBalls`). (With n15's ball gate, ship-d: the gated ball,
+    /// `shownBall`, in place of `ballState`.)
+    private var shownRing: (center: Vec3, circle: Vec2, radius: Double)? { setBall == nil ? ballState : nil }
+
+    /// MERGE HOOK, "accept at once" (n15's ball gate, ship-d `BallGate`): a ball the finder finds (`b`, world) in a ball
+    /// tap's box while the tap waits (`tapAcceptSeconds`), under the finger (`TapSetBall.underFinger`: as near the tapped
+    /// line as a tap on it would be), is accepted at once: the owner said the ball is there. It is
+    /// marked (`acceptedBall`, `TrackerOutput.ballUserConfirmed`) and kept while the finder keeps finding it there
+    /// (`followTappedBalls`). Here every find is shown as the finder gives it, so marking it is all; with the gate, this
+    /// is where the gate is bypassed: while `acceptedBall` is set the finder's result is shown whatever the gate's verdict
+    /// (put the gate into its showing state on `b`, or override `shownBall = ballState`, in `process`'s ball section).
+    /// A set ball goes (replaced by the ball found), and so does the waiting tap.
+    private func acceptTappedBall(_ b: (center: Vec3, circle: Vec2, radius: Double), _ t: Double, _ events: inout [String]) {
+        guard let p = pendingBallTap else { return }
+        pendingBallTap = nil
+        acceptedBall = b.center
+        if setBall != nil {
+            setBall = nil; setSightings = []
+            bump("tapSetReplacedByTap"); logTap(TapLogEntry(time: t, event: "replaced", note: "by the ball found where the owner tapped"))
+        }
+        bump("tapBallAccepted"); events.append("tap-ball-accepted")
+        logTap(TapLogEntry(time: t, event: "accepted", center: b.center, note: String(format: "%.2f s after the tap", t - p.time)))
+    }
+
+    /// After each ball search (`found`: the finder's ball, world; `bk`: its image's intrinsics; `f`: the frame): the
+    /// accepted ball stays the owner's while the finder keeps finding it where it was (within two of its radii in the
+    /// finder's image, as `BallLocator` follows a ball); and a set ball is replaced by the finder's ball once it is found
+    /// close to it (in the image as near as a tap on it would be, and at its range within a quarter either way, as a ball
+    /// tap's search keeps to: `TapHints.recentred`) on two searches in a row, close to each other (the finder's own
+    /// evidence agreeing with the owner's). A find elsewhere is not shown while the ball the owner set stands.
+    /// (MERGE HOOK, "a confident detection close to it", ship-d: with n15's ball gate, follow the accepted ball on the
+    /// finder's own result as here, but test the set ball against the ball the gate shows, whose own agreeing finds then
+    /// make it confident.)
+    private func followTappedBalls(_ found: (center: Vec3, circle: Vec2, radius: Double)?, _ bk: CameraIntrinsics, _ f: TrackerFrame,
+                                   _ events: inout [String]) {
+        let t = f.timestamp
+        if let a = acceptedBall {
+            if let b = found, let p = bk.project(f.view.toCamera(a)), p.distance(to: b.circle) <= 2 * b.radius { acceptedBall = b.center } else { acceptedBall = nil }
+        }
+        guard let sb = setBall else { setSightings = []; return }
+        let K = f.view.intrinsics, slack = TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height)
+        let sc = f.view.toCamera(sb.center)
+        let rs = sb.center.distance(to: f.view.position)
+        guard let b = found, let ps = K.project(sc), let r = Bounce.imageRadius(ballCenter: sc, intrinsics: K, ball: settings.ball),
+              let pb = f.view.project(world: b.center), pb.distance(to: ps) <= 1.5 * r + slack,
+              rs > 0, abs(log(b.center.distance(to: f.view.position) / rs)) <= log(1.25) else {
+            if found != nil { bump("tapSetHeldOverFind") }
+            setSightings = []
+            return
+        }
+        if let last = setSightings.last, let pl = f.view.project(world: last), pl.distance(to: pb) <= r { setSightings.append(b.center) } else { setSightings = [b.center] }
+        bump("tapSetSightings")
+        guard setSightings.count >= 2 else { return }
+        setBall = nil; setSightings = []
+        bump("tapSetReplacedByFind"); events.append("tap-set-replaced")
+        logTap(TapLogEntry(time: t, event: "replaced", center: b.center, note: "by the finder's ball, found close to it twice"))
+    }
+
+    /// Every frame while locked: a ball tap whose first `tapAcceptSeconds` passed with no ball found in its box sets the
+    /// ball at the tap (`TapSetBall.Candidates.chosen`, worked out on the tap's frame: LiDAR's range or the plane's, the
+    /// nearer where both are plausible), replacing a set ball there was;
+    /// where neither LiDAR nor the plane puts a ball over the slab at a drop height, nothing is set (and a set ball there
+    /// was stays).
+    private func resolveBallTap(_ t: Double, _ events: inout [String]) {
+        guard let p = pendingBallTap, t - p.time > settings.tapAcceptSeconds else { return }
+        pendingBallTap = nil
+        guard let c = p.candidates.chosen else {
+            bump("tapBallSetNothing"); events.append("tap-ball-set-none")
+            logTap(TapLogEntry(time: t, event: "nothing", note: p.candidates.why))
+            return
+        }
+        if setBall != nil { bump("tapSetReplacedByTap"); logTap(TapLogEntry(time: t, event: "replaced", note: "by a new set ball")) }
+        setBall = SetBall(center: c.center, source: c.source, dropHeight: c.dropHeight, tapPixel: p.pixel, tapTime: p.time, time: t)
+        acceptedBall = nil; setSightings = []
+        bump("tapBallSet"); bump(c.source == .lidar ? "tapBallSetLidar" : "tapBallSetPlane"); events.append("tap-ball-set")
+        var note: String? = nil
+        if c.source == .plane {
+            if let l = p.candidates.lidar, p.candidates.lidarPlausible {
+                note = String(format: "lidar: %.0f mm beyond the plane", (l.range - c.range) * 1000)
+            } else {
+                note = "lidar: " + (p.candidates.lidarNote ?? "-")
+            }
+        }
+        logTap(TapLogEntry(time: t, event: "set", source: c.source, center: c.center, dropHeight: c.dropHeight, note: note))
+    }
+
+    /// A tap on the set ball: it goes (and so do a ball tap still waiting and the ball tap's search: the owner said there
+    /// is no ball to set there).
+    private func clearSetBall(_ t: Double, _ events: inout [String]) {
+        guard setBall != nil else { return }
+        setBall = nil; setSightings = []; pendingBallTap = nil; ballHint = nil; ballTapTime = nil
+        bump("tapSetCleared"); events.append("tap-set-cleared")
+        logTap(TapLogEntry(time: t, event: "cleared"))
+    }
+
+    private func logTap(_ e: TapLogEntry) {
+        tapLog.append(e)
+        if tapLog.count > SlabTracker.tapLogSize { tapLog.removeFirst(tapLog.count - SlabTracker.tapLogSize) }
     }
 
     /// The owner's taps for one ball scan, in the ball finder's image (intrinsics `bk`, the frame's camera): the ball

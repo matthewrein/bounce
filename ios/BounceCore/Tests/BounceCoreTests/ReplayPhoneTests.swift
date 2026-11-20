@@ -365,6 +365,35 @@ final class ReplayPhoneTests: XCTestCase {
         let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: TwoScanDisc(), options: o)
         XCTAssertTrue(recorded.report.agrees, recorded.report.description)
     }
+
+    /// Tap to set the ball (`TrackerSettings.tapSetsBall`) replays exactly: a tap where the ball will be held, before the
+    /// finder sees it, sets it there (the recording keeps the whole depth map on a tap's frame, which places it); the
+    /// finder's finds are held back while it stands (recorded as `ballFound`) until two close to it replace it. Replayed
+    /// running the ball finder, and with the phone's ball results.
+    func testATapSetBallReplaysExactly() throws {
+        var s = sim()
+        let b = try XCTUnwrap(s.ball)
+        s.ballFrom = 3.0; s.duration = 4.5
+        s.tapAt = nil; s.settingsAt = nil; s.resetAt = nil; s.discontinuityAt = nil; s.limited = nil
+        s.ballTapAt = (2.0, b)
+        XCTAssertTrue(RecordingSettings().trackerSettings.tapSetsBall, "the app sets a tapped ball")
+        let folder = tmp.appendingPathComponent("tapset.bouncerec")
+        let phone = try s.run(recordingTo: folder)
+        let events = phone.outputs.flatMap { $0.events }
+        XCTAssertTrue(events.contains("tap-ball-set"), "\(events)")
+        XCTAssertTrue(events.contains("tap-set-replaced"), "\(events)")
+        XCTAssertTrue(phone.outputs.contains { $0.readouts?.dropFromSetBall == true })
+        XCTAssertTrue(phone.outputs.contains { $0.ballFound != nil }, "held back while the set ball stood")
+        let rec = try RecordingReader(folder: folder)
+        XCTAssertTrue(rec.frames.contains { $0.output?.ballFound != nil })
+        let tapFrame = try XCTUnwrap(rec.frames.firstIndex { $0.tap != nil })
+        XCTAssertNotNil(rec.frames[tapFrame].depthFile, "the tap's frame keeps its depth")
+        let run = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: DiscBallLocator())
+        XCTAssertTrue(run.report.agrees, run.report.description)
+        var o = ReplayRunner.Options(); o.ball = .recorded; o.detections = .recorded
+        let recorded = try ReplayRunner(reader: rec).replay(detector: NullSlabDetector(), ballLocator: DiscBallLocator(), options: o)
+        XCTAssertTrue(recorded.report.agrees, recorded.report.description)
+    }
 }
 
 /// CornerCodeDetector with every corner moved half a pixel: a different detector, for the divergence report.

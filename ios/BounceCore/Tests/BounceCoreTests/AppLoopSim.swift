@@ -104,6 +104,8 @@ struct AppLoopSim {
     /// a tap on the slab at this time (before the lock: a slab tap that starts the search over there, its place from the
     /// frame's LiDAR depth, which the app reads on a slab tap's frame)
     var slabTapAt: Double? = nil
+    /// a tap on this world point at this time (where a ball is held or will be: tap to set the ball)
+    var ballTapAt: (time: Double, world: Vec3)? = nil
     var settingsAt: Double? = 3.0
     var resetAt: Double? = 3.5
     var discontinuityAt: Double? = 5.0
@@ -243,6 +245,7 @@ struct AppLoopSim {
             if crossed(tapAt) { tap = pv.project(world: world.slab.center) }
             if crossed(floorTapAt) { tap = pv.project(world: Vec3(world.slab.center.x + 0.4, 0, world.slab.center.z + 0.2)) }
             if crossed(slabTapAt) { tap = pv.project(world: world.slab.center) }
+            if let bt = ballTapAt, crossed(bt.time) { tap = pv.project(world: bt.world) }
             // the detector's answer in this frame's image (noise drawn every frame, whether or not it is converted)
             let truth = world.slab.topCorners.compactMap { pv.project(world: $0) }
             let inView = truth.count == 4 && truth.allSatisfy { pK.contains($0, margin: 2) }

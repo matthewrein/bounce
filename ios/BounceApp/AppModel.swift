@@ -94,12 +94,19 @@ struct OverlayState: Equatable {
     /// where dismissed balls are (the near ends of the tracker's dismissed spots: nothing is drawn there; the UI tests
     /// read them)
     var dismissed: [CGPoint] = []
+    /// a ball the owner set by tapping it (`TrackerOutput.setBall`): drawn with its own mark, not the ball finder's ring
+    var setBall: CGPoint? = nil
+    var setBallRadius: CGFloat = 0
+    /// the demo's held ball when it is not drawn (`DemoScript.ballHidden`): where it is, for the UI tests (nothing is
+    /// drawn there)
+    var demoBall: CGPoint? = nil
 }
 
 /// The brief mark a tap leaves on the overlay (about 0.8 s, fading): a ring where the finger was for a slab or a ball tap
-/// (the search looks there first), the dismissed ball's ring crossed out. Nothing to read: taps are optional hints.
+/// (the search looks there first), the dismissed ball's ring crossed out, the cleared set ball's mark crossed out. Nothing
+/// to read: taps are optional hints.
 struct TapMark: Equatable {
-    enum Kind: String, Equatable { case slab, ball, dismissed }
+    enum Kind: String, Equatable { case slab, ball, dismissed, cleared }
     var kind: Kind
     var center: CGPoint
     var radius: CGFloat
@@ -222,7 +229,7 @@ final class AppModel: ObservableObject {
     var demoRunning: Bool { runningDemo }
 
     /// The demo scene runs instead of the camera when turned on in Settings > Developer, or by launch arguments (UI tests):
-    /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3] [-demoSlideTo 3 -demoSlideAt 8]
+    /// -demo YES [-demoTilt 8] [-demoHeading 35] [-demoBall 0.3 [-demoBallHidden YES]] [-demoSlideTo 3 -demoSlideAt 8]
     /// [-demoElevation 72 -demoElevationTo 48 -demoElevationAt 15] (the camera held steeply, then lowered)
     nonisolated static func demoScriptRequested(_ d: UserDefaults = .standard) -> Bool { d.bool(forKey: AppSettings.keys.demo) }
 
@@ -233,6 +240,7 @@ final class AppModel: ObservableObject {
         if let x = num("demoTilt") { s.tilt = x }
         if let x = num("demoHeading") { s.heading = x }
         if let x = num("demoBall") { s.ballHeight = x }
+        if d.bool(forKey: "demoBallHidden") { s.ballHidden = true }
         if let x = num("demoSlideTo") { s.slideTo = x }
         if let x = num("demoSlideAt") { s.slideAt = x }
         if let x = num("demoElevation") { s.elevation = x }

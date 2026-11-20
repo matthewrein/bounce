@@ -21,7 +21,17 @@ import Foundation
 ///     (up to 4), one on the floor
 ///     0.3 m from the lock (toward the phone, or to a side: the first such place the tracker takes for a slab tap);
 ///     `slabOnLock`, the same times, one on the locked slab's middle; `ballOff`, the ball lane's tap one ball radius
-///     plus half the finger's slack to the right of the ball's middle.
+///     plus half the finger's slack to the right of the ball's middle;
+///   - tap to set the ball (`TrackerSettings.tapSetsBall`; on shots with a ball track, `Options.ballTrack`: the ball's
+///     circle on every frame it is seen): `setTrue`, once locked, `ballTapDelay` later (before a drop's release cue),
+///     while the lane does not show the true ball, and on a frame with LiDAR depth when the shot has any (the app reads
+///     depth on every locked frame; a kit keeps it about once a second), a tap on the ball's middle on that frame;
+///     `setOff`, the same a fingertip off it (one radius plus half the finger's slack to the right); `setTrueAny` and
+///     `setOffAny`, the same on the first frame they can, with depth or not (a kit has none on most frames: the plane's
+///     place then); `slabFarOnLock`, once
+///     locked (0.5 s on, on a depth frame when there are any), one tap on the slab's top three quarters of the way from
+///     its middle to its far edge (a slab tap out of habit, which the tracker takes for a ball tap: does it set a ball?).
+///     Each reports what came of its tap (`SetTapResult`).
 /// Per lane: when it locked, how much of the shot it stayed locked (and from the first stray tap on, against the untapped
 /// lane over the same frames), its lock's tilt at the end and how far that is from the untapped lane's (a tap must not
 /// move the lock), the ball scans (true, false, unclassified), the frames that showed a true or a false ball (and
@@ -40,8 +50,11 @@ public enum KitTapBench {
     public enum Lane: String, Codable, CaseIterable {
         case none, slab, slabLate, ball, dismiss, floorSearch, floorConfirm, floorLocked, slabOnLock, ballOff
         case floor05, floor10, floor15, floor20, floor30, floor45
+        case setTrue, setOff, slabFarOnLock, setTrueAny, setOffAny
         /// the lanes that tap the ball where the truth puts it (run only on shots with a ball truth)
         var needsBallTruth: Bool { self == .ball || self == .ballOff }
+        /// the lanes that tap the ball where its track puts it on the tap's frame (run only on shots with a ball track)
+        var needsBallTrack: Bool { [.setTrue, .setOff, .setTrueAny, .setOffAny].contains(self) }
         /// a fixed-time stray tap's time (s from the shot's first frame)
         var strayTime: Double? {
             switch self {
@@ -60,6 +73,8 @@ public enum KitTapBench {
         /// only these shots (ids, or the start of ids such as "s09")
         public var only: [String]? = nil
         public var ballTruth: [String: BallTruth] = [:]
+        /// the ball's circle (video pixels) on every frame it is seen, per shot (frames.jsonl line index -> circle)
+        public var ballTrack: [String: [Int: BallTruth]] = [:]
         public var lanes: [Lane] = Lane.allCases
         /// the late slab tap: this long after the shot's first frame, if not locked by then (s)
         public var lateSlabTap = 1.0
@@ -129,12 +144,63 @@ public enum KitTapBench {
         public var noneLockedAfterTap: Double? = nil
         public var falseAfterTap: Int? = nil
         public var noneFalseAfterTap: Int? = nil
+        /// a tap-to-set lane's tap (`setTrue`, `setOff`, `slabFarOnLock`): what came of it; and why it waited on frames it
+        /// could have tapped on ("shown": the lane showed the true ball; "noTrack": the track has no ball there; "outOfView")
+        public var setTap: SetTapResult? = nil
+        public var setSkips: [String: Int]? = nil
         enum CodingKeys: String, CodingKey {
             case lane, slabTapAt, ballTapAt, dismissAt, timeToLock, lockRate, endTilt, endNormalVsNone, endCentreVsNoneMm,
                  lockTiltMedian, lockTiltError, settledShare, shownTiltError,
                  ballScans, ballFound, ballTrue, ballFalse, ballUnclassified, timeToTrueBall, falseAfterDismiss, noneFalseAfterDismiss, counts,
-                 shownTrue, shownFalse, shownTrueBeforeCue, strayTaps, lockedAfterTap, noneLockedAfterTap, falseAfterTap, noneFalseAfterTap
+                 shownTrue, shownFalse, shownTrueBeforeCue, strayTaps, lockedAfterTap, noneLockedAfterTap, falseAfterTap, noneFalseAfterTap,
+                 setTap, setSkips
         }
+    }
+
+    /// What came of a tap-to-set lane's tap.
+    public struct SetTapResult: Codable, Equatable {
+        /// when (s from the shot's first frame), whether its frame had LiDAR depth, and what the tracker took it for
+        /// (`TrackerTapKind`)
+        public var at: Double
+        public var withDepth: Bool
+        public var kind: String
+        /// "accepted" (a ball found in its box within `tapAcceptSeconds`), "set-lidar", "set-plane", "nothing" (neither
+        /// put a ball over the slab at a drop height), "pending" (the shot ended first), or the tap's kind when it was not
+        /// a ball tap ("dismissBall": a ring shown there went, "slab")
+        public var outcome: String = "pending"
+        /// how long after the tap (s)
+        public var after: Double? = nil
+        /// the accepted ball was the true one (nil: not classified), and its drop height's error against the true one (m)
+        public var acceptedTrue: Bool? = nil
+        public var acceptedDropError: Double? = nil
+        /// the true drop height (m: the track's circle on the tap's frame, its 3-D place from its size, dropped onto the
+        /// lane's lock), the set ball's drop height and its error against it (m), and how far the set ball's centre is from
+        /// the true one (mm)
+        public var trueDrop: Double? = nil
+        public var setDrop: Double? = nil
+        public var setDropError: Double? = nil
+        public var setPositionErrorMm: Double? = nil
+        /// both places on the tap's frame, whichever was taken (`TapSetBall.candidates`): their drop height's error (m),
+        /// whether each was plausible, and why not
+        public var lidarDropError: Double? = nil
+        public var lidarPlausible: Bool? = nil
+        public var lidarNote: String? = nil
+        public var planeDropError: Double? = nil
+        public var planePlausible: Bool? = nil
+        public var planeNote: String? = nil
+        /// the place the tracker takes (`TapSetBall.Candidates.chosen`: the nearer plausible one) and the one LiDAR first
+        /// would have taken (`lidarFirst`): where each came from and its drop height's error (m)
+        public var chosenSource: String? = nil
+        public var chosenDropError: Double? = nil
+        public var lidarFirstSource: String? = nil
+        public var lidarFirstDropError: Double? = nil
+        /// a set ball later replaced by the finder's ball: whether that one was the true ball (nil: not replaced, or not
+        /// classified)
+        public var replacedBy: String? = nil
+        /// frames from the accept or set to a drop's release cue (or the shot's end), and of those the frames whose drop came
+        /// from the owner's ball (set, or the accepted one)
+        public var framesAfter = 0
+        public var framesUsed = 0
     }
 
     public struct ShotResult: Codable, Equatable {
@@ -183,6 +249,21 @@ public enum KitTapBench {
                 }
                 if let n = s.note { out.append("| \(s.shotId) | | | note | \(n) | | | | | | | | | | | |") }
             }
+            let sets = shots.flatMap { s in s.lanes.compactMap { l in l.setTap.map { (s.shotId, l.lane, $0) } } }
+            if !sets.isEmpty {
+                func mm(_ v: Double?) -> String { v.map { String(format: "%+.0f", $0 * 1000) } ?? "-" }
+                out += ["", "#### \(kitId): tap to set the ball", "",
+                        "| shot | lane | tap at (s) | depth | kind | outcome | after (s) | accepted true | true drop (mm) | set drop (mm) | error (mm) | centre off (mm) | LiDAR: error, ok | plane: error, ok | LiDAR first: source, error | replaced by | used / frames |",
+                        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+                for (id, lane, r) in sets {
+                    let lid = "\(mm(r.lidarDropError)), \(r.lidarPlausible.map { $0 ? "yes" : "no" } ?? "-")\(r.lidarNote.map { " (\($0))" } ?? "")"
+                    let pl = "\(mm(r.planeDropError)), \(r.planePlausible.map { $0 ? "yes" : "no" } ?? "-")\(r.planeNote.map { " (\($0))" } ?? "")"
+                    out.append("| \(id) | \(lane.rawValue) | \(f(r.at)) | \(r.withDepth ? "yes" : "no") | \(r.kind) | \(r.outcome) | \(f(r.after)) | "
+                               + "\(r.acceptedTrue.map { $0 ? "yes" : "no" } ?? "-") | \(r.trueDrop.map { String(format: "%.0f", $0 * 1000) } ?? "-") | "
+                               + "\(r.setDrop.map { String(format: "%.0f", $0 * 1000) } ?? "-") | \(mm(r.setDropError)) | \(r.setPositionErrorMm.map { String(format: "%.0f", $0) } ?? "-") | "
+                               + "\(lid) | \(pl) | \(r.lidarFirstSource ?? "-"), \(mm(r.lidarFirstDropError)) | \(r.replacedBy ?? "-") | \(r.framesUsed) / \(r.framesAfter) |")
+                }
+            }
             return out.joined(separator: "\n")
         }
     }
@@ -210,6 +291,10 @@ public enum KitTapBench {
         /// before its time): its tracker has had exactly the untapped lane's frames, so it stops and copies that lane's
         /// result at the end
         var dormant = false
+        /// a tap-to-set lane: its tap's frame, the true ball's centre then (world), and when its tap was accepted or set
+        var setTapFrame: Int? = nil
+        var setTrueCentre: Vec3? = nil
+        var setResolvedAt: Double? = nil
         init(_ lane: Lane, settings: TrackerSettings, options: Options) {
             self.lane = lane
             locator = options.makeBallLocator()
@@ -248,8 +333,11 @@ public enum KitTapBench {
         defer { source.close() }
         let pipeline = KitFramePipeline(videoWidth: source.width, videoHeight: source.height, cameraFormat: m.cameraFormat)
         let settings = options.settings
+        let track = options.ballTrack[sh.spec.id] ?? [:]
+        let hasDepth = sh.frames.contains { $0.depthURL(shotFolder: sh.folder) != nil }
         let lanes = options.lanes.compactMap { l -> LaneRun? in
             if l.needsBallTruth && options.ballTruth[sh.spec.id] == nil { return nil }
+            if l.needsBallTrack && track.isEmpty { return nil }
             return LaneRun(l, settings: settings, options: options)
         }
         let t0 = sh.frames[0].time
@@ -269,6 +357,21 @@ public enum KitTapBench {
             guard let tb = trueBall, let p = video.project(world: tb), let q = video.project(world: w),
                   let r = Bounce.imageRadius(ballCenter: video.toCamera(tb), intrinsics: video.intrinsics, ball: settings.ball) else { return nil }
             return q.distance(to: p) <= max(1.5 * r, r + 6)
+        }
+        /// the ball's track on frame i (the nearest frame within two that has it)
+        func trackAt(_ i: Int) -> BallTruth? {
+            for d in [0, -1, 1, -2, 2] { if let b = track[i + d] { return b } }
+            return nil
+        }
+        /// the tracked ball's centre (world) on frame i, from its circle's place and size (video camera)
+        func trackCentre(_ i: Int, _ video: CameraView) -> Vec3? {
+            guard let b = trackAt(i), let c = Bounce.ballCenter(pixel: Vec2(b.x, b.y), radiusPixels: b.r, intrinsics: video.intrinsics, ball: settings.ball) else { return nil }
+            return video.toWorld(c)
+        }
+        /// a ball (world centre) against the track on frame i: true, false, or nil (no track there)
+        func classifyTrack(_ w: Vec3, _ video: CameraView, _ i: Int) -> Bool? {
+            guard let b = trackAt(i), let q = video.project(world: w) else { return nil }
+            return q.distance(to: Vec2(b.x, b.y)) <= max(1.5 * b.r, b.r + 6)
         }
         var lumaSum = 0.0
         for (i, f) in sh.frames.enumerated() {
@@ -297,9 +400,36 @@ public enum KitTapBench {
                 }
                 return nil
             }
+            let depth: () -> (DepthMap, CameraIntrinsics)? = {
+                guard let u = f.depthURL(shotFolder: sh.folder), let d = try? Data(contentsOf: u), let k = try? KitDepth(data: d),
+                      let vk = f.cameraIntrinsics(videoWidth: pipeline.videoWidth, videoHeight: pipeline.videoHeight) else { return nil }
+                return KitFramePipeline.depth(k, video: vk)
+            }
+            let frameHasDepth = f.depthURL(shotFolder: sh.folder) != nil
             for l in lanes where !l.dormant {
                 var tap: Vec2? = nil
                 let locked = l.last?.state == .locked
+                /// a tap-to-set lane's tap at q on this frame: its kind, and both places for it against the true ball (`tc`)
+                func startSetTap(_ q: Vec2, trueCentre tc: Vec3?) {
+                    tap = q; l.ballTapped = true; l.setTapFrame = i; l.setTrueCentre = tc
+                    var r = SetTapResult(at: t - t0, withDepth: frameHasDepth, kind: l.tracker.tapKind(q, view: vs.processing).rawValue)
+                    if let s = l.tracker.slab {
+                        let d = depth()
+                        let c = TapSetBall.candidates(tap: q, view: vs.processing, depth: d?.0, depthIntrinsics: d?.1, slab: s, spec: settings.spec,
+                                                      ball: settings.ball, rule: settings.launchRule, maxHeight: settings.tapSetMaxHeight,
+                                                      depthTolerance: settings.depthMaxOffsetFraction)
+                        let truth = tc.flatMap { TapSetBall.dropHeight(center: $0, slab: s, spec: settings.spec, ball: settings.ball,
+                                                                      down: ARKitConvention.worldDown, rule: settings.launchRule) }
+                        r.trueDrop = truth
+                        if let x = c.lidar { r.lidarPlausible = c.lidarPlausible; if let h = truth, x.dropHeight.isFinite { r.lidarDropError = x.dropHeight - h } }
+                        if let x = c.plane { r.planePlausible = c.planePlausible; if let h = truth, x.dropHeight.isFinite { r.planeDropError = x.dropHeight - h } }
+                        r.lidarNote = c.slabUnderFinger ? "the slab's top under the finger" : c.lidarNote; r.planeNote = c.planeNote
+                        r.chosenSource = c.chosen?.source.rawValue; r.lidarFirstSource = c.lidarFirst?.source.rawValue
+                        if let h = truth { r.chosenDropError = c.chosen.map { $0.dropHeight - h }; r.lidarFirstDropError = c.lidarFirst.map { $0.dropHeight - h } }
+                    }
+                    l.result.setTap = r
+                    l.result.ballTapAt = t - t0
+                }
                 // a frame the lane's schedule does not search on, far enough from its last run that a tap could have run one
                 let offSchedule = !l.tracker.detectionDue(at: t) && t - l.lastRun >= settings.minDetectionGap
                 /// "t:kind", and "/off" for a tap between the scheduled searches
@@ -369,6 +499,39 @@ public enum KitTapBench {
                             l.result.strayTaps.append(strayNote(q))
                         }
                     }
+                case .setTrue, .setOff, .setTrueAny, .setOffAny:
+                    // (only while the app does not show the true ball; on a frame with depth when the shot has any, but for
+                    // the "Any" lanes)
+                    let any = l.lane == .setTrueAny || l.lane == .setOffAny
+                    if !l.ballTapped, locked, let lt = l.lockTime, t - lt >= options.ballTapDelay, cue.map({ t < $0 - 0.3 }) ?? true,
+                       any || frameHasDepth || !hasDepth {
+                        func skip(_ why: String) { l.result.setSkips = (l.result.setSkips ?? [:]).merging([why: 1], uniquingKeysWith: +) }
+                        let K = vs.processing.intrinsics
+                        if l.last?.ball.flatMap({ classifyTrack($0.center, vs.video, i) }) == true {
+                            skip("shown")
+                        } else if let tc = trackCentre(i, vs.video) {
+                            if let p = vs.processing.project(world: tc),
+                               let r = Bounce.imageRadius(ballCenter: vs.processing.toCamera(tc), intrinsics: K, ball: settings.ball) {
+                                let off = l.lane == .setOff || l.lane == .setOffAny
+                                let q = off ? p + Vec2(r + 0.5 * TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height), 0) : p
+                                if K.contains(q, margin: 2) { startSetTap(q, trueCentre: tc) } else { skip("outOfView") }
+                            } else { skip("outOfView") }
+                        } else {
+                            skip("noTrack")
+                        }
+                    }
+                case .slabFarOnLock:
+                    // a tap on the slab's top, three quarters of the way to its far edge (away from the phone)
+                    if !l.ballTapped, locked, let lt = l.lockTime, t - lt >= 0.5, frameHasDepth || !hasDepth, let s = l.last?.slab {
+                        let away = (s.center - vs.processing.position).rejecting(s.normal)
+                        if away.length > 1e-6 {
+                            let w = s.center + away.normalized * (0.75 * min(s.halfU, s.halfV))
+                            if let q = vs.processing.project(world: w), vs.processing.intrinsics.contains(q, margin: 4) {
+                                startSetTap(q, trueCentre: nil)
+                                l.result.strayTaps.append(strayNote(q))
+                            }
+                        }
+                    }
                 case .ballOff:
                     // the ball lane's tap, a fingertip off the ball's middle
                     let shown = l.last?.ball.flatMap { classify($0.center, vs.video, t) } == true
@@ -384,14 +547,44 @@ public enum KitTapBench {
                     }
                 }
                 if l.dormant { continue }
-                let depth: () -> (DepthMap, CameraIntrinsics)? = {
-                    guard let u = f.depthURL(shotFolder: sh.folder), let d = try? Data(contentsOf: u), let k = try? KitDepth(data: d),
-                          let vk = f.cameraIntrinsics(videoWidth: pipeline.videoWidth, videoHeight: pipeline.videoHeight) else { return nil }
-                    return KitFramePipeline.depth(k, video: vk)
-                }
                 guard let pf = pipeline.frame(image: img, kitFrame: f, tracker: l.tracker, depth: depth, tap: tap) else { continue }
                 let out = l.tracker.process(pf.tracker)
                 l.last = out
+                // a tap-to-set lane: what came of its tap
+                if var r = l.result.setTap, let ti = l.setTapFrame {
+                    let since = t - (t0 + r.at)
+                    if i == ti, let k = out.tap?.kind, k != .ball { r.outcome = k.rawValue; r.after = 0 }
+                    if out.events.contains("tap-ball-accepted") {
+                        r.outcome = "accepted"; r.after = since; l.setResolvedAt = t
+                        r.acceptedTrue = out.ball.flatMap { classifyTrack($0.center, pf.video, i) }
+                        if let b = out.ball, let s = out.slab, let tc = l.setTrueCentre,
+                           let h = TapSetBall.dropHeight(center: tc, slab: s, spec: settings.spec, ball: settings.ball, down: ARKitConvention.worldDown, rule: settings.launchRule),
+                           let a = TapSetBall.dropHeight(center: b.center, slab: s, spec: settings.spec, ball: settings.ball, down: ARKitConvention.worldDown, rule: settings.launchRule) {
+                            r.acceptedDropError = a - h
+                        }
+                    }
+                    if out.events.contains("tap-ball-set"), let b = l.tracker.setBall, let s = out.slab {
+                        r.outcome = "set-" + b.source.rawValue; r.after = since; l.setResolvedAt = t
+                        r.setDrop = TapSetBall.dropHeight(center: b.center, slab: s, spec: settings.spec, ball: settings.ball,
+                                                          down: ARKitConvention.worldDown, rule: settings.launchRule)
+                        if let tc = l.setTrueCentre {
+                            r.setPositionErrorMm = b.center.distance(to: tc) * 1000
+                            if let h = TapSetBall.dropHeight(center: tc, slab: s, spec: settings.spec, ball: settings.ball, down: ARKitConvention.worldDown,
+                                                             rule: settings.launchRule), let d = r.setDrop {
+                                r.setDropError = d - h
+                            }
+                        }
+                    }
+                    if out.events.contains("tap-ball-set-none") { r.outcome = "nothing"; r.after = since }
+                    if out.events.contains("tap-set-replaced"), let b = out.ball {
+                        r.replacedBy = classifyTrack(b.center, pf.video, i).map { $0 ? "true ball" : "false ball" } ?? "unclassified"
+                    }
+                    if let from = l.setResolvedAt, t >= from, cue.map({ t < $0 }) ?? true {
+                        r.framesAfter += 1
+                        if out.readouts?.dropFromBall == true && (out.setBall != nil || out.ballUserConfirmed) { r.framesUsed += 1 }
+                    }
+                    l.result.setTap = r
+                }
                 if out.detectionKind != nil { l.lastRun = t }
                 if options.traceEvents, !out.events.isEmpty || tap != nil {
                     options.log?(String(format: "trace %@ %@ t=%.2f %@ seed=%@ ", sh.spec.id, l.lane.rawValue, t - t0, "\(out.state)",

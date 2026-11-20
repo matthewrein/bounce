@@ -151,7 +151,8 @@ public struct ReplayRunner {
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
             ball.prepare(recorded: nil)
             let phoneRan = f.output?.ballSearched == true
-            let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = f.output?.ball.flatMap { b in
+            // the finder's own result on the phone: what was held back (a set ball stood), else what was shown
+            let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = (f.output?.ballFound ?? f.output?.ball).flatMap { b in
                 b.count == 6 ? (f.view.toCamera(Vec3(b[0], b[1], b[2])), Vec2(b[3], b[4]), b[5]) : nil
             }
             let useRecordedBall = options.ball == .recorded || ball.inner == nil

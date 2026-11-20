@@ -732,13 +732,14 @@ final class ARController: NSObject, ARSessionDelegate {
             switch tk.kind {
             case .slab: if let p = tapView { tapMark = (kind: TapMark.Kind.slab, center: p, radius: CGFloat(22), at: t) }
             case .ball: if let p = tapView { tapMark = (kind: TapMark.Kind.ball, center: p, radius: CGFloat(16), at: t) }
-            case .dismissBall:
+            case .dismissBall, .clearSetBall:
+                // the dismissed ring, or the cleared set ball's mark, crossed out where it was
                 if let c = tk.ballCenter, let p = toView(c, full, vp) {
                     var r: CGFloat = 12
                     if let e = toView(c + full.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * tracker.settings.ball.radius, full, vp) {
                         r = max(8, CGFloat(hypot(e.x - p.x, e.y - p.y)))
                     }
-                    tapMark = (kind: TapMark.Kind.dismissed, center: p, radius: r, at: t)
+                    tapMark = (kind: tk.kind == .clearSetBall ? TapMark.Kind.cleared : TapMark.Kind.dismissed, center: p, radius: r, at: t)
                 }
             }
         }
@@ -776,7 +777,10 @@ final class ARController: NSObject, ARSessionDelegate {
         }
 
         // overlay, projected for the view, the readouts and the developer line
-        let ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
+        var ov = overlay(out, view: full, processing: pview.intrinsics.width, pview.intrinsics.height, viewport: vp)
+        // the demo's held ball when it is not drawn: where it is, for the UI tests (a ball the finder cannot see, to set by
+        // tapping it)
+        if isDemo, let d = demoScript, d.ballHidden, let b = d.heldBall(at: t, spec: AppSettings.slab) { ov.demoBall = toView(b, full, vp) }
         let hud = makeHUD(out)
         // the frame numbers for the developer line, once a second (camera clock; again at once if the clock went back)
         if t - framesLineTime >= 1 || t < framesLineTime {
@@ -959,6 +963,14 @@ final class ARController: NSObject, ARSessionDelegate {
                 o.ballRadius = CGFloat(hypot(edge.x - c.x, edge.y - c.y))
             }
         }
+        // a ball the owner set by tapping it: its own mark (the tracker shows no ring meanwhile)
+        if let b = out.setBall {
+            o.setBall = toView(b.center, view, vp)
+            let r = tracker.settings.ball.radius
+            if let c = o.setBall, let edge = toView(b.center + view.worldFromCamera.applyDirection(Vec3(1, 0, 0)) * r, view, vp) {
+                o.setBallRadius = CGFloat(hypot(edge.x - c.x, edge.y - c.y))
+            }
+        }
         return o
     }
 
@@ -972,7 +984,7 @@ final class ARController: NSObject, ARSessionDelegate {
             if out.lockUnconfirmed {
                 h.status = "Checking"
             } else {
-                h.status = out.ball != nil ? "Slab locked · ball in view" : "Slab locked"
+                h.status = out.ball != nil ? "Slab locked · ball in view" : out.setBall != nil ? "Slab locked · ball set" : "Slab locked"
                 // the tilt is not shown until its honest uncertainty is small enough (TrackerOutput.angleSettled)
                 if !out.angleSettled { h.status += " · settling" }
             }
@@ -984,7 +996,7 @@ final class ARController: NSObject, ARSessionDelegate {
             h.apex = Format.length(r.apexHeight)
             h.landing = h.settling ? HUDState.settlingText : Format.length(r.landingDistance)
             h.air = String(format: "%.2f s", r.airTime)
-            h.drop = Format.length(r.dropHeight) + (r.dropFromBall ? " (ball)" : "")
+            h.drop = Format.length(r.dropHeight) + (r.dropFromSetBall == true ? " (set)" : r.dropFromBall ? " (ball)" : "")
         }
         h.demo = isDemo
         return h

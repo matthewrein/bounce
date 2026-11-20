@@ -199,6 +199,32 @@ private struct LiveScene: View {
                     .accessibilityIdentifier("dismissedSpotAt")
                     .position(p)
             }
+            // a ball the owner set by tapping it (its mark is drawn by the overlay), and the demo's held ball when it is
+            // not drawn (a ball the finder cannot see, which the UI tests tap to set)
+            if let b = live.overlay.setBall {
+                let r = max(live.overlay.setBallRadius, 6)
+                Color.white.opacity(0.001)
+                    .frame(width: 2 * r, height: 2 * r)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel("Set ball")
+                    .accessibilityIdentifier("setBall")
+                    .position(b)
+                Text(String(format: "%.0f,%.0f", Double(b.x), Double(b.y)))
+                    .font(.system(size: 2))
+                    .opacity(0.02)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("setBallAt")
+                    .position(b)
+            }
+            if let p = live.overlay.demoBall {
+                Text(String(format: "%.0f,%.0f", Double(p.x), Double(p.y)))
+                    .font(.system(size: 2))
+                    .opacity(0.02)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("demoBallAt")
+                    .position(p)
+            }
             if let m = live.overlay.tapMark {
                 Color.white.opacity(0.001)
                     .frame(width: 2 * m.radius, height: 2 * m.radius)

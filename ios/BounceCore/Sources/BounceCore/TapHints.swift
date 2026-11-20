@@ -14,6 +14,8 @@ public enum TrackerTapKind: String, Codable {
     case ball
     /// the ball ring under the finger is wrong: drop it and pass over that spot
     case dismissBall
+    /// the ball the owner set by tapping (`TrackerSettings.tapSetsBall`) is under the finger: clear it
+    case clearSetBall
 }
 
 /// A tap this frame and what it was taken for (`TrackerOutput.tap`), for the app's brief feedback.
@@ -21,7 +23,8 @@ public struct TrackerTap: Equatable {
     public var kind: TrackerTapKind
     /// the tapped point (pixels of the processing frame)
     public var pixel: Vec2
-    /// a dismissed ring: the ball's centre as it was shown (world), and its radius in the processing frame (pixels)
+    /// a dismissed ring (or a cleared set ball): the ball's centre as it was shown (world), and its radius in the processing
+    /// frame (pixels)
     public var ballCenter: Vec3?
     public var ballRadiusPixels: Double?
     public init(kind: TrackerTapKind, pixel: Vec2, ballCenter: Vec3? = nil, ballRadiusPixels: Double? = nil) {

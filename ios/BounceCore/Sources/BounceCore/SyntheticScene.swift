@@ -316,6 +316,9 @@ public struct DemoScript: Equatable {
     public var heading: Double = 35
     /// height of a held ball's centre above the slab's top centre (m); 0 for no ball
     public var ballHeight: Double = 0
+    /// the held ball is there (`heldBall(at:)`) but not drawn: a ball the ball finder cannot see, for tapping it to set it
+    /// (`TrackerSettings.tapSetsBall`; the UI tests)
+    public var ballHidden = false
     /// slide the slab to this tilt at `slideAt` seconds (nil: never)
     public var slideTo: Double? = nil
     public var slideAt: Double = 8
@@ -345,8 +348,16 @@ public struct DemoScript: Equatable {
         var s = SyntheticScene(spec: spec, slab: pose)
         s.supersample = 1
         s.ballRadius = ball.radius
-        if ballHeight > 0 { s.ball = pose.center + Vec3(0.012, ballHeight, -0.01) }
+        if !ballHidden { s.ball = heldBall(at: t, spec: spec) }
         return s
+    }
+
+    /// Where the held ball's centre is at time t (world; nil: no ball), drawn or not (`ballHidden`).
+    public func heldBall(at t: Double, spec: SlabSpec = .standard) -> Vec3? {
+        guard ballHeight > 0 else { return nil }
+        let tilt = tiltAt(t), shift = Units.inches(0.27 * tilt), hd = Units.radians(heading)
+        let pose = SyntheticScene.slabPose(x: -shift * cos(hd), z: -shift * sin(hd), tilt: tilt, heading: heading, spec: spec)
+        return pose.center + Vec3(0.012, ballHeight, -0.01)
     }
 
     /// the camera's mean elevation at time t (degrees)

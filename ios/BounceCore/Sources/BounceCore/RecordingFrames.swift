@@ -101,6 +101,9 @@ public struct RecordedOutput: Codable, Equatable {
     public var ballAwaitsConfirmation: Bool?
     /// the ball: world centre x, y, z (m), then its circle's x, y and radius in the ball finder's image (pixels)
     public var ball: [Double]?
+    /// the ball finder's own result on this frame when it was not shown (`ball` is then nil; same layout): held back while
+    /// a ball the owner set by tapping it stood (`TrackerOutput.ballFound`). nil: nothing held back, or an older recording.
+    public var ballFound: [Double]?
     public var depthFused: Bool?
     public var lockUnconfirmed: Bool?
     /// where the slab's full-resolution crop was cut on this frame (`TrackerOutput.slabDetail`), and the outlines of a
@@ -125,6 +128,7 @@ public struct RecordedOutput: Codable, Equatable {
         ballSearched = o.ballSearched ? true : nil
         ballAwaitsConfirmation = o.ballAwaitsConfirmation ? true : nil
         ball = o.ball.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
+        ballFound = o.ballFound.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
         depthFused = o.depthFused ? true : nil
         lockUnconfirmed = o.lockUnconfirmed ? true : nil
         slabCrop = o.slabDetail?.crop
@@ -253,9 +257,9 @@ public struct FrameRecord {
 ///     tracker's result (a replay runs the tracker on the same frames at the same times, and compares);
 ///   - the image on every frame the detector ran on (it ran on that image), on taps and controls, and otherwise every
 ///     `imageInterval` seconds (to look at, and for replays with other settings);
-///   - LiDAR depth: the whole map with an image or a detection (a re-lock checks other poses), else only the part
-///     under the lock's top, which is all the tracker read (a few kB instead of 250 kB, so it can be kept on every
-///     frame at the camera's rate);
+///   - LiDAR depth: the whole map with an image, a detection (a re-lock checks other poses) or a tap (a ball tap reads
+///     LiDAR under the finger, `TapSetBall`), else only the part under the lock's top, which is all the tracker read (a
+///     few kB instead of 250 kB, so it can be kept on every frame at the camera's rate);
 ///   - for the ball finder, on every frame it ran on, what `ballPixels` says (its crop's place and intrinsics always);
 ///   - the slab's full-resolution crop on every frame the detector used one (`TrackerOutput.slabDetail`).
 /// Use: before processing a frame, convert its image if the tracker needs it (`detectionDue`, a tap) or
@@ -302,7 +306,7 @@ public struct RecordingCadence {
         if keepImage { lastImageTime = t }
         var depth: DepthMap? = nil
         if let d = tf.depth, let dk = tf.depthIntrinsics {
-            if keepImage || output.detections != nil {
+            if keepImage || output.detections != nil || tf.tap != nil {
                 depth = d
             } else if tracker.state == .locked, let s = tracker.imageSlab,
                       let part = PlaneFit.depthRegion(depth: d, depthIntrinsics: dk, view: tf.view, slab: s) {

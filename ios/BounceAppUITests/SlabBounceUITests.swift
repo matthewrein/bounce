@@ -974,4 +974,47 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(c["tapBall"] ?? 0, 1)
         XCTAssertEqual(c["tapDismissLifted"] ?? 0, 1)
     }
+
+    /// Tap to set the ball: the demo's held ball where the ball finder cannot see it (not drawn: "demoBallHidden"; where
+    /// it is comes from an invisible marker, "demoBall"). A tap there finds no ball in its box, so the ball is set at the
+    /// tap (the demo has no LiDAR: where the tapped line meets the upright plane through the slab's middle): its own mark
+    /// shows ("setBall", not the finder's ring "ballRing"), the status says so and the drop readout says it comes from the
+    /// set ball, matching the scene's truth. A tap on the mark clears it: the drop is the setting's again. The diagnostics
+    /// count both.
+    func testTapTheBallToSetItAndTapAgainToClearIt() throws {
+        var d = DemoScript(); d.ballHeight = 0.30
+        let app = launch(["demoBall": "0.30", "demoBallHidden": "YES"])
+        XCTAssertNotNil(waitUntil(40) { label(app, "status").contains("Slab locked") }, "never locked; status \(label(app, "status"))")
+        let dropBefore = label(app, "drop")
+        var ballAt: CGPoint? = nil
+        _ = waitUntil(5) { ballAt = markerPoint(app, "demoBall"); return ballAt != nil }
+        guard let at = ballAt else { XCTFail("no demo ball marker"); return }
+        XCTAssertFalse(element(app, "ballRing").exists, "the finder showed a ring for a ball that is not drawn")
+        tapAt(app, at)
+        let set = waitUntil(5) { label(app, "drop").contains("(set)") }
+        screenshot(app, "set")
+        let status = label(app, "status"), drop = label(app, "drop")
+        let tr = truth(d, at: 3)
+        XCTAssertNotNil(set, "the tap never set the ball; status \(status), drop \(drop)")
+        XCTAssertTrue(status.contains("ball set"), "status \(status)")
+        XCTAssertTrue(element(app, "setBall").exists || markerPoint(app, "setBall") != nil, "no set ball marker")
+        XCTAssertFalse(element(app, "ballRing").exists, "a set ball is not drawn as the finder's ring")
+        XCTAssertEqual(number(drop) ?? -99, tr.dropInches ?? 0, accuracy: 1.5, "the set ball's drop \(drop) against the truth")
+        // a tap on its mark clears it
+        var markAt: CGPoint? = nil
+        _ = waitUntil(3) { markAt = markerPoint(app, "setBall"); return markAt != nil }
+        guard let m = markAt else { XCTFail("no set ball marker to tap"); return }
+        tapAt(app, m)
+        let cleared = waitUntil(5) { !label(app, "drop").contains("(set)") && !label(app, "status").contains("ball set") }
+        screenshot(app, "cleared")
+        let c = try counts(app)
+        summary("tap to set: set after \(String(format: "%.1f", set ?? -1)) s, drop \(drop) (truth \(String(format: "%.1f", tr.dropInches ?? -1)) in, "
+                + "before \(dropBefore)), cleared after \(String(format: "%.1f", cleared ?? -1)) s (drop \(label(app, "drop"))), "
+                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        XCTAssertNotNil(cleared, "the set ball stayed after a tap on it; status \(label(app, "status")), drop \(label(app, "drop"))")
+        XCTAssertEqual(c["tapBallSet"] ?? 0, 1)
+        XCTAssertEqual(c["tapBallSetPlane"] ?? 0, 1, "the demo has no LiDAR: set on the plane")
+        XCTAssertEqual(c["tapSetCleared"] ?? 0, 1)
+        XCTAssertEqual(c["tapBallAccepted"] ?? 0, 0, "no ball to find")
+    }
 }

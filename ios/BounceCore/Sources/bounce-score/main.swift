@@ -5,7 +5,7 @@
 //   bounce-score --synthetic [--frames N] [--markdown] [--json out.json]
 //   bounce-score --drops [--drops-only ID,ID] [--drop-slab INCHES] [--drops-json out.json] [--drops-floor] [--truth-ball]
 //                [--markdown]
-//   bounce-score --taps <kit folder or a folder of kits> ... [--taps-truth FILE] [--taps-only ID,ID] [--taps-lanes L,L]
+//   bounce-score --taps <kit folder or a folder of kits> ... [--taps-truth FILE] [--taps-track FILE] [--taps-only ID,ID] [--taps-lanes L,L]
 //                [--taps-json out.json] [--taps-trace]
 //
 // Kits are private: it prints kit ids, shot ids and numbers, never paths or anything from the pictures.
@@ -43,8 +43,11 @@ options:
   --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)
   --taps                 instead of scoring: run the kits' shots with simulated taps (KitTapBench: none, slab, slabLate,
                          ball, dismiss, and stray taps floorSearch, floorConfirm, floor05..floor45 (at 0.5 to 4.5 s),
-                         floorLocked, slabOnLock, ballOff) and print what each changed (Markdown)
+                         floorLocked, slabOnLock, ballOff; tap to set the ball: setTrue, setOff, setTrueAny, setOffAny,
+                         slabFarOnLock) and print what each changed (Markdown)
   --taps-truth FILE      the balls' true places: {"<kit id>": {"<shot id>": {"frame": N, "x": X, "y": Y, "r": R}}} (video px)
+  --taps-track FILE      the balls' circles on every frame they are seen (the setTrue, setOff, ...Any lanes):
+                         {"<kit id>": {"<shot id>": {"<frame>": [X, Y, R]}}} (video px; frame: frames.jsonl line index)
   --taps-only IDS        only these shots (comma-separated ids, or prefixes such as s09)
   --taps-lanes LANES     only these lanes (comma-separated)
   --taps-json FILE       write the taps' reports as JSON (rewritten after every shot, so a stopped run keeps its shots)
@@ -66,7 +69,7 @@ var jsonOut: String? = nil, compareWith: String? = nil, scorerLabel: String? = n
 var markdown = false, failOnRegression = false, measured = false, synthetic = false, truthBall = false, quiet = false
 var drops = false, dropsOnly: [String]? = nil, dropSlab: Double? = nil, dropShrink = 1, dropsJson: String? = nil, dropsFloor = false
 var frames = 12
-var taps = false, tapsTruth: String? = nil, tapsOnly: [String]? = nil, tapsLanes: [KitTapBench.Lane]? = nil, tapsJson: String? = nil
+var taps = false, tapsTruth: String? = nil, tapsTrack: String? = nil, tapsOnly: [String]? = nil, tapsLanes: [KitTapBench.Lane]? = nil, tapsJson: String? = nil
 var tapsTrace = false
 var maxTiltError: Double? = nil
 var positions: [String: String] = [:]
@@ -100,6 +103,7 @@ while !args.isEmpty {
     case "--scorer": scorerLabel = value(a)
     case "--taps": taps = true
     case "--taps-truth": tapsTruth = value(a); taps = true
+    case "--taps-track": tapsTrack = value(a); taps = true
     case "--taps-only": tapsOnly = value(a).split(separator: ",").map { String($0) }; taps = true
     case "--taps-lanes":
         let ls = value(a).split(separator: ",").map { KitTapBench.Lane(rawValue: String($0)) }
@@ -144,6 +148,18 @@ if taps {
               let x = try? JSONDecoder().decode([String: [String: KitTapBench.BallTruth]].self, from: d) else { fail("the --taps-truth file is not a truth file") }
         truth = x
     }
+    var track: [String: [String: [Int: KitTapBench.BallTruth]]] = [:]
+    if let t = tapsTrack {
+        guard let d = try? Data(contentsOf: URL(fileURLWithPath: t)),
+              let x = try? JSONDecoder().decode([String: [String: [String: [Double]]]].self, from: d) else { fail("the --taps-track file is not a track file") }
+        for (kit, shots) in x {
+            for (shot, frames) in shots {
+                var m: [Int: KitTapBench.BallTruth] = [:]
+                for (k, v) in frames { if let i = Int(k), v.count >= 3 { m[i] = KitTapBench.BallTruth(frame: i, x: v[0], y: v[1], r: v[2]) } }
+                track[kit, default: [:]][shot] = m
+            }
+        }
+    }
     var all: [KitTapBench.Report] = []
     func writeTaps(_ reports: [KitTapBench.Report]) {
         guard let j = tapsJson else { return }
@@ -161,6 +177,7 @@ if taps {
             o.onShot = { kitId, shot in partial.append(shot); writeTaps(all + [KitTapBench.Report(kitId: kitId, shots: partial)]) }
             let id = (try? Data(contentsOf: k.appendingPathComponent(KitStore.manifestFile))).flatMap { try? KitJSON.decode(KitManifest.self, from: $0) }?.kitId
             o.ballTruth = id.flatMap { truth[$0] } ?? [:]
+            o.ballTrack = id.flatMap { track[$0] } ?? [:]
             do {
                 let r = try KitTapBench.run(kitFolder: k, options: o)
                 all.append(r)
