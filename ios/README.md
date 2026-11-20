@@ -2,13 +2,13 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
-## Build n14 (20 November 2026): tap hints
+## Build n15 (20 November 2026): tap hints
 
-Small build on top of n13; everything below still holds. Developer shows **n14**.
+Small build on top of n14; everything below still holds. Developer shows **n15**.
 
 **What changed**
 - You can tap the screen to help the app, and you never need to: nothing asks for a tap, the main screen still has no
-  instructions, and without a tap the app runs as n13 did. What a tap does depends on what is under your finger:
+  instructions, and without a tap the app runs as n14 did. What a tap does depends on what is under your finger:
   - **The slab**, before it is locked: the app's next searches look there first, for about a second. A white ring
     spreads from your finger for a moment.
   - **The ball**, held over the locked slab with no ring on it: the ball finder looks there first for 2 seconds, and
@@ -21,23 +21,23 @@ Small build on top of n13; everything below still holds. Developer shows **n14**
   n11: when the phone has been held still and the search has found nothing for a second, the search slows down, and
   any tap brings it back to its usual pace.) Once locked, a tap on the floor beside the slab makes the app look there
   for a second, but the lock stays unless a slab is found there twice in a row (and LiDAR agrees).
-- Fixed after review, before this reached you: the first n14 ran a search of its own on a tap's frame before the lock,
+- Fixed after review, before this reached you: the first n15 ran a search of its own on a tap's frame before the lock,
   and that shifted the timing of all the searches after it. On your clips a single stray tap on the floor could then
   cost a marginal shot its lock (4 shots never locked after one such tap, and a fifth lost its lock twice), and the
   room scan that a slab tap "hurt" in your second kit was the same fault.
 
 **Checked on your real clips** (the taps simulated on both kits' recordings, as the app takes them)
-- No tap: unchanged from n13. The first n14 scored all 796 numbers of both kits as n13 did, and the fix does not touch
-  a frame without a tap (the runs without a tap are identical).
+- No tap: unchanged from n13 and n14 (n14 changed nothing in the tracking). The first n15 scored all 796 numbers of
+  both kits as n13 did, and the fix does not touch a frame without a tap (the runs without a tap are identical).
 - Stray taps before the lock: 192 taps on the floor beside the slab, on 36 of the 38 shots: early while it searched and
   while it confirmed what it had found, and at 0.5, 1, 1.5, 2, 3 and 4.5 s if it had not locked by then. 147 of them
-  landed between two of the app's searches, where the first n14 ran a search of its own. Every one left the shot
+  landed between two of the app's searches, where the first n15 ran a search of its own. Every one left the shot
   exactly as without the tap: the same time to lock, tilt, share of the shot locked and rings. (Your first kit's held
   4 in shot and your second kit's dim shot got none: a simulated stray tap goes beside the outline your phone showed at
   the time, and it showed none before these locked.)
 - Stray taps once locked: taps on the floor beside the slab every 3 s (73 taps on 30 shots) never lost the lock and
   never moved its tilt; a reviewer's near misses about 6 cm off the slab's edge did the same on 28 shots (on the first
-  n14, whose taps once locked work as in this one). Taps on the locked slab itself (the same times) never touched the
+  n15, whose taps once locked work as in this one). Taps on the locked slab itself (the same times) never touched the
   lock either, but as ball taps they changed the rings: your first kit's held 4 in and held 1 ft showed the real ball
   on 35 and 6 more frames; your second kit's level arc lost all 15 frames of wrong rings, while its 12° arc showed
   wrong rings on 30 frames instead of 21.
@@ -52,8 +52,8 @@ Small build on top of n13; everything below still holds. Developer shows **n14**
   locked frames instead of 88%. Two of the faster locks also showed wrong ball rings where the untapped run showed
   none: 24 frames on the 3.6° arc and 45 on the 7.8° arc. A tap did not rescue the 5 shots that never lock: your first
   kit's 17° still and the shot without the ball, and your second kit's 3.6° still, 7.8° still and bright-light shot.
-- Your second kit's room scan: a slab tap 1 s in now locks it when the untapped run does (12 s); in the first n14 it
-  never locked. Your first kit's shot without the ball, which the first n14 reported as locked at 5.3 s with a slab
+- Your second kit's room scan: a slab tap 1 s in now locks it when the untapped run does (12 s); in the first n15 it
+  never locked. Your first kit's shot without the ball, which the first n15 reported as locked at 5.3 s with a slab
   tap, does not lock with one (a stray floor tap did the same there: it was the timing fault, not the hint).
 - Tapping the ball, in your second kit: untapped, the app found your lattice ball on none of the 7 shots with the
   ball. With a tap on it, it found it on 3: held 4 in (shown on 105 frames), held 1 ft (66) and the second drop (36
@@ -78,7 +78,7 @@ compile them, and run the two tests on the demo scene, before this build reaches
 After review the dismiss test reads the ring's place from its text marker (the invisible ring's own frame could be the
 whole screen), and the stray-tap test taps above the readouts (the first tap had landed on them, not on the camera).
 
-**Try**: point at the slab as before, without tapping: nothing should change from n13. Then, while it searches, tap the
+**Try**: point at the slab as before, without tapping: nothing should change from n14. Then, while it searches, tap the
 slab's middle once. Hold the ball over the locked slab and, if no ring is on it, tap the ball. If a ring sits on
 something that is not the ball, tap it, then tap the same spot again to bring it back. Tap the floor by mistake, before
 and after the lock: it should lock as it would have, and stay locked. Settings > Developer > Copy diagnostics counts the

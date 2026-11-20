@@ -6,5 +6,3 @@
 # or the Simulator, not in the app. CI's end-to-end step still prints the failure, as a warning and in the run's
 # summary; any other failing test, a crash or a build error still fails the job. Take a test off the list once it
 # has passed on two runs in a row.
-
-testPreflight  # n12: the Developer list got one row shorter and the Pre-flight row sat at the screen's bottom edge, where the tap was lost; reveal() fix in 2ca3997, not yet proven

@@ -315,7 +315,7 @@ public struct TrackerSettings: Equatable {
     /// a tap seeds the search for this many seconds of normal tracking, until it locks
     public var seedTimeout: Double = 6
 
-    // Tap hints (n14): what a tap means is decided by what is under the finger (`SlabTracker.tapKind`, `TapHints`).
+    // Tap hints (n15): what a tap means is decided by what is under the finger (`SlabTracker.tapKind`, `TapHints`).
     /// Off (the default, so older recordings replay as the phone ran them): every tap looks for the slab there and starts
     /// the search over (n11). On (the app's, `RecordingSettings.trackerSettings`): while the slab is locked, a tap on the
     /// ball's ring dismisses it (`TrackerTapKind.dismissBall`: dropped at once, its spot passed over), a tap where a ball

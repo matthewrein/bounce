@@ -410,7 +410,7 @@ and the tilt the app showed (`settledTiltReading`), with no error. The owner's f
 `--positions s07=p4,s08=unmeasured,s09=unmeasured,s10=unmeasured,s11=unmeasured,s12=unmeasured` (s07 was still at
 p4; s08-s12 were near level, about 0.5 ± 1.5°, with no flat-phone reading).
 
-**Simulated taps** (`KitTapBench`, `bounce-score --taps`, build n14's tap hints): instead of scoring, every video shot
+**Simulated taps** (`KitTapBench`, `bounce-score --taps`, build n15's tap hints): instead of scoring, every video shot
 that should show the slab runs several times over one decode, once per lane, through the same per-frame path with the
 app's settings (tap hints on), each lane tapping as the owner might: `none` (no tap); `slab` (on the slab on the first
 frame, where the phone's live outline had its middle) and `slabLate` (the same 1 s in, if not locked by then); `ball`
