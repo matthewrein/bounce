@@ -133,10 +133,13 @@ public struct BallCircle: Equatable, CustomStringConvertible {
 ///   printed ring is), and the outline is also read from the arcs the fingers leave (`Reading.Mode.arc`: half the rim or
 ///   more, no gap wider than 120 degrees, one tight circle, the lattice inside or the mirror test all round with the
 ///   inside darker than the background, and not shown to be an arc of a print lying on the floor, `arcLooksLevel`; an
-///   arc that passes the mirror test only confirms a half reading of the same circle). An arc's find, and that of a
-///   half reading an arc confirms, is partial, held to the whole outline's least height (`BallCircle.arc`,
-///   `BallLocator.Options.minLatticePartialHeight`); a half outline's reading takes the mirror test alone, as before.
-///   Up to `maxLatticeCandidates` more vote peaks come from votes toward each edge's darker side.
+///   arc that passes the mirror test only, its inside not darker than the background, counts for nothing). An arc's
+///   find, and that of a half reading such an arc agrees with, is partial, held to the whole outline's least height
+///   (`BallCircle.arc`, `BallLocator.Options.minLatticePartialHeight`); a half outline's reading takes the mirror test
+///   alone, as before. A reading on the lattice's evidence (an arc's, or a whole outline's that passed the lattice test
+///   only) must also be one circle, as a sphere's outline is (`Options.roundLatticeOutline`): a black leaf printed on the
+///   mat passes the lattice test. Up to `maxLatticeCandidates` more vote peaks come from votes toward each edge's darker
+///   side.
 public enum BallFinder {
     public struct Options {
         /// edge pixels that vote: central-difference gradient magnitude (luma levels across 2 px)
@@ -208,9 +211,8 @@ public enum BallFinder {
         /// holes, held in the fingers. With this on, a reading that fails the mirror test may pass the lattice test
         /// instead (`looksLikeLattice`), and the outline the fingers break is also read from the arcs that show
         /// (`Reading.Mode.arc`: `minArcSupport`, `maxArcGap`; the lattice test inside, or the mirror test all round and
-        /// darker than the background, `Reading.standsAlone`; the mirror test alone only confirms a half reading of the
-        /// same circle). A half outline's reading still takes the mirror test alone. Off: the polished ball's rules alone
-        /// (n11).
+        /// darker than the background, `Reading.standsAlone`; one circle, `roundLatticeOutline`). A half outline's reading
+        /// still takes the mirror test alone. Off: the polished ball's rules alone (n11-n14; `LatticeKillSwitchTests`).
         public var lattice = true
         /// The lattice test: on a spoke, the inside (the mirror test's samples) is darker than the background just outside
         /// it by this factor at least; on at least `minLatticeDarkShare` of the spokes (the fingers cover some, and some
@@ -259,6 +261,26 @@ public enum BallFinder {
         /// bare floor, and a half outline read on the mirror test from one on a black stool with white dots was a false
         /// find on the first kit.
         public var maxLatticeCandidates = 8
+        /// With `lattice`: a reading on the lattice's evidence (an arc reading, or a whole outline's reading that passed
+        /// the lattice test and not the mirror test) counts only where its points are those of one circle by the omnibus
+        /// test (`isCircle`: the sum of their squared distances from the circle, in units of the quarter pixel an edge is
+        /// placed to, within `latticeRoundnessSigmas`), as a sphere's outline is. The lattice's look is not the ball's
+        /// alone: a black leaf with white veins printed on the second kit's mat passes the lattice test, and so did a
+        /// circle drawn round the ball and the thumb under it; neither outline is one circle. On the kits' held and
+        /// dropped ball (before the release), 86 of the 93 such readings on the ball that the app's search of the whole
+        /// window would have reported were one circle by the test (most well within it); none of the leaf's 7 and the
+        /// thumb's 2 were. The locator asks it only of a ball it starts to follow
+        /// (`BallLocator`: in the box round a ball already followed, at the finer scale there, the lattice's own bumps
+        /// and the fingertips on its outline break the test more often), not in following a drop
+        /// (`BallLocator.Options.tracking`). Off: n15 as track D first built it.
+        public var roundLatticeOutline = true
+        /// The omnibus test's bound for `roundLatticeOutline`, in standard deviations of a chi-square variable (the
+        /// Wilson-Hilferty approximation): 2, exceeded once in 44 by points on a circle with quarter-pixel scatter. (The
+        /// whole outline's test in `outermost` takes 3, once in 740. At 3 the leaf's outline passed on one frame of the
+        /// seven on the phone's own lock, and on two frames in a row on the scorer's lock, which reported it; at 2 on
+        /// none. The cost on the scorer's lock: the ball held 4 in over the mat, which the phone's lock still finds, was
+        /// found there in 11 of 37 searches at 3, in none at 2, as in n14.)
+        public var latticeRoundnessSigmas: Double = 2
         public init() {}
     }
 
@@ -327,14 +349,18 @@ public enum BallFinder {
         }
         var out = balls.map(\.choice.circle)
         // every find looks like a mirror, or like the lattice (a partial one was tested already; a whole one is tested
-        // all round)
+        // all round); one that looks like the lattice only must also be one circle (`Options.roundLatticeOutline`; a
+        // whole find read from the lower half alone, `outermost`'s, was found one circle there already)
         if options.mirrorTestAll {
-            out = out.compactMap { (c: BallCircle) -> BallCircle? in
+            out = balls.compactMap { b -> BallCircle? in
+                let c = b.choice.circle
                 guard !c.partial else { return c }
                 let F = LocalFrame(at: c.center, intrinsics: intrinsics, up: up)
                 let disc: (x: Double, y: Double, r: Double) = (0, 0, c.radius / F.stretch)
                 if looksLikeMirror(F, disc, luma, options, allAround: true, trace: nil) { return c }
-                guard options.lattice, looksLikeLattice(F, disc, luma, options, trace: nil) else { return nil }
+                guard options.lattice, looksLikeLattice(F, disc, luma, options, trace: nil),
+                      !options.roundLatticeOutline || b.choice.mode != .full
+                        || isCircle(b.choice, intrinsics: intrinsics, up: up, sigmas: options.latticeRoundnessSigmas) else { return nil }
                 var l = c; l.lattice = true
                 return l
             }
@@ -613,10 +639,12 @@ public enum BallFinder {
         var points: [Vec2] = []
         var onUpper: [Bool] = []
         var onLower: [Bool] = []
-        /// An arc reading that may give the outline on its own: its inside passed the lattice test, or the mirror test
-        /// and is darker than the background just outside on most spokes, as the titanium is against every floor the
-        /// kits show (`darkShare`). Otherwise it only confirms a half reading of the same circle (`outermost`): a
-        /// shaded palm, lighter than the floor, passes the mirror test on arcs too.
+        /// An arc reading that counts (`outermost`: it may give the outline on its own, and marks a half reading of the
+        /// same circle `arc`): its inside passed the lattice test, or the mirror test and is darker than the background
+        /// just outside on most spokes, as the titanium is against every floor the kits show (`darkShare`). Otherwise it
+        /// counts for nothing: a shaded palm, lighter than the floor, passes the mirror test on arcs too. (In n15 as
+        /// track D first built it, such an arc still marked a half reading `arc`, lowering its least height to the whole
+        /// outline's.)
         var standsAlone = true
     }
 
@@ -645,7 +673,8 @@ public enum BallFinder {
     ///    than the fits' scatter) and finds the outline on its half's spokes about as often replaces it; then the same
     ///    for the upper outline's, unless a lower half's reading is the same circle. Where neither the whole outline nor
     ///    a half of it was read, an arc reading (`Reading.Mode.arc`, the lattice's outline the fingers break: half the rim
-    ///    or more, all round it) gives the outline. A half reading an arc reading agrees with is marked `arc`.
+    ///    or more, all round it, that stands alone) gives the outline. A half reading that such an arc reading agrees
+    ///    with is marked `arc`.
     /// The result is `partial` unless the whole outline was read: by its own reading, or by one that the lower half's
     /// reading replaced in step 2 where the whole reading is one circle by the omnibus test (so it was the directed test
     /// that found its top a step inside). A lower half's reading that an upper outline's reading closes stays partial:
@@ -731,11 +760,12 @@ public enum BallFinder {
             best.circle.partial = false
             best.circle.support = max(best.circle.support, w.circle.support)
         }
-        // A half reading that an arc reading agrees with (centre and radius within 10% of the radius): the outline was
-        // also read on half the rim or more, all round it, and passed the mirror or the lattice test all round, so the
-        // find is held to the rules for an arc reading (`BallCircle.arc`); the half reading gives its size.
+        // A half reading that an arc reading standing alone agrees with (centre and radius within 10% of the radius): the
+        // outline was also read on half the rim or more, all round it, and passed the lattice test, or the mirror test
+        // all round with the inside darker than the background, so the find is held to the rules for an arc reading
+        // (`BallCircle.arc`); the half reading gives its size.
         if best.mode == .lower || best.mode == .upper,
-           let a = arcs.first(where: { abs($0.circle.radius - best.circle.radius) <= 0.1 * best.circle.radius
+           let a = arcs.first(where: { $0.standsAlone && abs($0.circle.radius - best.circle.radius) <= 0.1 * best.circle.radius
                                          && $0.circle.center.distance(to: best.circle.center) <= 0.1 * best.circle.radius }) {
             best.circle.arc = true
             best.circle.lattice = best.circle.lattice || a.circle.lattice
@@ -900,21 +930,21 @@ public enum BallFinder {
     /// Whether the whole reading's points are those of one circle: their squared distances from it, in units of the
     /// quarter pixel to which an edge can be placed, sum to no more than a chi-square variable with n - 3 degrees of
     /// freedom exceeds once in 740 (three standard deviations; Wilson-Hilferty approximation).
-    static func isCircle(_ w: Reading, intrinsics K: CameraIntrinsics?, up: Vec2) -> Bool {
+    static func isCircle(_ w: Reading, intrinsics K: CameraIntrinsics?, up: Vec2, sigmas: Double = 3) -> Bool {
         let n = w.points.count
         guard n > 3 else { return true }
         let F = LocalFrame(at: w.circle.center, intrinsics: K, up: up)
         let s = w.circle.radius / F.stretch
         let chi2 = w.points.reduce(0) { let e = F.local($1).length - s; return $0 + e * e } / 0.0625
-        return chi2 <= chiSquareBound(Double(n - 3))
+        return chi2 <= chiSquareBound(Double(n - 3), sigmas: sigmas)
     }
 
-    /// The value a chi-square variable with `v` degrees of freedom exceeds once in 740 (three standard deviations), by
-    /// the Wilson-Hilferty approximation.
-    static func chiSquareBound(_ v: Double) -> Double {
+    /// The value a chi-square variable with `v` degrees of freedom exceeds once in 740 (three standard deviations; with
+    /// `sigmas` 2, once in 44), by the Wilson-Hilferty approximation.
+    static func chiSquareBound(_ v: Double, sigmas: Double = 3) -> Double {
         guard v > 0 else { return 0 }
         let a = 2 / (9 * v)
-        return v * pow(1 - a + 3 * a.squareRoot(), 3)
+        return v * pow(1 - a + sigmas * a.squareRoot(), 3)
     }
 
     /// The mean of distances measured at rim points on neighbouring spokes (`at`, in their order round the rim), and its
@@ -1027,11 +1057,15 @@ public enum BallFinder {
             if let c2, abs(c2.r - c.r) <= c.r * 0.1, c2.r >= sMin, c2.r <= sMax, rim.count >= o.minArcSupport, rim.widestGap() <= o.maxArcGap,
                rim.rms(c2) <= o.maxUpperRms, let look = looksLikeBall(F1, c2, rim.luma, o, allAround: true, trace: trace) {
                 let (p, r) = F1.imageCircle(c2.x, c2.y, c2.r)
-                out.append(Reading(circle: BallCircle(center: p, radius: r, support: rim.count, partial: true, lattice: look == .lattice, arc: true), mode: .arc,
-                                   radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare,
-                                   points: (0..<rim.count).map { F1.image(rim.xs[$0], rim.ys[$0]) },
-                                   onUpper: Array(rim.isUp[0..<rim.count]), onLower: Array(rim.isLow[0..<rim.count]),
-                                   standsAlone: look == .lattice || darkShare(F1, c2, rim.luma, o) >= o.minLatticeDarkShare))
+                let arc = Reading(circle: BallCircle(center: p, radius: r, support: rim.count, partial: true, lattice: look == .lattice, arc: true), mode: .arc,
+                                  radiusError: rim.radiusError(c2) * r / c2.r, upperShare: rim.upperShare, lowerShare: rim.lowerShare,
+                                  points: (0..<rim.count).map { F1.image(rim.xs[$0], rim.ys[$0]) },
+                                  onUpper: Array(rim.isUp[0..<rim.count]), onLower: Array(rim.isLow[0..<rim.count]),
+                                  standsAlone: look == .lattice || darkShare(F1, c2, rim.luma, o) >= o.minLatticeDarkShare)
+                // one circle, as a sphere's outline is (`Options.roundLatticeOutline`): a leaf's pointed outline, or one
+                // drawn round the ball and the fingers under it, is not
+                if !o.roundLatticeOutline || isCircle(arc, intrinsics: K, up: up, sigmas: o.latticeRoundnessSigmas) { out.append(arc) }
+                else { trace?("arc: not one circle") }
             }
         }
         // The lower half alone (not in the web app): seen from above, the top of a polished ball reflects the floor
@@ -1991,7 +2025,8 @@ public struct BallObservation: Equatable {
 /// - a ball found from half its outline (`BallCircle.partial`) is reported only once it shows up on two scans in
 ///   a row, or where the ball already being followed is;
 /// - a ball being followed is looked for in a box around it (the costliest step of a frame otherwise), and only
-///   where it is not found there in the whole search window (on the same scan);
+///   where it is not found there in the whole search window (on the same scan); in the box, a reading on the lattice's
+///   evidence need not be one circle (`BallFinder.Options.roundLatticeOutline`), as it must be to start a follow;
 /// - its position and size are smoothed while it stays put, and a ball missed for a moment is held over for a few
 ///   updates.
 ///
@@ -2019,9 +2054,10 @@ public final class BallLocator {
         public var minPartialHeight: Double = 0.2
         /// A ball found from part of its outline whose inside passed the lattice test (`BallCircle.lattice`: dark, and
         /// varied as the owner's titanium lattice is, which a printed disc, a ring or a curve of print is not), or read
-        /// from the arcs the fingers leave (`BallCircle.arc`: half the rim or more, all round it, not one half), is held
-        /// to this least height instead (metres); nil: the whole outline's (`minHeight`). The owner's "held low" is about
-        /// 10 cm over the slab, under `minPartialHeight`, and the fingers holding the ball leave only part of its outline.
+        /// from the arcs the fingers leave (`BallCircle.arc`: half the rim or more, all round it, not one half; or one
+        /// half's reading that such an arc reading, standing alone, agrees with), is held to this least height instead
+        /// (metres); nil: the whole outline's (`minHeight`). The owner's "held low" is about 10 cm over the slab, under
+        /// `minPartialHeight`, and the fingers holding the ball leave only part of its outline.
         public var minLatticePartialHeight: Double? = nil
         /// a followed ball is looked for within this many radii of where it was
         public var followRadii: Double = 4
@@ -2053,7 +2089,8 @@ public final class BallLocator {
         public var stillPartialCeiling: Double? = nil
         /// Where nothing else is found, look for the ball blurred by its own motion (`BallFinder.findStreak`) near where the
         /// scan before found it (within 3.5 of its radii: a ball falling 2.4 m/s moves 2.7 of them in a 60 fps frame). For
-        /// following a drop (`tracking`), not for the app: a falling ball's outline shows no edges at its ends.
+        /// following a drop (`tracking`, with `finder.lattice` on), not for the app: a falling ball's outline shows no edges
+        /// at its ends.
         public var streaks = false
         public var finder = BallFinder.Options()
         public init() {}
@@ -2079,7 +2116,14 @@ public final class BallLocator {
             o.footprint = 2.5
             o.requireOnSlab = false
             o.follows = false
-            o.streaks = true
+            // the streak is the lattice finder's (the lattice's darkness against the floor): with `finder.lattice` off,
+            // following a drop is as it was before the lattice (n11-n14)
+            o.streaks = base.finder.lattice
+            // A blurred falling ball's arcs are seldom one circle, so the roundness asked of a ball the app starts to
+            // follow (`BallFinder.Options.roundLatticeOutline`) is not asked here: on the kits' drops (at a bound of 3
+            // standard deviations) it halved the fall frames found on the ball (first kit 23 -> 11 of 52, second 8 -> 6
+            // of 42) and did not lower the fall and bounce frames found on something else (24 -> 25, 22 -> 21).
+            o.finder.roundLatticeOutline = false
             return o
         }
     }
@@ -2223,7 +2267,11 @@ public final class BallLocator {
             var circles: [BallCircle] = []
             for band in bands {
                 let up = Self.imageUp(at: band.region.center, depth: slab.center.length, intrinsics: K, down: g)
-                for c in search(luma: luma, K: K, region: band.region, radii: band.radii, scale: band.scale, up: up, down: g) {
+                // in the box round the followed ball, a reading on the lattice's evidence need not be one circle
+                // (`BallFinder.Options.roundLatticeOutline`: the find that started the follow was)
+                var fo = options.finder
+                if inBox { fo.roundLatticeOutline = false }
+                for c in search(luma: luma, K: K, region: band.region, radii: band.radii, scale: band.scale, up: up, down: g, finder: fo) {
                     // the same ball found in two neighbouring bands: keep the finer band's find
                     if !circles.contains(where: { $0.center.distance(to: c.center) < 0.5 * max($0.radius, c.radius) }) { circles.append(c) }
                 }
@@ -2343,9 +2391,10 @@ public final class BallLocator {
 
     /// Runs the finder on the region, with the image shrunk by `k` (area average).
     func search(luma: Plane, K: CameraIntrinsics, region: ImageRect, radii: ClosedRange<Double>, scale k: Int, up: Vec2,
-                down: Vec3? = nil) -> [BallCircle] {
+                down: Vec3? = nil, finder: BallFinder.Options? = nil) -> [BallCircle] {
+        let fo = finder ?? options.finder
         if k <= 1 {
-            return BallFinder.find(luma: luma, radiusRange: radii, roi: region, intrinsics: K, up: up, down: down, options: options.finder)
+            return BallFinder.find(luma: luma, radiusRange: radii, roi: region, intrinsics: K, up: up, down: down, options: fo)
         }
         // area-average the region (plus room for the rim measurement around it) down by k
         let pad = radii.upperBound * 0.6
@@ -2375,7 +2424,7 @@ public final class BallLocator {
         let roi = ImageRect(minX: (region.minX - Double(x0)) * s, minY: (region.minY - Double(y0)) * s,
                             maxX: (region.maxX - Double(x0)) * s, maxY: (region.maxY - Double(y0)) * s)
         return BallFinder.find(luma: small, radiusRange: (radii.lowerBound * s)...(radii.upperBound * s), roi: roi,
-                               intrinsics: Ks, up: up, down: down, options: options.finder).map {
+                               intrinsics: Ks, up: up, down: down, options: fo).map {
             BallCircle(center: Vec2(Double(x0) + $0.center.x * Double(k), Double(y0) + $0.center.y * Double(k)),
                        radius: $0.radius * Double(k), support: $0.support, partial: $0.partial, lattice: $0.lattice, arc: $0.arc)
         }

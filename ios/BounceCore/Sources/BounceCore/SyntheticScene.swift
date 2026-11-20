@@ -13,8 +13,9 @@ public struct SyntheticScene {
     public var ball: Vec3?
     public var ballRadius: Double = 0.0175
     /// How the ball is drawn: the owner's open titanium lattice (`LatticeBall`, the default), or a polished solid sphere
-    /// reflecting the sky and the floor (what the renders showed before the owner said what the ball is; kept for the
-    /// tests that test something other than the ball finder on scenes made with it).
+    /// reflecting the sky and the floor (what the renders showed before the owner said what the ball is, until n14; the
+    /// lattice finder's kill-switch test, `LatticeKillSwitchTests`, draws it to check that with
+    /// `BallFinder.Options.lattice` off the finder finds what n14 found).
     public enum BallLook: Equatable { case lattice, polished }
     public var ballLook: BallLook = .lattice
     /// light direction (toward the light), world

@@ -856,7 +856,9 @@ final class KitScoreRun {
         func reason(_ id: String, _ fallback: String) -> String {
             var counts: [String: Int] = [:]
             for s in ok { if let n = s.metric(id)?.note, s.metric(id)?.value == nil { counts[n, default: 0] += 1 } }
-            return counts.max { $0.value < $1.value }?.key ?? fallback
+            // the commonest note; of notes as common, the first in alphabetical order (a dictionary's order is not fixed,
+            // so a tie must not be left to it: the same kit scored twice gave two notes)
+            return counts.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key ?? fallback
         }
         func medianOf(_ id: String, abs useAbs: Bool = false, fallback: String) -> KitMetric {
             let v = values(id).map { useAbs ? Swift.abs($0) : $0 }
