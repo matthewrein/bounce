@@ -27,25 +27,27 @@ struct ContentView: View {
                             ARFeedView(session: model.controller.session)
                         }
                         OverlayView(overlay: model.overlay)
-                        // where the ball's ring and a tap's mark are, for the UI tests (invisible, under the tap layer)
+                        // where the ball's ring and a tap's mark are, for the UI tests (invisible, under the tap layer); the
+                        // accessibility element is made before `.position`, so it is the marker's square, not the whole
+                        // screen `.position` fills
                         if let b = model.overlay.ball {
                             let r = max(model.overlay.ballRadius, 6)
                             Color.white.opacity(0.001)
                                 .frame(width: 2 * r, height: 2 * r)
-                                .position(b)
                                 .allowsHitTesting(false)
                                 .accessibilityElement()
                                 .accessibilityLabel("Ball")
                                 .accessibilityIdentifier("ballRing")
+                                .position(b)
                         }
                         ForEach(Array(model.overlay.dismissed.enumerated()), id: \.offset) { _, p in
                             Color.white.opacity(0.001)
                                 .frame(width: 24, height: 24)
-                                .position(p)
                                 .allowsHitTesting(false)
                                 .accessibilityElement()
                                 .accessibilityLabel("Dismissed ball")
                                 .accessibilityIdentifier("dismissedSpot")
+                                .position(p)
                         }
                         // the same places as text ("x,y", view points), which the UI tests can read whatever the
                         // accessibility tree does with a nearly transparent shape
@@ -53,26 +55,26 @@ struct ContentView: View {
                             Text(String(format: "%.0f,%.0f", Double(b.x), Double(b.y)))
                                 .font(.system(size: 2))
                                 .opacity(0.02)
-                                .position(b)
                                 .allowsHitTesting(false)
                                 .accessibilityIdentifier("ballRingAt")
+                                .position(b)
                         }
                         if let p = model.overlay.dismissed.first {
                             Text(String(format: "%.0f,%.0f", Double(p.x), Double(p.y)))
                                 .font(.system(size: 2))
                                 .opacity(0.02)
-                                .position(p)
                                 .allowsHitTesting(false)
                                 .accessibilityIdentifier("dismissedSpotAt")
+                                .position(p)
                         }
                         if let m = model.overlay.tapMark {
                             Color.white.opacity(0.001)
                                 .frame(width: 2 * m.radius, height: 2 * m.radius)
-                                .position(m.center)
                                 .allowsHitTesting(false)
                                 .accessibilityElement()
                                 .accessibilityLabel(m.kind.rawValue)
                                 .accessibilityIdentifier("tapMark")
+                                .position(m.center)
                         }
                         // Taps are optional hints, decided by what is under the finger (BounceCore's SlabTracker.tapKind):
                         // tapping the slab makes the search look there first, tapping the ball looks for it there first,

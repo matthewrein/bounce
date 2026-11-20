@@ -324,8 +324,9 @@ public struct TrackerSettings: Equatable {
     /// search's outlines under the finger come first, and a candidate being confirmed is given up for one there only when
     /// it is found twice; only where the search has no outline at all is the slab grown from the tapped point (and the
     /// points around it, `SlabFinder.Options.tapSearchesAround`), through the search's own light-independent screens
-    /// (`tapScreens`). A slab tap never moves the detections' schedule, and lasts `tapSlabFirstSeconds` unless what is
-    /// being confirmed lies under the finger.
+    /// (`tapScreens`), on the scheduled searches: before the lock a slab tap runs no search of its own. A slab tap never
+    /// moves the detections' schedule, and lasts `tapSlabFirstSeconds` unless what is being confirmed lies under the
+    /// finger. (Any tap still ends the searches' back-off, `idleSearchAfter`, as in n11.)
     public var tapHints = false
     /// how far from the finger a tap still counts: this share of the processing frame's shorter side (about a fingertip)
     public var tapSlackFraction: Double = 0.05
@@ -781,16 +782,20 @@ public final class SlabTracker {
     }
 
     /// Whether the next frame at time t will run the slab detector (so the caller knows to prepare its image), if its
-    /// tracking state is normal. `tap`: the frame brings a tap (which asks for a run on that frame). A run is due when
-    /// the interval for the state has passed since the last scheduled one (or something forced one: a tap, a reset, a
-    /// discontinuity), and never sooner than `minDetectionGap` after the last run (a clock that went backwards does not
-    /// hold it back). (This decides it exactly, which a replay relies on.)
+    /// tracking state is normal. `tap`: the frame brings a slab tap (`tapSeedsSlab`), which asks for a run on that frame
+    /// without tap hints (n11), and with them only while locked (a look under the finger, `probeTappedSlab`): before the
+    /// lock a tap with hints is a hint for the scheduled searches alone, never a search of its own (one more search, on a
+    /// frame the schedule would not have searched, changes which frames are measured and can cost a marginal shot its
+    /// lock). A run is due when the interval for the state has passed since the last scheduled one (or something forced
+    /// one: a tap, a reset, a discontinuity), and never sooner than `minDetectionGap` after the last run (a clock that
+    /// went backwards does not hold it back). (This decides it exactly, which a replay relies on.)
     public func detectionDue(at t: Double, tap: Bool) -> Bool {
         let since = t - lastDetectionRun
         if since >= 0 && since < settings.minDetectionGap { return false }
         let interval = state == .locked && !sidesUndecided ? settings.recheckInterval
             : state == .searching && searchIdle ? max(settings.searchInterval, settings.idleSearchInterval) : settings.searchInterval
-        return tap || t - lastCheck >= interval
+        let tapRuns = tap && (!settings.tapHints || state == .locked)
+        return tapRuns || t - lastCheck >= interval
     }
 
     /// whether searches are backed off (`TrackerSettings.idleSearchAfter`): set after each frame
@@ -856,7 +861,7 @@ public final class SlabTracker {
     public func reset() {
         forget()
         emptySearches = nil; searchIdle = false
-        seed = nil; tapResetPending = false; noiseSamples = []; endTapChallenge()
+        seed = nil; slabTapTime = nil; tapResetPending = false; noiseSamples = []; endTapChallenge()
         bump("reset")
         pendingControls.append(TrackerControl(kind: .reset))
     }
@@ -1097,9 +1102,10 @@ public final class SlabTracker {
         }
 
         let due = detectionDue(at: t)
-        // with tap hints, a slab tap is looked at on its own frame (the app converts the image for it, `tapSeedsSlab`) and
-        // leaves the detections' schedule as it was: the search runs on the same frames as without the tap, so once the
-        // tap is over the tracker can be where it would have been
+        // with tap hints, a slab tap while locked is looked at on its own frame (the app converts the image for it,
+        // `tapSeedsSlab`, `detectionDue(at:tap:)`) and leaves the re-checks' schedule as it was; before the lock it only
+        // steers the scheduled searches (`tapSlab` returns false then): the search runs on the same frames as without the
+        // tap, so a tap on something that is not the slab leaves the tracker where it would have been
         let tapNow = tapLooks && detectionDue(at: t, tap: true)
 
         // the processing frame changed size (the camera's video format changed: ARKit re-ran with another one): what is
@@ -1154,11 +1160,11 @@ public final class SlabTracker {
             // a slab tap away from the lock: look there first (on the tap's frame and the re-checks while it lasts),
             // keeping the lock unless another slab is found there twice
             if state == .locked, settings.tapHints, seed != nil { probeTappedSlab(f, downCam, &events) }
-            // (a look on the tap's own frame does not move the schedule: `lastCheck`, and the gap after a run, count from
-            // the scheduled runs only, so the next one comes on the frame it would have come on without the tap)
+            // (a probe on the tap's own frame does not move the schedule: `lastCheck`, and the gap after a run, count from
+            // the scheduled runs only, so the next one comes on the frame it would have come on without the tap. Only the
+            // detection itself sets `lastCheck`; it runs when one is due, or when the lock went on the probe's frame)
             if due { lastDetectionRun = t }
             if due || state != .locked {
-                if due { lastCheck = t }
                 lastCheck = t
                 detectionKind = state == .locked ? .recheck : .search
                 detections = detect(f, downCam, chk, depthCheck, &events, &measurementQuad)
@@ -2092,9 +2098,11 @@ public final class SlabTracker {
         }
     }
 
-    /// Whether a tap at p makes the slab detector run on its frame (`detectionDue(at:tap:)`, `detectorWillRun`): a slab
-    /// tap does, unless (with tap hints) it is on the outline being confirmed (the search goes on as it was) or on the
-    /// lock's outline (nothing to look for); a ball tap or a dismissed ring does not.
+    /// Whether a tap at p looks for the slab (pass it to `detectionDue(at:tap:)` and `detectorWillRun`; the app also reads
+    /// the frame's LiDAR depth for it, which places the tapped point): a slab tap does, unless (with tap hints) it is on
+    /// the outline being confirmed (the search goes on as it was) or on the lock's outline (nothing to look for); a ball
+    /// tap or a dismissed ring does not. Without tap hints it makes the detector run on its frame; with them only while
+    /// locked (a probe), and before the lock it steers the scheduled searches alone.
     public func tapSeedsSlab(_ p: Vec2, view: CameraView) -> Bool {
         tapKind(p, view: view) == .slab && !tapOnCandidate(p, view) && !tapOnLock(p, view)
     }
@@ -2143,10 +2151,13 @@ public final class SlabTracker {
     /// the lock's outline does nothing; one elsewhere looks there on its own frame and the re-checks while it lasts
     /// (`probeTappedSlab`, returns true: probe on this frame), the re-checks' schedule left as it was, and keeps the lock
     /// (event "tap-slab") unless another slab is found there twice in a row ("tap" then). While confirming, a tap on the
-    /// outline being confirmed keeps it and its schedule ("tap-slab"); one elsewhere keeps it too ("tap-slab"), the
-    /// outlines under the finger first from its own frame on, unless another slab is found there twice (`tapChallenge`:
-    /// "tap"). While searching, the search looks there first from the tap's frame on ("tap"). Returns whether to look on
-    /// this frame (a probe while locked, a search otherwise), which never moves the detections' schedule.
+    /// outline being confirmed keeps it ("tap-slab"); one elsewhere keeps it too ("tap-slab"), the outlines under the
+    /// finger first on the scheduled searches while it lasts, unless another slab is found there twice (`tapChallenge`:
+    /// "tap"). While searching, the scheduled searches look there first while it lasts ("tap"). Before the lock nothing
+    /// runs on the tap's own frame (one more search, on a frame the schedule would not have searched, changes which frames
+    /// are measured: on the owner's clips a stray tap that did so could cost a marginal shot its lock), so a tap on
+    /// something that is not the slab leaves the search as it was. Returns whether to look on this frame (a probe, while
+    /// locked), which never moves the detections' schedule.
     private func tapSlab(_ tp: Vec2, _ f: TrackerFrame, _ events: inout [String]) -> Bool {
         seed = (seedPoint(for: tp, f), 0)
         seedDepthGuessed = seedHeight(f) == nil
@@ -2154,8 +2165,8 @@ public final class SlabTracker {
         if settings.tapHints, seedDepthGuessed, let w = seedFromDepth(tp, f) { seed = (w, 0); seedDepthGuessed = false }
         guard settings.tapHints else { lastCheck = -.infinity; events.append("tap"); tapResetPending = true; return false }
         bump("tapSlab")
-        // (with tap hints nothing here moves the detections' schedule: `process` looks on the tap's frame when this
-        // returns true)
+        // (with tap hints nothing here moves the detections' schedule: `process` probes on the tap's frame when this
+        // returns true, only while locked)
         switch state {
         case .locked:
             events.append("tap-slab")
@@ -2165,21 +2176,22 @@ public final class SlabTracker {
         case .confirming:
             slabTapTime = f.timestamp
             events.append("tap-slab")
-            // a tap on the outline being confirmed: the search goes on as it was, its schedule too (`tapSeedsSlab`); taking
-            // the next detection now instead would only measure other frames than without the tap
+            // a tap on the outline being confirmed: the search goes on as it was (`tapSeedsSlab`); one elsewhere: the
+            // scheduled searches look under the finger first (no search of its own: taking one now would only measure
+            // other frames than without the tap)
             if tapOnCandidate(tp, f.view) {
                 bump("tapSlabOnCandidate")
                 return false
             }
             bump("tapSlabOffCandidate")
             tapChallengers = []
-            return true
+            return false
         case .searching:
-            // nothing to start over: the search looks under the finger from this frame on (event "tap" all the same: the
-            // camera's focus and exposure may adjust)
+            // nothing to start over: the scheduled searches look under the finger first while it lasts (event "tap" all
+            // the same: the camera's focus and exposure may adjust)
             slabTapTime = f.timestamp
             events.append("tap")
-            return true
+            return false
         }
     }
 

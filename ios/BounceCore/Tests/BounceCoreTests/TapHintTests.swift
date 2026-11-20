@@ -327,32 +327,76 @@ final class TapHintTests: XCTestCase {
         }
     }
 
-    /// A tap on the floor beside the slab before it is found (nothing there): with tap hints the search goes on as without
-    /// the tap (its outlines elsewhere are never set aside, nothing is grown where it has some, and the tap does not move
-    /// the searches' schedule), so it locks when it would have; n11 held the search to the tapped pixel for the seed's
-    /// whole `seedTimeout`.
+    /// A tap on the floor beside the slab before it is found (nothing there), on any frame, whether the schedule searches
+    /// on it or not: with tap hints the search goes on as without the tap (its outlines elsewhere are never set aside,
+    /// nothing is grown where it has some, and the tap runs no search of its own and does not move the searches'
+    /// schedule), so it searches on the same frames and locks when and where it would have; n11 held the search to the
+    /// tapped pixel for the seed's whole `seedTimeout`. (n14 as first built searched on the tap's own frame and moved the
+    /// schedule to it: a tap on frame 4 at 60 fps searched on frames 4, 12, 20 instead of 8, 16, 24, and the lock came
+    /// sooner or later with the frame the tap landed on; on the owner's clips that cost marginal shots their lock.)
     func testAStrayTapBeforeTheLockCostsNothing() {
         let w = World(slab: slab, lens: .processing)
         let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
         let stray = v.project(world: Vec3(slab.center.x - 0.4, 0, slab.center.z + 0.2))!
         XCTAssertFalse(SlabTracker.contains(w.corners(in: v), stray, slack: 0.25))
-        func lockTime(hints: Bool, tap: Bool) -> Double? {
+        /// the frames (60 a second) the detector ran on in the first second, when it locked (s) and on what
+        func run(hints: Bool = true, silent: Bool = false, tapFrame: Int?) -> (runs: [Int], lockedAt: Double?, slab: SlabPose?, states: [TrackerState]) {
             let inner = SceneDetector(w, noise: 0.3, seed: 6)
+            inner.silent = silent
             let det = SweepOnly(inner)
             let tr = SlabTracker(settings: settings(hints: hints), detector: det)
+            var runs: [Int] = [], states: [TrackerState] = []
             for k in 0..<240 {
                 let t = Double(k) / 60
                 inner.currentView = v
-                // (on the first frame, whose search runs anyway: a tap's own search on a later frame is one more look)
-                _ = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, tap: tap && k == 0 ? stray : nil))
-                if tr.state == .locked { return t }
+                states.append(tr.state)
+                let o = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, tap: k == tapFrame ? stray : nil))
+                if o.detectionKind != nil && k < 60 { runs.append(k) }
+                if tr.state == .locked { return (runs, t, tr.slab, states) }
             }
-            return nil
+            return (runs, nil, nil, states)
         }
-        XCTAssertNil(lockTime(hints: false, tap: true), "n11: nothing for the seed's \(TrackerSettings().seedTimeout) s")
-        let plain = lockTime(hints: true, tap: false), tapped = lockTime(hints: true, tap: true)
-        XCTAssertNotNil(plain)
-        XCTAssertEqual(tapped ?? 9, plain ?? -9, accuracy: 1e-9, "the stray tap changed nothing")
+        XCTAssertNil(run(hints: false, tapFrame: 0).lockedAt, "n11: nothing for the seed's \(TrackerSettings().seedTimeout) s")
+        // searching (nothing found anywhere): the same searches, on the same frames, whichever frame the tap is on
+        let quiet = run(silent: true, tapFrame: nil)
+        XCTAssertEqual(quiet.runs, [0, 8, 16, 24, 32, 40, 48, 56], "the app's 0.12 s searches at 60 fps")
+        for k in 0...7 {
+            XCTAssertEqual(run(silent: true, tapFrame: k).runs, quiet.runs, "searching, a stray tap on frame \(k)")
+        }
+        // confirming (the slab found on the first search): locked on the same frame, on the same outlines
+        let plain = run(tapFrame: nil)
+        XCTAssertNotNil(plain.lockedAt)
+        XCTAssertEqual(plain.states[1], .confirming)
+        for k in 0...7 {
+            let tapped = run(tapFrame: k)
+            XCTAssertEqual(tapped.runs, plain.runs, "a stray tap on frame \(k)")
+            XCTAssertEqual(tapped.lockedAt ?? 9, plain.lockedAt ?? -9, accuracy: 1e-9, "the stray tap on frame \(k) changed the lock's time")
+            XCTAssertEqual(tapped.slab, plain.slab, "the stray tap on frame \(k) changed the lock")
+        }
+    }
+
+    /// A tap on the slab between two scheduled searches, where the sweep finds nothing: the next scheduled search grows the
+    /// slab from the tapped point and it locks; nothing runs on the tap's own frame.
+    func testASlabTapBetweenSearchesIsTakenByTheNextOne() {
+        let w = World(slab: slab, lens: .processing)
+        let v = w.view(from: Vec3(0, 0.9, 0), at: slab.center)
+        let tapAt = w.corners(in: v).reduce(Vec2.zero) { $0 + $1 } / 4
+        let inner = SceneDetector(w, noise: 0.3, seed: 5)
+        let det = SweepOnly(inner); det.sweeps = false
+        let tr = SlabTracker(settings: settings(), detector: det)
+        var runs: [Int] = [], lockedAt: Double? = nil
+        for k in 0..<120 {
+            let t = Double(k) / 60
+            inner.currentView = v
+            XCTAssertEqual(tr.detectorWillRun(at: t, tap: k == 4 && tr.tapSeedsSlab(tapAt, view: v), trackingNormal: true), tr.detectionDue(at: t))
+            let o = tr.process(TrackerFrame(timestamp: t, view: v, frame: image, tap: k == 4 ? tapAt : nil))
+            if o.detectionKind != nil { runs.append(k) }
+            if k == 4 { XCTAssertTrue(o.events.contains("tap"), "\(o.events)"); XCTAssertNil(o.detectionKind, "no search on the tap's own frame") }
+            if tr.state == .locked { lockedAt = t; break }
+        }
+        XCTAssertEqual(Array(runs.prefix(2)), [0, 8], "the next scheduled search")
+        XCTAssertGreaterThan(det.seeded, 0, "grown from the tapped point")
+        XCTAssertLessThan(lockedAt ?? 9, 0.6)
     }
 
     /// With no floor known yet (ARKit's plane) and nothing found, a slab tap takes its place from LiDAR's depth under the

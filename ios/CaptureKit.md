@@ -416,12 +416,16 @@ app's settings (tap hints on), each lane tapping as the owner might: `none` (no 
 frame, where the phone's live outline had its middle) and `slabLate` (the same 1 s in, if not locked by then); `ball`
 (once locked, where the ball really is, while the lane does not show it; needs `--taps-truth`) and `ballOff` (the same
 tap a ball radius and half a fingertip to the side); `dismiss` (on each false ring, up to three); and stray taps:
-`floorSearch` (on the floor beside the slab on the first frame), `floorConfirm` (the same on the first frame that
-confirms a candidate), `floorLocked` (on the floor 0.3 m from the lock, 0.5 s after it and then every 3 s, up to 4) and
-`slabOnLock` (on the locked slab's middle at those times). Per lane it reports when the slab locked, how much of the
-shot it stayed locked (after a stray tap, against the untapped lane over the same frames), the lock's tilt and how far
-it ended from the untapped lane's, the ball scans and the rings shown (true or false), when the first true ball came,
-the false rings after a dismissal and the tracker's tap counters. `--taps-truth` is where the ball is, read by eye from
+`floorSearch` (on the floor beside the slab, on the first frame that falls between two of the lane's scheduled
+searches: a real finger lands on an ordinary frame), `floorConfirm` (the same while a candidate is being confirmed),
+`floor05` to `floor45` (the same at 0.5, 1, 1.5, 2, 3 and 4.5 s, if not locked by then; marked `/off` when the frame was
+between scheduled searches), `floorLocked` (on the floor 0.3 m from the lock, 0.5 s after it and then every 3 s, up to
+4) and `slabOnLock` (on the locked slab's middle at those times). A lane that can no longer tap without having tapped
+(`slabLate` or a fixed-time lane locked first) has run exactly as `none` and reports its result. Per lane it reports
+when the slab locked, how much of the shot it stayed locked (after a stray tap, against the untapped lane over the same
+frames), the lock's tilt and how far it ended from the untapped lane's, the ball scans and the rings shown (true or
+false), when the first true ball came, the false rings after a dismissal (tapped on the frame after a false ring first
+shows: no reaction time) and the tracker's tap counters. `--taps-truth` is where the ball is, read by eye from
 the private clips and kept outside the repository with them: `{"<kit id>": {"<shot id>": {"frame": N, "x": X, "y": Y,
 "r": R}}}` (video pixels on one frame; the ball is taken as still in the world). `--taps-only` picks shots (ids or
 prefixes such as `s09`), `--taps-lanes` picks lanes, `--taps-json` writes the JSON (again after every shot) and

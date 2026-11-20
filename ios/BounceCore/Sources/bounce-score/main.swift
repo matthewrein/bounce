@@ -42,8 +42,8 @@ options:
   --drops-json FILE      write the drops' report as JSON
   --drops-floor          drops: give the analysis ARKit's floor, as on the phone (default: none, as in a kit)
   --taps                 instead of scoring: run the kits' shots with simulated taps (KitTapBench: none, slab, slabLate,
-                         ball, dismiss, and stray taps floorSearch, floorConfirm, floorLocked, slabOnLock, ballOff) and
-                         print what each changed (Markdown)
+                         ball, dismiss, and stray taps floorSearch, floorConfirm, floor05..floor45 (at 0.5 to 4.5 s),
+                         floorLocked, slabOnLock, ballOff) and print what each changed (Markdown)
   --taps-truth FILE      the balls' true places: {"<kit id>": {"<shot id>": {"frame": N, "x": X, "y": Y, "r": R}}} (video px)
   --taps-only IDS        only these shots (comma-separated ids, or prefixes such as s09)
   --taps-lanes LANES     only these lanes (comma-separated)

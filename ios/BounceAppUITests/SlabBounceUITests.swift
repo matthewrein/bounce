@@ -753,13 +753,18 @@ final class SlabBounceUITests: XCTestCase {
         return json["counts"] as? [String: Int] ?? [:]
     }
 
-    /// Where an invisible marker is (window points): its element's middle, or else the "x,y" its text twin carries
-    /// (`<id>At`); nil when neither is there.
+    /// Where an invisible marker is (window points): the "x,y" its text twin carries (`<id>At`, exact whatever frame the
+    /// accessibility tree gives the marker), or else its element's middle when that element is marker-sized (an element
+    /// made around a positioned view can be the whole screen, whose middle is not the marker); nil otherwise.
     func markerPoint(_ app: XCUIApplication, _ id: String) -> CGPoint? {
-        let e = element(app, id)
-        if e.exists { return CGPoint(x: e.frame.midX, y: e.frame.midY) }
         let xy = label(app, id + "At").split(separator: ",").compactMap { Double($0) }
-        return xy.count == 2 ? CGPoint(x: xy[0], y: xy[1]) : nil
+        if xy.count == 2 { return CGPoint(x: xy[0], y: xy[1]) }
+        let e = element(app, id)
+        let screen = app.windows.firstMatch.frame
+        if e.exists, e.frame.width < 0.5 * screen.width, e.frame.height < 0.5 * screen.height {
+            return CGPoint(x: e.frame.midX, y: e.frame.midY)
+        }
+        return nil
     }
 
     /// A tap on the screen at a point of the window (points).
@@ -767,26 +772,38 @@ final class SlabBounceUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0)).withOffset(CGVector(dx: p.x, dy: p.y)).tap()
     }
 
-    /// A tap on the floor near a corner of the screen, away from the demo's slab and the space over it, at once after
-    /// launch: taken for the slab (a slab tap: the search looks there first), it never keeps the app from locking the
-    /// slab, nor, once locked, from keeping it (nothing is found there). The main screen shows no instructions for taps.
+    /// A tap on the floor near a side of the screen, away from the demo's slab and the space over it, and above the
+    /// readouts (which are drawn over the tap layer and would take the tap themselves), once the tracker is running:
+    /// taken for the slab (a slab tap: the search looks there first), it never keeps the app from locking the slab, nor,
+    /// once locked, from keeping it (nothing is found there). The main screen shows no instructions for taps.
     func testAStrayTapNeverCostsTheLock() throws {
         let app = launch()
         XCTAssertTrue(element(app, "settings").waitForExistence(timeout: 20))
+        // the tracker is running once the status chip shows its state (the demo's tracker may start after launch)
+        let running = waitUntil(20) {
+            let s = label(app, "status")
+            return s.contains("Looking for the slab") || s.contains("Checking") || s.contains("Slab locked")
+        }
+        XCTAssertNotNil(running, "the tracker's state never showed; status \(label(app, "status"))")
+        let before = label(app, "status")
         let frame = app.windows.firstMatch.frame
-        tapAt(app, CGPoint(x: frame.width * 0.1, y: frame.height * 0.88))
+        // well above the readouts' panel (its tilt value's top, less the label and padding over it, less a margin)
+        let tilt = element(app, "tilt")
+        let y = tilt.exists ? max(0.5 * frame.height, tilt.frame.minY - 60) : 0.7 * frame.height
+        tapAt(app, CGPoint(x: frame.width * 0.1, y: y))
         let mark = element(app, "tapMark").waitForExistence(timeout: 2)
         let locked = waitUntil(30) { label(app, "status").contains("Slab locked") }
         XCTAssertNotNil(locked, "never locked after a stray tap; status \(label(app, "status"))")
         // once locked, another stray tap: the lock stays
-        tapAt(app, CGPoint(x: frame.width * 0.9, y: frame.height * 0.85))
+        tapAt(app, CGPoint(x: frame.width * 0.9, y: y))
         Thread.sleep(forTimeInterval: 2)
         XCTAssertTrue(label(app, "status").contains("Slab locked"), "the lock went after a stray tap: \(label(app, "status"))")
         screenshot(app, "stray taps")
         let c = try counts(app)
-        summary("stray taps: locked \(String(format: "%.1f", locked ?? -1)) s after the first, mark seen \(mark), "
-                + "counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
-        // (at least the second: the demo may have started its tracker after the first tap)
+        summary("stray taps at y \(Int(y)) of \(Int(frame.height)): the first while \"\(before)\", locked \(String(format: "%.1f", locked ?? -1)) s "
+                + "after it, mark seen \(mark), counts \(c.filter { $0.key.hasPrefix("tap") }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        // both reached the tracker (the first: its mark, or the count of two)
+        XCTAssertTrue(mark || (c["tapSlab"] ?? 0) >= 2, "the first tap never reached the tracker (no mark, tapSlab \(c["tapSlab"] ?? 0))")
         XCTAssertGreaterThanOrEqual(c["tapSlab"] ?? 0, 1, "the taps were taken for the slab")
         XCTAssertEqual(c["tapBall"] ?? 0, 0)
         XCTAssertEqual(c["tapDismiss"] ?? 0, 0)

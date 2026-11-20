@@ -11,9 +11,14 @@ import Foundation
 ///     frame, held still in the world);
 ///   - `dismiss`: a tap on each ring the lane shows that is false (in a shot that expects no ball, any; else one away
 ///     from the truth), up to three;
-///   - stray taps, where a finger lands by mistake: `floorSearch`, one on the floor beside the slab on the first frame
-///     with the phone's live outline (beside it by 1.1 times its size in the image); `floorConfirm`, the same on the
-///     lane's first confirming frame; `floorLocked`, once locked, 0.5 s on and then every 3 s (up to 4), one on the floor
+///   - stray taps, where a finger lands by mistake: `floorSearch`, one on the floor beside the slab (beside the phone's
+///     live outline by 1.1 times its size in the image) on the first frame with that outline that falls between the
+///     lane's scheduled searches (not due, and at least `minDetectionGap` after its last run: a real finger lands on an
+///     ordinary frame, where a tap that ran a search of its own would add one); `floorConfirm`, the same on the lane's
+///     first such confirming frame; `floor05` ... `floor45`, the same at a fixed time (0.5, 1, 1.5, 2, 3, 4.5 s: the
+///     first frame from then on with the live outline, if the lane has not locked by then; such a lane that has locked
+///     first never taps, and copies the untapped lane's result); `floorLocked`, once locked, 0.5 s on and then every 3 s
+///     (up to 4), one on the floor
 ///     0.3 m from the lock (toward the phone, or to a side: the first such place the tracker takes for a slab tap);
 ///     `slabOnLock`, the same times, one on the locked slab's middle; `ballOff`, the ball lane's tap one ball radius
 ///     plus half the finger's slack to the right of the ball's middle.
@@ -34,8 +39,21 @@ public enum KitTapBench {
 
     public enum Lane: String, Codable, CaseIterable {
         case none, slab, slabLate, ball, dismiss, floorSearch, floorConfirm, floorLocked, slabOnLock, ballOff
+        case floor05, floor10, floor15, floor20, floor30, floor45
         /// the lanes that tap the ball where the truth puts it (run only on shots with a ball truth)
         var needsBallTruth: Bool { self == .ball || self == .ballOff }
+        /// a fixed-time stray tap's time (s from the shot's first frame)
+        var strayTime: Double? {
+            switch self {
+            case .floor05: return 0.5
+            case .floor10: return 1
+            case .floor15: return 1.5
+            case .floor20: return 2
+            case .floor30: return 3
+            case .floor45: return 4.5
+            default: return nil
+            }
+        }
     }
 
     public struct Options {
@@ -186,6 +204,12 @@ public enum KitTapBench {
         /// stray taps made, when the next may be, when the first was; every frame's time and whether it was locked
         var strayCount = 0, nextStray: Double? = nil, firstStray: Double? = nil
         var lockedAt: [(Double, Bool)] = []
+        /// when the lane's detector last ran (a search or a re-check)
+        var lastRun = -Double.infinity
+        /// a lane that can no longer tap and has not tapped (`slabLate` locked by its time, a fixed-time stray lane locked
+        /// before its time): its tracker has had exactly the untapped lane's frames, so it stops and copies that lane's
+        /// result at the end
+        var dormant = false
         init(_ lane: Lane, settings: TrackerSettings, options: Options) {
             self.lane = lane
             locator = options.makeBallLocator()
@@ -229,6 +253,8 @@ public enum KitTapBench {
             return LaneRun(l, settings: settings, options: options)
         }
         let t0 = sh.frames[0].time
+        // (a lane that can no longer tap copies the untapped lane's result: only when that lane runs)
+        let canRest = lanes.contains { $0.lane == .none }
         let expectsBall = sh.spec.expect.ball
         // the true ball (world), from its circle on its frame
         var trueBall: Vec3? = nil
@@ -257,9 +283,29 @@ public enum KitTapBench {
                 guard let q = vs.processing.intrinsics.project(ray), vs.processing.intrinsics.contains(q, margin: 2) else { return nil }
                 return q
             }
-            for l in lanes {
+            /// the floor beside the phone's live outline (processing pixels), on the first side that is in view and off it
+            func floorBeside() -> Vec2? {
+                guard let live = f.live?.cornerPoints else { return nil }
+                let pq = live.compactMap(toProcessing)
+                guard pq.count == 4 else { return nil }
+                let mid = pq.reduce(Vec2.zero) { $0 + $1 } / 4
+                let xs = pq.map { $0.x }, ys = pq.map { $0.y }
+                let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+                for off in [Vec2(0, 1.1 * h + 10), Vec2(1.1 * w + 10, 0), Vec2(-1.1 * w - 10, 0), Vec2(0, -1.1 * h - 10)] {
+                    let q = mid + off
+                    if vs.processing.intrinsics.contains(q, margin: 8), !SlabTracker.contains(pq, q, slack: 0.6) { return q }
+                }
+                return nil
+            }
+            for l in lanes where !l.dormant {
                 var tap: Vec2? = nil
                 let locked = l.last?.state == .locked
+                // a frame the lane's schedule does not search on, far enough from its last run that a tap could have run one
+                let offSchedule = !l.tracker.detectionDue(at: t) && t - l.lastRun >= settings.minDetectionGap
+                /// "t:kind", and "/off" for a tap between the scheduled searches
+                func strayNote(_ q: Vec2) -> String {
+                    String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue + (!locked && offSchedule ? "/off" : "")
+                }
                 switch l.lane {
                 case .none: break
                 case .slab:
@@ -267,7 +313,7 @@ public enum KitTapBench {
                 case .slabLate:
                     if !l.slabTapped, t - t0 >= options.lateSlabTap {
                         l.slabTapped = true
-                        if !locked, let p = liveMiddle.flatMap(toProcessing) { tap = p; l.result.slabTapAt = t - t0 }
+                        if !locked, let p = liveMiddle.flatMap(toProcessing) { tap = p; l.result.slabTapAt = t - t0 } else if locked { l.dormant = canRest }
                     }
                 case .ball:
                     // (only while the app does not show the ball: nobody taps a ball the app already has)
@@ -304,24 +350,23 @@ public enum KitTapBench {
                         if let q = pick {
                             tap = q; l.strayCount += 1; l.nextStray = t + 3
                             if l.firstStray == nil { l.firstStray = t }
-                            l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
+                            l.result.strayTaps.append(strayNote(q))
                         }
                     }
                 case .floorSearch, .floorConfirm:
                     let when = l.lane == .floorSearch || l.last?.state == .confirming
-                    if l.strayCount == 0, !locked, when, let live = f.live?.cornerPoints {
-                        let pq = live.compactMap(toProcessing)
-                        if pq.count == 4 {
-                            let mid = pq.reduce(Vec2.zero) { $0 + $1 } / 4
-                            let xs = pq.map { $0.x }, ys = pq.map { $0.y }
-                            let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
-                            for off in [Vec2(0, 1.1 * h + 10), Vec2(1.1 * w + 10, 0), Vec2(-1.1 * w - 10, 0), Vec2(0, -1.1 * h - 10)] {
-                                let q = mid + off
-                                guard vs.processing.intrinsics.contains(q, margin: 8), !SlabTracker.contains(pq, q, slack: 0.6) else { continue }
-                                tap = q; l.strayCount = 1; l.firstStray = t
-                                l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
-                                break
-                            }
+                    if l.strayCount == 0, !locked, when, offSchedule, let q = floorBeside() {
+                        tap = q; l.strayCount = 1; l.firstStray = t
+                        l.result.strayTaps.append(strayNote(q))
+                    }
+                case .floor05, .floor10, .floor15, .floor20, .floor30, .floor45:
+                    if l.strayCount == 0, !l.slabTapped, let at = l.lane.strayTime, t - t0 >= at {
+                        if locked {
+                            // (locked first: this lane never taps; `slabTapped` marks it done)
+                            l.slabTapped = true; l.dormant = canRest
+                        } else if let q = floorBeside() {
+                            tap = q; l.strayCount = 1; l.firstStray = t
+                            l.result.strayTaps.append(strayNote(q))
                         }
                     }
                 case .ballOff:
@@ -334,10 +379,11 @@ public enum KitTapBench {
                         let q = p + Vec2(r + 0.5 * TapHints.slack(fraction: settings.tapSlackFraction, width: K.width, height: K.height), 0)
                         if K.contains(q, margin: 2) {
                             tap = q; l.ballTapped = true; l.result.ballTapAt = t - t0
-                            l.result.strayTaps.append(String(format: "%.2f:", t - t0) + l.tracker.tapKind(q, view: vs.processing).rawValue)
+                            l.result.strayTaps.append(strayNote(q))
                         }
                     }
                 }
+                if l.dormant { continue }
                 let depth: () -> (DepthMap, CameraIntrinsics)? = {
                     guard let u = f.depthURL(shotFolder: sh.folder), let d = try? Data(contentsOf: u), let k = try? KitDepth(data: d),
                           let vk = f.cameraIntrinsics(videoWidth: pipeline.videoWidth, videoHeight: pipeline.videoHeight) else { return nil }
@@ -346,6 +392,7 @@ public enum KitTapBench {
                 guard let pf = pipeline.frame(image: img, kitFrame: f, tracker: l.tracker, depth: depth, tap: tap) else { continue }
                 let out = l.tracker.process(pf.tracker)
                 l.last = out
+                if out.detectionKind != nil { l.lastRun = t }
                 if options.traceEvents, !out.events.isEmpty || tap != nil {
                     options.log?(String(format: "trace %@ %@ t=%.2f %@ seed=%@ ", sh.spec.id, l.lane.rawValue, t - t0, "\(out.state)",
                                         l.tracker.seedPoint != nil ? "y" : "n") + out.events.joined(separator: ","))
@@ -397,6 +444,13 @@ public enum KitTapBench {
             let s = v.sorted(), k = s.count
             return k % 2 == 1 ? s[k / 2] : (s[k / 2 - 1] + s[k / 2]) / 2
         }
+        // a dormant lane ran exactly as the untapped one until it stopped, and would have after: its result is that lane's
+        for l in lanes where l.dormant {
+            guard let n = none else { continue }
+            l.result = n.result; l.result.lane = l.lane
+            l.lockTilts = n.lockTilts; l.shownTilts = n.shownTilts; l.lateFrames = n.lateFrames; l.lateLocked = n.lateLocked
+            l.lockedAt = n.lockedAt; l.falseAt = n.falseAt; l.lockTime = n.lockTime
+        }
         for l in lanes {
             l.result.lockTiltMedian = median(l.lockTilts)
             l.result.settledShare = l.lockTilts.isEmpty ? nil : Double(l.shownTilts.count) / Double(l.lockTilts.count)
@@ -405,7 +459,8 @@ public enum KitTapBench {
                 l.result.shownTiltError = median(l.shownTilts.map { abs($0 - tt) })
             }
             l.result.lockRate = l.lateFrames > 0 ? Double(l.lateLocked) / Double(l.lateFrames) : nil
-            l.result.counts = l.tracker.counts.filter { $0.key.hasPrefix("tap") || ["locks", "relocks", "lost", "reset"].contains($0.key) }
+            l.result.counts = (l.dormant ? none?.tracker ?? l.tracker : l.tracker).counts
+                .filter { $0.key.hasPrefix("tap") || ["locks", "relocks", "lost", "reset"].contains($0.key) }
             if let n = none, l.lane != .none, let a = l.result.endNormal, let b = n.result.endNormal {
                 l.result.endNormalVsNone = Units.degrees(a.angle(to: b))
             }

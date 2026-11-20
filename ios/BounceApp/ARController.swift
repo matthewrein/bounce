@@ -688,7 +688,9 @@ final class ARController: NSObject, ARSessionDelegate {
         let t = f.timestamp
         let recImg = recorder != nil && cadence.needsImage(at: t, tracker: tracker)
         // (a tap makes the slab detector run only when it is taken for the slab: one on the ball's ring, or where a ball
-        // over the locked slab could be, is a ball hint, `SlabTracker.tapKind`)
+        // over the locked slab could be, is a ball hint, `SlabTracker.tapKind`; with tap hints, only while locked: before
+        // the lock a slab tap steers the scheduled searches, `SlabTracker.detectionDue(at:tap:)`. Its frame's LiDAR depth is
+        // read all the same: it places the tapped point)
         let slabTap = tap.map { tracker.tapSeedsSlab($0, view: pview) } ?? false
         let needImage = tracker.detectionDue(at: t, tap: slabTap) || recImg
         let ycc: YCCImage? = needImage ? f.ycc() : nil
