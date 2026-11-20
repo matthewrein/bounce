@@ -66,9 +66,10 @@ final class KitScorerTests: XCTestCase {
         XCTAssertEqual(neg.metric("slabLockedRate")?.value, 0)
         XCTAssertEqual(neg.metric("ballFalsePositiveRate")?.note,
                        "the app looks for the ball only on a lock, and the slab is not in view")
-        // the held ball, found by the truth-based finder: the drop height the app works out from it
+        // the held ball, found by the truth-based finder on every search: the app shows it from the ball gate's third find
+        // (n15, `BallGateSettings.sightings`), so on 5 of the shot's 7 searches; and the drop height it works out from it
         let held = try XCTUnwrap(r.shot("s09-held-low"))
-        XCTAssertEqual(held.metric("ballDetectionRate")?.value, 1)
+        XCTAssertEqual(held.metric("ballDetectionRate")?.value ?? 0, 5.0 / 7, accuracy: 1e-9)
         XCTAssertLessThan(abs(try XCTUnwrap(held.metric("dropHeightError")?.value)), 10)
         XCTAssertEqual(r.shot("s04-level-still")?.metric("ballFalsePositiveRate")?.value, 0)
         // progress lines: ids and numbers only

@@ -79,6 +79,9 @@ public final class SlabFinderDetector: SlabDetecting {
 /// The ball finder behind the tracker's ball interface. A ball the last scan missed is held over for a couple of
 /// scans (carried along with the slab), so a frame where the ball blurs does not drop the drop height.
 extension BallLocator: BallLocating {
+    /// the last scan's result is a ball held over from an earlier one (`BallObservation.missedUpdates` above 0)
+    public var heldOver: Bool { (current?.missedUpdates ?? 0) > 0 }
+
     public func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
         update(luma: image, intrinsics: intrinsics, slab: slab, spec: spec, ball: ball, down: down).map { ($0.center, $0.circle.center, $0.circle.radius) }
     }

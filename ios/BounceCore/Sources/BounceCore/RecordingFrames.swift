@@ -101,6 +101,11 @@ public struct RecordedOutput: Codable, Equatable {
     public var ballAwaitsConfirmation: Bool?
     /// the ball: world centre x, y, z (m), then its circle's x, y and radius in the ball finder's image (pixels)
     public var ball: [Double]?
+    /// With the ball gate (`TrackerSettings.ballGate`): the ball finder's own result on this frame when the gate did not
+    /// show it (`ball` is then nil; same layout), and whether the finder's result was its hold-over of a ball it missed
+    /// (`TrackerOutput.ballFound`, `ballHeldOver`). nil: no gate, nothing held back, or a recording from before n15.
+    public var ballFound: [Double]?
+    public var ballHeldOver: Bool?
     public var depthFused: Bool?
     public var lockUnconfirmed: Bool?
     /// where the slab's full-resolution crop was cut on this frame (`TrackerOutput.slabDetail`), and the outlines of a
@@ -125,6 +130,8 @@ public struct RecordedOutput: Codable, Equatable {
         ballSearched = o.ballSearched ? true : nil
         ballAwaitsConfirmation = o.ballAwaitsConfirmation ? true : nil
         ball = o.ball.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
+        ballFound = o.ballFound.map { [$0.center.x, $0.center.y, $0.center.z, $0.circle.x, $0.circle.y, $0.radius] }
+        ballHeldOver = o.ballHeldOver ? true : nil
         depthFused = o.depthFused ? true : nil
         lockUnconfirmed = o.lockUnconfirmed ? true : nil
         slabCrop = o.slabDetail?.crop
@@ -305,7 +312,9 @@ public struct RecordingCadence {
             if keepImage || output.detections != nil {
                 depth = d
             } else if tracker.state == .locked, let s = tracker.imageSlab,
-                      let part = PlaneFit.depthRegion(depth: d, depthIntrinsics: dk, view: tf.view, slab: s) {
+                      let part = PlaneFit.depthRegion(depth: d, depthIntrinsics: dk, view: tf.view, slab: s,
+                                                      ball: output.ballGateVerdict == nil ? nil
+                                                          : (output.ball ?? output.ballFound).map { ($0.center, tracker.settings.ball.radius) }) {
                 depth = part.0; rf.depthIntrinsics = part.1
             }
         }
@@ -319,12 +328,20 @@ public struct RecordingCadence {
 extension PlaneFit {
     /// The part of a depth map `checkSlabTop` reads for this slab (the bounding box of its shrunk top, plus `margin`
     /// pixels), with the intrinsics of that part: checking it gives the same result as checking the whole map. nil if
-    /// the top does not project into the map.
+    /// the top does not project into the map. With `ball` (its world centre and radius), the box also takes in what the
+    /// ball gate reads around it (`BallGate.lidarExcess`), so a replay's gate reads the same depths.
     public static func depthRegion(depth: DepthMap, depthIntrinsics K: CameraIntrinsics, view: CameraView, slab: SlabPose,
-                                   inner: Double = 0.7, margin: Int = 2) -> (DepthMap, CameraIntrinsics)? {
-        let poly = slabCornerSigns.map { slab.point(u: $0.0 * slab.halfU * inner, v: $0.1 * slab.halfV * inner) }
+                                   inner: Double = 0.7, margin: Int = 2, ball: (center: Vec3, radius: Double)? = nil) -> (DepthMap, CameraIntrinsics)? {
+        var poly = slabCornerSigns.map { slab.point(u: $0.0 * slab.halfU * inner, v: $0.1 * slab.halfV * inner) }
             .compactMap { K.project(view.toCamera($0)) }
         guard poly.count == 4 else { return nil }
+        if let b = ball {
+            let c = view.toCamera(b.center)
+            if c.z > 0.05, let p = K.project(c) {
+                let reach = max(0.71, 0.5 * b.radius * K.fx / c.z) + 1
+                poly += [p - Vec2(reach, reach), p + Vec2(reach, reach)]
+            }
+        }
         let x0 = max(0, Int(floor(poly.map { $0.x }.min()!)) - margin), x1 = min(depth.width - 1, Int(ceil(poly.map { $0.x }.max()!)) + margin)
         let y0 = max(0, Int(floor(poly.map { $0.y }.min()!)) - margin), y1 = min(depth.height - 1, Int(ceil(poly.map { $0.y }.max()!)) + margin)
         guard x1 >= x0, y1 >= y0 else { return nil }

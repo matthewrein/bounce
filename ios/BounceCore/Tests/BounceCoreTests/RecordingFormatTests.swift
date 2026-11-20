@@ -51,6 +51,8 @@ final class RecordingFormatTests: XCTestCase {
         s.maxSweepRegions = 30; s.sweepSkipsFinds = true; s.sweepSameOutlinePixels = 1.2
         s.idleSearchAfter = 0.8; s.idleSearchInterval = 0.4; s.idleSearchMoveDegrees = 3; s.idleSearchMoveDistance = 0.05
         s.idleBallAfter = 0.4; s.idleBallInterval = 0.25
+        var gate = BallGateSettings(); gate.sightings = 4; gate.acrossMetres = 0.008; gate.lidarSurfaceMetres = nil
+        s.ballGate = gate
         for c in Mirror(reflecting: s).children where c.label != "shapeLimits" {
             let d = Mirror(reflecting: TrackerSettings()).children.first { $0.label == c.label }!
             XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes \(c.label!)")
@@ -58,6 +60,8 @@ final class RecordingFormatTests: XCTestCase {
         let back = try JSONDecoder().decode(TrackerSettings.self, from: JSONEncoder().encode(s))
         XCTAssertEqual(back, s)
         XCTAssertNil(back.cradleRadius)
+        XCTAssertEqual(back.ballGate, gate)
+        XCTAssertNil(back.ballGate?.lidarSurfaceMetres)
         // a file from an older build (fields missing) keeps the defaults
         XCTAssertEqual(try JSONDecoder().decode(TrackerSettings.self, from: Data("{}".utf8)), TrackerSettings())
         let partial = try JSONDecoder().decode(TrackerSettings.self, from: Data(#"{"searchInterval": 0.12, "shapeLimits": {"maxTiltDegrees": 20}}"#.utf8))

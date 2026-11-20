@@ -343,10 +343,16 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertGreaterThan(k, 1)
         XCTAssertEqual(phone.times[scans[k]] - phone.times[scans[k - 1]], 0.3, accuracy: 0.03, "idle before the ball")
         XCTAssertEqual(phone.times[scans[k + 1]] - phone.times[scans[k]], 0.1, accuracy: 0.02, "the usual rate while it waits")
-        XCTAssertNotNil(phone.outputs[scans[k + 1]].ball, "confirmed on the next scan")
+        // confirmed on the next scan: the finder reports it there; the ball gate (n15) shows it from its third find, and the
+        // recording keeps what it held back, so a replay with the phone's results gates them as the phone did
+        XCTAssertNotNil(phone.outputs[scans[k + 1]].ballFound, "confirmed on the next scan")
+        XCTAssertNil(phone.outputs[scans[k + 1]].ball, "held back by the gate")
+        XCTAssertEqual(phone.outputs[scans[k + 3]].ballGateVerdict, .accepted)
+        XCTAssertNotNil(phone.outputs[scans[k + 3]].ball, "shown on the gate's third find")
         let rec = try RecordingReader(folder: folder)
         XCTAssertEqual(rec.frames[waits].output?.ballAwaitsConfirmation, true, "the recording keeps it")
         XCTAssertNil(rec.frames[scans[k - 1]].output?.ballAwaitsConfirmation)
+        XCTAssertNotNil(rec.frames[scans[k + 1]].output?.ballFound, "the recording keeps what the gate held back")
 
         let run = try ReplayRunner(reader: rec).replay(detector: CornerCodeDetector(), ballLocator: TwoScanDisc())
         XCTAssertTrue(run.report.agrees, run.report.description)

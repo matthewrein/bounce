@@ -127,6 +127,9 @@ public struct RecordingSettings: Codable, Equatable {
     /// The app's ball finder, with no ball shown or about to be, slows to every 0.3 s after this long (s) of scans that
     /// found none (`TrackerSettings.idleBallAfter`); a followed ball is looked for every 0.1 s as before.
     public static let appIdleBallAfter = 0.5
+    /// The app shows a ball only through the ball gate (`TrackerSettings.ballGate`, n15): the gate's own values
+    /// (`BallGateSettings`), measured on the owner's two kits.
+    public static let appBallGate: BallGateSettings? = BallGateSettings()
 
     /// The tracker settings the app runs with for these settings (AppSettings.tracker should use this, so the app and
     /// a replay of an older recording build them the same way).
@@ -146,6 +149,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
         t.readoutsFromSettledNormal = true
         t.lockKeepsNewestPerView = true
+        t.ballGate = RecordingSettings.appBallGate
         return t
     }
 

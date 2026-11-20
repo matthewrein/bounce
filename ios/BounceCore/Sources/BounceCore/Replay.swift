@@ -143,7 +143,8 @@ public struct ReplayRunner {
             var ballImage: Plane? = nil, ballK: CameraIntrinsics? = nil
             ball.prepare(recorded: nil)
             let phoneRan = f.output?.ballSearched == true
-            let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = f.output?.ball.flatMap { b in
+            // the finder's own result on the phone: what the ball gate held back, else what was shown (the same, without a gate)
+            let phoneBall: (center: Vec3, circle: Vec2, radius: Double)? = (f.output?.ballFound ?? f.output?.ball).flatMap { b in
                 b.count == 6 ? (f.view.toCamera(Vec3(b[0], b[1], b[2])), Vec2(b[3], b[4]), b[5]) : nil
             }
             let useRecordedBall = options.ball == .recorded || ball.inner == nil
@@ -155,7 +156,7 @@ public struct ReplayRunner {
             } else if phoneRan {
                 // the phone's result, handed over through a stand-in image with the crop's intrinsics
                 ballImage = Plane(width: 1, height: 1); ballK = f.ballIntrinsics ?? f.intrinsics
-                ball.prepare(recorded: .some(phoneBall), awaits: f.output?.ballAwaitsConfirmation)
+                ball.prepare(recorded: .some(phoneBall), awaits: f.output?.ballAwaitsConfirmation, heldOver: f.output?.ballHeldOver)
                 if options.ball == .run {
                     subs.append(ball.inner == nil ? "ball: the phone's result (no ball finder given)" : "ball: the phone's result (no ball image recorded)")
                 }
@@ -321,16 +322,20 @@ final class ReplayBallLocator: BallLocating {
     private var recorded: ((center: Vec3, circle: Vec2, radius: Double)?)? = nil
     /// the phone's finder's `awaitsConfirmation` after this frame's scan, when its result is used
     private var recordedAwaits: Bool? = nil
+    /// and whether its result was a hold-over (`heldOver`, which the ball gate reads)
+    private var recordedHeldOver: Bool? = nil
 
     init(_ inner: BallLocating?) { self.inner = inner }
 
-    func prepare(recorded: ((center: Vec3, circle: Vec2, radius: Double)?)?, awaits: Bool? = nil) {
+    func prepare(recorded: ((center: Vec3, circle: Vec2, radius: Double)?)?, awaits: Bool? = nil, heldOver: Bool? = nil) {
         self.recorded = recorded
         recordedAwaits = recorded != nil ? (awaits ?? false) : nil
+        recordedHeldOver = recorded != nil ? (heldOver ?? false) : nil
     }
 
     /// The phone's, on a frame whose result is the phone's; else the real finder's (the idle ball rate reads it).
     var awaitsConfirmation: Bool { recordedAwaits ?? inner?.awaitsConfirmation ?? false }
+    var heldOver: Bool { recordedHeldOver ?? inner?.heldOver ?? false }
 
     func locate(image: Plane, intrinsics: CameraIntrinsics, slab: SlabPose, spec: SlabSpec, ball: BallSpec, down: Vec3) -> (center: Vec3, circle: Vec2, radius: Double)? {
         if let r = recorded { return r }

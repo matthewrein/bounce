@@ -171,9 +171,10 @@ public struct DetectionRecord: Codable, Equatable {
 }
 
 /// Finds the ball above the slab. The real one is BallLocator; tests can plug in others.
-/// (The default: nothing waits for a second scan.)
+/// (The defaults: nothing waits for a second scan, and nothing is held over.)
 extension BallLocating {
     public var awaitsConfirmation: Bool { false }
+    public var heldOver: Bool { false }
 }
 
 public protocol BallLocating: AnyObject {
@@ -183,6 +184,9 @@ public protocol BallLocating: AnyObject {
     /// The last scan left something to be confirmed by the next one (half an outline that is reported only once it shows
     /// up twice in the same place): the tracker scans again at the usual rate, not the idle one (`idleBallAfter`).
     var awaitsConfirmation: Bool { get }
+    /// The last scan's result is the finder's hold-over of a ball it missed (carried along from an earlier scan), not
+    /// something it found in this image: the ball gate does not count it as a sighting (`TrackerSettings.ballGate`).
+    var heldOver: Bool { get }
     func reset()
 }
 
@@ -359,6 +363,11 @@ public struct TrackerSettings: Equatable {
     /// agree still average the lock's jitter down. Off (the default, so older recordings replay as the phone ran them):
     /// the newest `historySize`, as before. The app's is on (`RecordingSettings.trackerSettings`).
     public var lockKeepsNewestPerView = false
+    /// The ball gate (n15, `BallGateSettings`): the ball finder's results are shown, and set the drop height and the drop
+    /// point, only once they agree over several searches, over the slab's top at a drop height, and not where LiDAR sees a
+    /// surface. nil (the default, so older recordings, whose settings lack it, replay as the phone ran them): every result
+    /// is shown, as before. The app's is on (`RecordingSettings.trackerSettings`).
+    public var ballGate: BallGateSettings? = nil
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
@@ -527,6 +536,13 @@ public struct TrackerOutput {
     /// .awaitsConfirmation`): the idle ball rate does not start (a recording keeps it, so a replay that uses the phone's
     /// ball result follows the same rate)
     public var ballAwaitsConfirmation: Bool = false
+    /// With the ball gate (`TrackerSettings.ballGate`), on a frame the ball finder ran on: what the gate made of its result
+    /// (nil: no search, or no gate), the finder's own result when the gate did not show it (`ball` is then nil), and whether
+    /// that result was the finder's hold-over of a ball it missed (`BallLocating.heldOver`). A recording keeps the last two,
+    /// so a replay that uses the phone's ball result gates it as the phone did.
+    public var ballGateVerdict: BallGate.Verdict? = nil
+    public var ballFound: (center: Vec3, circle: Vec2, radius: Double)? = nil
+    public var ballHeldOver: Bool = false
     /// what the slab detector's run on this frame was for (nil: it did not run; then `detections` is nil too)
     public var detectionKind: TrackerDetectionKind? = nil
     /// the full-resolution crop the tracker got for the slab's edges on this frame (`TrackerFrame.slabDetail`), if any
@@ -680,6 +696,9 @@ public final class SlabTracker {
     private var previousTime: Double?
     private var lastMeasured: (normal: Vec3, time: Double)?
     private var ballState: (center: Vec3, circle: Vec2, radius: Double)?  // world centre
+    /// with the ball gate: its state, and the ball it shows (the finder's last result, if the gate showed it)
+    private var ballGate = BallGate(settings: BallGateSettings())
+    private var shownBall: (center: Vec3, circle: Vec2, radius: Double)?
     private var misses = 0
     private var unconfirmed: (elapsed: Double, rechecks: Int)?
     private var pendingDiscontinuity: String?
@@ -1126,14 +1145,34 @@ public final class SlabTracker {
             if let b = loc.locate(image: img, intrinsics: bk, slab: sc, spec: settings.spec, ball: settings.ball, down: downCam) {
                 ballState = (f.view.toWorld(b.center), b.circle, b.radius); bump("ballFrames"); lastBallSeen = t
             } else { ballState = nil }
-            // nothing shown or about to be: the run of empty scans goes on (or starts)
+            // nothing found or about to be: the run of empty scans goes on (or starts). (The finder's own results, gated or
+            // not: a find the gate holds back is about to be shown, and is looked for at the usual rate.)
             let awaits = loc.awaitsConfirmation
             out.ballAwaitsConfirmation = awaits
             if ballState == nil && !awaits { emptyBallScans = emptyBallScans ?? t } else { emptyBallScans = nil }
+            if let gs = settings.ballGate {
+                let held = ballState != nil && loc.heldOver
+                // LiDAR at the ball's centre, where the frame has depth and the map resolves the ball
+                var excess: Double? = nil
+                if let b = ballState, gs.lidarSurfaceMetres != nil, let dm = f.depth, let dk = f.depthIntrinsics {
+                    excess = BallGate.lidarExcess(depth: dm, intrinsics: dk, ballCenter: f.view.toCamera(b.center), ballRadius: settings.ball.radius,
+                                                  minRadiusPixels: gs.lidarMinRadiusPixels)
+                }
+                ballGate.settings = gs
+                let v = ballGate.update(time: t, center: ballState?.center, heldOver: held, slab: s, spec: settings.spec, ball: settings.ball,
+                                        down: downW, camera: f.view.position, lidarExcess: excess)
+                shownBall = v.shows ? ballState : nil
+                out.ballGateVerdict = v
+                out.ballHeldOver = held
+                if !v.shows { out.ballFound = ballState }
+                if v != .none { bump("ballGate." + v.rawValue) }
+            }
         }
         // a new lock, a re-lock or a discontinuity: the ball is looked for at the usual rate again
         if events.contains(where: { $0 == "locked" || $0 == "relocked" || $0.hasPrefix("lock-unconfirmed") }) { emptyBallScans = nil }
-        out.ball = ballState
+        // what the app shows, and takes the drop height and point from: with the gate, only what it let through
+        let shownNow = settings.ballGate != nil ? shownBall : ballState
+        out.ball = shownNow
 
         // the bounce, in world coordinates: from the lock, or once the tilt is settled (and the settings say so) from the
         // lock's centre with the settled normal
@@ -1143,7 +1182,7 @@ public final class SlabTracker {
             shown = SlabPose(center: s.center, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
         }
         let floorBelow = f.floorY.map { s.center.y - $0 }.flatMap { $0 > 0.005 && $0 < 1.0 ? $0 : nil }
-        let res = Bounce.compute(pose: shown, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: ballState?.center,
+        let res = Bounce.compute(pose: shown, spec: settings.spec, ball: settings.ball, down: downW, ballCenter: shownNow?.center,
                                  defaultDropHeight: settings.defaultDropHeight, rule: settings.launchRule, floorBelowCenter: floorBelow)
         out.path = res.path; out.drop = res.drop
         out.readouts = Readouts(tiltDegrees: Units.degrees(shown.tilt(down: downW)), apexHeight: res.path.apexHeight, landingDistance: res.path.range,
@@ -1508,7 +1547,7 @@ public final class SlabTracker {
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
         hist = honestRestart(with: ms)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
-        ballLocator?.reset(); ballState = nil
+        ballLocator?.reset(); ballState = nil; shownBall = nil; ballGate.reset()
         return true
     }
 
@@ -1614,7 +1653,7 @@ public final class SlabTracker {
         emptyBallScans = nil
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
-        longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset()
+        longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset()
         honest.reset()
         events.append("lost"); bump("lost")
     }
@@ -1624,7 +1663,7 @@ public final class SlabTracker {
         emptyBallScans = nil
         state = .searching; hist = []; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; candidates = []; movers = []
         recent = []; partners = []; implausible = 0
-        depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset()
+        depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset()
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"; learnedProfile = nil
         honest.reset()
@@ -1662,7 +1701,7 @@ public final class SlabTracker {
         }
         noiseSamples = []
         previousCamera = nil
-        ballState = nil; ballLocator?.reset()
+        ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset()
         detector.forgetPixelMemory()
         learnedProfile = nil
         if !hist.isEmpty { refreshLock() }

@@ -2,87 +2,82 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
-## Build n15 (20 November 2026): the lattice ball finder
+## Build n15 (20 November 2026): the lattice ball finder, and no wrong balls
 
-Small build on top of n14; only the ball finder changes. The slab, the tilt, the bounce and the screens are as in n14,
-except that the Developer demo now draws your lattice ball. Developer shows **n15**. There is still nothing to set:
-point the phone and hold the ball over the slab.
+Small build on top of n14; only the ball changes. The slab, the tilt, the bounce and the screens are as in n14 (the
+Developer demo now draws your lattice ball). Developer shows **n15**. Nothing to set: point the phone and hold the ball
+over the slab. (Your new recording and diagnostics from the n14 test had not reached me when this was built: these
+numbers are from your two kits.)
 
-**What changed**
-- The app now looks for your ball as it is: a dark, open titanium lattice held in your fingertips. Until n14 it looked
-  for a shiny solid ball. It wanted a bright highlight on the ball, which the dark lattice over your white play mat
-  never has; it wanted the whole outline, or a whole half of it, where your thumb and two fingers hide a third to a
-  half; and it ignored a ball found from part of its outline less than 20 cm (8 in) above the slab.
-- Now a ball also counts when it is darker than the floor around it, much darker right at its edge and finely patterned
-  inside (a printed ring or a toy ball is not); its outline can be read from the arcs between your fingers; a lattice
-  ball found from part of its outline counts from 5 cm (2 in) above the slab; and one that looks more like a flat
-  circle printed on the floor than a ball is dropped.
-- To start following a ball found this new way, its outline must lie on one circle, as a ball's does. The black leaf
-  printed on your mat is dark and patterned too, and the first n15 reported it as a ball 0.65 m (2 ft) over the slab;
-  its outline is not a circle, so it no longer is. The same check stops a circle drawn round the ball and your thumb.
+**On your real clips, n14 against n15.** Your two kits' videos, replayed here in private through the app's own ball
+search on the slab lock your phone had while recording, on the app's own schedule (a search every 0.1 s, every 0.3 s
+after half a second of finding nothing), against the ball's place marked by hand and by a tracking script, spot-checked
+by eye. "Found" counts searches after which the app showed a ball on the true ball, out of the searches while the ball
+was held over the slab, resting on it or falling over it. "Wrong ball" counts each time a ball was shown that is not
+the true ball, over all the footage (slab alone, no ball, ball on the floor, drops):
 
-**Checked on your real clips**: your two kits' videos replayed here through n14 and n15, in private, against the ball's
-place marked by hand and by a tracking script, checked by eye. The searches are the app's own, on the slab lock your
-phone itself had while recording, one every 0.1 s. The app itself slows to one search every 0.3 s after half a second
-of finding nothing, so it searches less often than that; the numbers on its own schedule are in brackets. When the app
-loses the ball it keeps "ball in view" on the screen for up to two more searches (0.2-0.6 s): "shown" counts those too.
-n14 then n15:
-- The ball held over the slab, found on the ball:
-  - first kit (wooden floor): 2 ft 49 -> 49 of 50; 1 ft 5 -> 45 of 50 [5 of 30 -> 45 of 50]. At 4 in the phone never
-    locked the slab; on the scorer's own lock n14 found it in none of its 10 searches, n15 in 15 of 18.
-  - second kit (white play mat): 2 ft 0 -> 48 of 50; 4 in 0 -> 33 of 50; 1 ft 0 -> 5 of 50, still weak [n14 none of
-    20 at each height; n15 2 ft 48 of 50, 4 in 33 of 48, 1 ft 5 of 36]. At 4 in and 1 ft the first find came 1.4 and
-    1.7 s after the lock (at 2 ft, 0.1 s).
-- A ball reported where there is none:
-  - ball held: none in either kit, n14 none either. (The first n15 took the tip of your thumb for the ball once on the
-    second kit's 1 ft shot; it no longer does.) Before the release of a drop: on the first kit's first drop the app
-    takes a fingertip for the ball twice, as n14 did; on the second kit's first drop n14 did so twice, n15 not.
-  - the slab alone (the scan, the stills and the arcs): first kit none -> none of 924 searches; second kit 33 -> 33
-    finds, shown 47 -> 47 times of 1,050 searches [21 -> 21 finds, shown 27 -> 27 times of about 435]: the same finds
-    as n14's, in the same places, on the green toy ball, the road's turn and the car-wheel prints on the mat.
-  - the first kit's ball on the floor at 3 ft: 9 finds, shown 14 times of 50, on a black step stool at the picture's
-    lower-left edge, as in n14.
-  - In the scorer's own replay, which locks the slab a little differently (and leaves the scan out of this count):
-    first kit 4 -> 5 finds, shown 6 -> 6 times (where n14 held a find at the picture's edge over, n15 finds it afresh);
-    second kit 5 -> 4 finds, shown 12 -> 11 times. (The first n15: 5 and 12 finds; on the second kit the extra ones
-    were the leaf.) On that lock the ball held 4 in over the mat is not found (n14 neither), though the phone's own
-    lock finds it: the check that the outline is one circle costs that.
-- The falling ball: the app looks for the ball about 10 times a second, not on every frame, so a 1 ft drop (about a
-  quarter of a second in the air) gives it two or three looks at the falling ball at best. To see how well the finder
-  sees a falling ball, the kit's scorer follows it on every frame of the 60 fps drop clips (its "dense track", for
-  measuring drops; the app does not do this). Fall and bounce frames found on the ball: first kit 10 -> 48 of 113
-  (the falls alone 1 -> 23 of 52), second kit 4 -> 29 of 101 (the falls 1 -> 8 of 42). Frames where it followed
-  something else: 23 -> 24 and 17 -> 22, mostly your open hand just after the release; on the first kit also the
-  black step stool at the picture's lower-left edge (7 frames), your watch strap and the floor. Before the release
-  the dense track takes something else for the ball more often than n14 on the first kit (68 -> 93 frames; second
-  kit 149 -> 141), and with your first kit's ball resting in the dish it wanders to the step stool on 99 of 144 frames
-  (n14: 35). The app's own search reports nothing there (it looks from 5 cm up, so it does not report the resting ball
-  either). The dense track is not asked that the outline be one circle: a blurred falling ball's seldom is.
+| | n14 | n15 |
+|---|---|---|
+| First kit (wooden floor), ball found | 130 of 197 searches (66%) | 157 of 217 (72%) |
+| first shown after (median of the ball shots) | 0.1 s | 0.3 s |
+| wrong balls | 13 times in 2.9 min: 4.6 a minute, on screen 2.6 s a minute | 3 times: 1.1 a minute, 0.3 s a minute |
+| Second kit (play mat), ball found | 4 of 148 (3%) | 134 of 249 (54%) |
+| first shown after | 0.2 s, on 1 of 7 ball shots | 0.3 s (on 5 of 7; at most 2.0 s) |
+| wrong balls | 3 times in 3.1 min: 1.0 a minute, 0.9 s a minute | none |
 
-**Only on test pictures**: the lattice ball as the app's test scenes and its demo now draw it (a 30 mm shell of 1.6 mm
-holes, not a picture of your ball): held in the fingers over wood and over a mat, 8 of 8 found, the drop height within
-1 cm; the mat's prints and a toy ball, nothing reported; a falling lattice ball, 8 of 15 frames (most of the last 20 cm
-before the slab not). With the new finder switched off, it finds exactly what n14 found on the tests' ball pictures;
-on your clips, switched off, it gave n14's finds on all 3,249 of the phone's own searches.
+So n15 beats n14 on both kits: it finds the ball more often (on the mat, where n14 found it almost never) and shows a
+wrong ball less often. In detail, n14 then n15:
+- Held over the slab. First kit: 2 ft 49 -> 47 of 50; 1 ft 11 of 30 -> 47 of 50; 4 in: your phone never locked the
+  slab in that shot. Second kit: 2 ft 0 of 20 -> 47 of 50; 4 in 0 of 20 -> 34 of 48 (first shown after 1.6 s); 1 ft
+  0 of 20 -> 6 of 36 (after 2.0 s), still weak. Before the release of a drop: first kit 70 -> 63 of 85, second kit
+  4 of 62 -> 47 of 88 (two of its four drops: none in either build).
+- Resting in the dish (s08): never shown, in either build: the app looks for a ball from 5 cm above the slab.
+- Falling: the app searches about 10 times a second, so a fall over the slab (10-14 frames, a fifth of a second) gets
+  one or two searches; neither build showed the falling ball on any of them (8 and 3 searches). The app does not
+  follow the fall frame by frame; the kit's scorer does that for measuring drops (unchanged from the first n15).
+- Wrong balls, n14: on the first kit the ball lying on the floor after it bounced off the slab, shown as if held over
+  the slab (55 searches; its size read too large puts it 15-35 cm "up"), a black step stool at the picture's edge (16)
+  and a fingertip before a release (3); on the second kit the mat's prints (27). n15: the stool for half a second, the
+  ball on the floor after the edge drop for two searches, and once the place where the ball had been, held over 0.2 s
+  after you let go (it was then on your thumb).
 
-**Not yet run**: GitHub's checks will build the app with the new finder and run its demo in the Simulator once this
-build is pushed; it has not been pushed. The demo's first search now misses (it finds the lattice ball from part of its
-outline, which takes two searches). Not run on a phone.
+**What keeps the wrong balls off the screen (new, plain words).** The finder's results now pass a gate before the app
+shows a ball or takes the drop height from it:
+- it must be found **three times within half a second in one place**: within 6 mm across the line of sight and a few
+  percent along it, in the room (the ball's 30 mm size and the phone's position give its place). Your held ball stayed
+  within 4.2 mm between searches on your clips; the mat's prints, seen from a moving phone, drift 3-7 mm a search
+  (6-14 mm over two), and the fingertip n14 took for the ball moved 7 mm. A single find never shows.
+- it must be **over the slab's top** (straight above it, within 1 cm of its edges) and **5 cm to 1.8 m above it**;
+  anything at or under the slab's surface or beside it is never shown.
+- where **LiDAR** can see the ball (about half a metre from the phone or nearer), a depth well behind the ball (15 cm or
+  more) means a print or the floor, and that place is not taken for 1 s. On your clips LiDAR read your held ball
+  within 5 cm of where its size put it (25 frames); the stool read 1.3 m behind, the ball on the floor 0.2-0.4 m.
+- once shown, it stays while each new find agrees with it (and for up to two searches the finder misses); after a
+  third of a second unseen, or a find elsewhere, it goes, and must be found three times again.
+Each rule's numbers come from your clips (the held ball's jitter, heights and LiDAR readings); the gate costs about
+0.2 s before the ring appears, and 5% of the searches that found the ball (without the gate n15 found 77% and 58%, but
+showed a wrong ball 4.6 and 3.6 times a minute). The scorer's own replay of your kits (the whole tracker as the app
+runs it, with its own lock), n15 without then with the gate: a ball where there is none on 2.5% -> 1.5% and 1.8% -> 0%
+of its searches; the ball found on 62% -> 50% and 35% -> 28% (it counts every search, and the gate holds back each
+ball's first two finds).
 
-**Cost** (measured on a busy Linux computer here, not on a phone). On your real frames, n15 against n14 on the same
-frames: over your mat with no ball in view a search takes 1.6-3 times as long as n14's (its slowest searches, one in
-20, went from 32-43 ms to 64-81 ms); over the wooden floor 1.3-1.4 times; with the ball held over the mat about 1.1
-times, but its slowest searches went from 83 to 165 ms. (On the tests' pictures it was 1.2-1.9 times.) Those were
-measured before the last check was added (that the outline is one circle: a sum over at most 48 points for each arc
-read), which was not timed on its own. The ball search runs on the queue that takes the camera's frames, so a slower
-search can make the app skip frames; GitHub's Mac bench has not yet compared n14 and n15, and how many frames n15
-skips is not known. Not timed on your iPhone.
+**Only on test pictures**: the lattice ball as the test scenes and the demo draw it: held over wood and over a mat 8 of 8
+found, the drop height within 1 cm; prints and a toy ball, nothing; the gate's own rules (a single find, a wandering
+one, below, beside or above the range, LiDAR's surface) each never show. **Only compiled here**: nothing in the app's
+own code changed; the app and its UI tests build only in GitHub's checks, which have not run (not pushed). The demo's
+ball now appears a few tenths of a second later. **Not run on a phone.** Your kits recorded LiDAR once a second, so its rule was
+checked on those frames only; on the phone it runs on every frame.
 
-**Try**: over the play mat, hold the ball about 2 ft, 1 ft and 4 in above the middle of the slab: the label should say
-**Slab locked · ball in view** and the drop height "(ball)". At 4 in and 1 ft it can take 1.5-2 s to appear, and at
-1 ft it may come and go: say how often. Then, with no ball, sweep the phone over the mat's prints (the leaf, the car
-wheels, the toy balls): if "ball in view" shows, say where. On the wooden floor the held ball should be found at every
-height.
+**Cost**: the gate itself is a few sums per search. The finder's search, measured before (on a busy Linux computer,
+not a phone): over the mat with no ball 1.6-3 times n14's (its slowest searches 64-81 ms), over wood 1.3-1.4 times,
+the ball held over the mat about 1.1 times (slowest 165 ms). Not timed on your iPhone.
+
+**Try**: hold the ball still about 2 ft, 1 ft and 4 in over the middle of the slab: within half a second the label
+should say **Slab locked · ball in view** and the drop height "(ball)"; while you move the ball it may go and come back
+when you hold still. Sweep the phone over the mat with no ball: "ball in view" should never show. Drop the ball: the
+ring should go at once and not come back on the ball lying on the floor. Try once from 5 ft too: the place rule was
+measured with the phone about 1.5 ft from the ball; if from 5 ft the ring rarely appears, say so. Then Settings >
+Developer > Copy diagnostics: its counts "ballGate.*" say how often each rule held a find back.
 
 ## Build n14 (19 November 2026): screens that hold still
 
