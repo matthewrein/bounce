@@ -31,9 +31,19 @@ public struct SettleSettings: Equatable {
     /// Settled (the tilt is shown) once the standard deviation (degrees, both tilt axes together) is at or under
     /// `settleDegrees` on `settleRefreshes` refreshes in a row; back to settling above `unsettleDegrees`. 1 deg of tilt
     /// moves the landing about 4.5 cm.
+    /// (n18: the app's are 2.0 and 2.5 with `holdShown`, `RecordingSettings.appSettleDegrees`; these defaults are n11's,
+    /// so older recordings replay as the phone ran them.)
     public var settleDegrees = 1.0
     public var unsettleDegrees = 1.25
     public var settleRefreshes = 2
+    /// Hold the shown tilt (n18): once settled, the estimate then is the one shown (its normal and standard deviation,
+    /// `HonestTilt.shownNormal`), and it stays settled while the lock holds: a later estimate replaces it only when a
+    /// re-check brings its standard deviation under the shown one's, and it is dropped only when the estimate starts
+    /// again (the lock lost, a re-lock or slide, a world-frame discontinuity). A hand near the slab, which widens the
+    /// estimate for a while, no longer takes the number away (`unsettleDegrees` is not used). Off (the default, so older
+    /// recordings replay as the phone ran them): the current estimate is shown while settled, as before. The app's is on
+    /// (`RecordingSettings.trackerSettings`).
+    public var holdShown = false
     public init() {}
 }
 
@@ -49,7 +59,8 @@ public struct SettleSettings: Equatable {
 ///   - views that disagree beyond their uncertainties widen the result by their disagreement.
 /// The tilt is shown (`settled`) once its standard deviation is at or under `SettleSettings.settleDegrees` on
 /// `settleRefreshes` re-checks in a row: refreshes that added a usable detection after the lock (the lock's own
-/// detections, taken in one moment, and left-out ones do not count).
+/// detections, taken in one moment, and left-out ones do not count). With `SettleSettings.holdShown` (n18) the estimate
+/// shown then is held (`shownNormal`) until a re-check brings a smaller deviation or the estimate starts again.
 struct HonestTilt {
     /// One detection: its normal and covariance (world, rad^2), its view direction, and how it fitted. Its covariance
     /// is `cov` plus `perCornerNoise` times the square of the corner noise (pixels) at the time it is used: the part that
@@ -95,14 +106,22 @@ struct HonestTilt {
     private(set) var sigmaDegrees: Double? = nil
     private(set) var inflation = 1.0
     private(set) var settled = false
+    /// `SettleSettings.holdShown`: the estimate shown since the tilt first settled (its normal, world, and standard
+    /// deviation, degrees); nil before, and always when the setting is off
+    private(set) var held: (normal: Vec3, sigma: Double)? = nil
     private var previousOk = 0
     /// how many refreshes there have been since the estimate was made (not reset; for scoring per refresh)
     private(set) var refreshCount = 0
 
     init(settings: SettleSettings) { self.settings = settings }
 
+    /// The normal the tilt shows and its standard deviation (degrees): the held estimate (`SettleSettings.holdShown`)
+    /// once there is one, else the current one.
+    var shownNormal: Vec3? { held?.normal ?? normal }
+    var shownSigmaDegrees: Double? { held?.sigma ?? sigmaDegrees }
+
     mutating func reset() {
-        groups = []; normal = nil; cov = nil; sigmaDegrees = nil; inflation = 1; settled = false; previousOk = 0
+        groups = []; normal = nil; cov = nil; sigmaDegrees = nil; inflation = 1; settled = false; held = nil; previousOk = 0
     }
 
     /// A detection's covariance and misfit, from its pose (world), its outline (pose order, pixels of `view`), the camera
@@ -203,7 +222,7 @@ struct HonestTilt {
         refreshCount += 1
         guard !groups.isEmpty else {
             normal = nil; cov = nil; sigmaDegrees = nil; inflation = 1
-            previousOk = 0; settled = false
+            previousOk = 0; settled = false; held = nil
             return
         }
         // the slab's sides (outward, world) the shared parts are matched to: the first detection's that has them
@@ -276,6 +295,15 @@ struct HonestTilt {
         let ok = sig <= settings.settleDegrees
         previousOk = counts && ok ? previousOk + 1 : 0
         settled = settled ? sig <= settings.unsettleDegrees : previousOk >= max(1, settings.settleRefreshes)
+        if settings.holdShown {
+            // the shown estimate holds; a re-check with a smaller deviation replaces it
+            if let h = held {
+                if counts && sig < h.sigma { held = (n, sig) }
+                settled = true
+            } else if settled {
+                held = (n, sig)
+            }
+        }
     }
 
     // MARK: small matrices
@@ -356,6 +384,7 @@ extension SettleSettings: Codable {
         .init("settleDegrees", \.settleDegrees),
         .init("unsettleDegrees", \.unsettleDegrees),
         .init("settleRefreshes", \.settleRefreshes),
+        .init("holdShown", \.holdShown),
     ]
 
     public init(from decoder: Decoder) throws {

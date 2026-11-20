@@ -174,6 +174,63 @@ final class HonestTiltTests: XCTestCase {
         XCTAssertLessThan(Units.degrees(a.normal!.angle(to: right)), 1e-6)
     }
 
+    /// n18 (`SettleSettings.holdShown`, with the app's 2 deg): once shown, the value holds while the estimate widens (a
+    /// hand near the slab: the view's newest detections wide and 3 deg off), is replaced only by a re-check with a smaller
+    /// deviation, and goes with a reset (a new lock, a re-lock, the lock lost). With the setting off, as before.
+    func testTheShownTiltHolds() {
+        var st = SettleSettings(); st.settleDegrees = 2.0; st.unsettleDegrees = 2.5; st.holdShown = true
+        let v = Vec3(0, 1, 1), v2 = Vec3(sin(Units.radians(30)), 1, cos(Units.radians(30))).normalized, n = Vec3(0, 1, 0)
+        let off = n.rotated(by: Vec3(Units.radians(3), 0, 0))
+        for hold in [true, false] {
+            var s = st; s.holdShown = hold
+            var h = HonestTilt(settings: s)
+            h.add(detection(n, sigmaDegrees: 1.8, view: v), counts: false)
+            h.add(detection(n, sigmaDegrees: 1.8, view: v))
+            XCTAssertFalse(h.settled, "one re-check")
+            h.add(detection(n, sigmaDegrees: 1.8, view: v))
+            XCTAssertTrue(h.settled, "two re-checks at or under 2 deg")
+            XCTAssertEqual(h.shownSigmaDegrees!, 1.8, accuracy: 1e-6)
+            let shown = h.shownNormal!
+            for _ in 0..<3 { h.add(detection(off, sigmaDegrees: 4, view: v)) }
+            XCTAssertGreaterThan(h.sigmaDegrees!, 2.5)
+            if hold {
+                XCTAssertTrue(h.settled, "held: still shown")
+                XCTAssertLessThan(h.shownNormal!.angle(to: shown), 1e-12, "the shown value holds")
+                XCTAssertEqual(h.shownSigmaDegrees!, 1.8, accuracy: 1e-6)
+                XCTAssertGreaterThan(Units.degrees(h.normal!.angle(to: shown)), 2.5, "while the estimate itself moved")
+                // a second view at 0.8 deg: its smaller deviation replaces the shown value
+                h.add(detection(n, sigmaDegrees: 0.8, view: v2))
+                XCTAssertLessThan(h.sigmaDegrees!, 1.8)
+                XCTAssertTrue(h.settled)
+                XCTAssertEqual(h.shownSigmaDegrees!, h.sigmaDegrees!, accuracy: 1e-12)
+                XCTAssertLessThan(h.shownNormal!.angle(to: h.normal!), 1e-12)
+                // a re-check that widens the estimate does not replace it
+                let before = (h.shownNormal!, h.shownSigmaDegrees!)
+                h.add(detection(off, sigmaDegrees: 4, view: v2))
+                XCTAssertGreaterThan(h.sigmaDegrees!, before.1)
+                XCTAssertLessThan(h.shownNormal!.angle(to: before.0), 1e-12)
+                XCTAssertEqual(h.shownSigmaDegrees!, before.1, accuracy: 1e-12)
+                h.reset()
+                XCTAssertFalse(h.settled)
+                XCTAssertNil(h.shownNormal)
+                XCTAssertNil(h.shownSigmaDegrees)
+            } else {
+                XCTAssertFalse(h.settled, "off: back to settling above 2.5 deg, as before")
+                XCTAssertLessThan(h.shownNormal!.angle(to: h.normal!), 1e-12, "off: the current estimate")
+            }
+        }
+    }
+
+    /// n18: the tilt reads "3.2°" while the shown estimate's deviation is at most 1 deg, "3.2° ±1.4" over it.
+    func testTheTiltTextShowsItsDeviationOverOneDegree() {
+        XCTAssertEqual(TiltText.format(degrees: 3.24, sigmaDegrees: nil), "3.2°")
+        XCTAssertEqual(TiltText.format(degrees: 3.24, sigmaDegrees: 0.7), "3.2°")
+        XCTAssertEqual(TiltText.format(degrees: 3.24, sigmaDegrees: 1.0), "3.2°")
+        XCTAssertEqual(TiltText.format(degrees: 3.24, sigmaDegrees: 1.44), "3.2° ±1.4")
+        XCTAssertEqual(TiltText.format(degrees: 12.06, sigmaDegrees: 2.0), "12.1° ±2.0")
+        XCTAssertEqual(TiltText.format(degrees: 0.2, sigmaDegrees: .nan), "0.2°")
+    }
+
     /// The lock's own detections (taken in one moment, added without counting) never show the tilt: it shows once two
     /// re-checks after them are at or under 1 deg.
     func testTheLocksOwnDetectionsDoNotSettleIt() {

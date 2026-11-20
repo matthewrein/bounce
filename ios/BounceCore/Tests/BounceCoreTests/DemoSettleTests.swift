@@ -14,8 +14,9 @@ final class DemoSettleTests: XCTestCase {
         var sigmaAtSettle: Double?
         var unsettledAfterSettle = 0
         var viewGroups = 0
-        /// per frame: time, locked, settled, honest sigma
-        var frames: [(t: Double, locked: Bool, settled: Bool, sigma: Double?)] = []
+        /// per frame: time, locked, settled, honest sigma, the shown estimate's sigma (n18, `shownTiltSigmaDegrees`), and
+        /// the readouts' tilt error (degrees) while settled
+        var frames: [(t: Double, locked: Bool, settled: Bool, sigma: Double?, shown: Double?, error: Double?)] = []
     }
 
     func run(_ d: DemoScript, seconds: Double) -> Run {
@@ -50,7 +51,8 @@ final class DemoSettleTests: XCTestCase {
                 r.unsettledAfterSettle += 1
             }
             r.viewGroups = max(r.viewGroups, out.viewGroups)
-            r.frames.append((t, out.state == .locked, out.angleSettled, out.tiltSigmaDegrees))
+            r.frames.append((t, out.state == .locked, out.angleSettled, out.tiltSigmaDegrees, out.shownTiltSigmaDegrees,
+                             out.angleSettled ? out.readouts.map { abs($0.tiltDegrees - truth) } : nil))
             t += 0.08
         }
         return r
@@ -76,24 +78,32 @@ final class DemoSettleTests: XCTestCase {
     }
 
     /// The owner's guidance (README: 45-55 deg down at 3-4 ft) pinned at its edge: 4 ft away and 62 deg down, the demo
-    /// locks but stays on "settling" (one view cannot pin the tilt to a degree there). On the live phone's geometry
-    /// (1920x1440 edges, 480x360 frame) the same view settles from one side of the slab and not from the other (sigma
-    /// 0.73 against 1.35-1.6), so the README does not promise a number there.
+    /// locks but one view cannot pin the tilt to a degree there (n11-n17: "settling" throughout). On the live phone's
+    /// geometry (1920x1440 edges, 480x360 frame) the same view settles from one side of the slab and not from the other
+    /// (sigma 0.73 against 1.35-1.6). n18 (the app shows the tilt from 2 deg, `RecordingSettings.appSettleDegrees`): where
+    /// it shows here, it shows with its ± (the shown estimate's deviation over 1 deg) and the truth inside it.
     func testFourFeetAt62DegreesStaysSettling() {
         var d = DemoScript(); d.distance = Units.feet(4); d.elevation = 62
         let r = run(d, seconds: 5)
         let sig = r.frames.compactMap { $0.locked ? $0.sigma : nil }
-        print(String(format: "DEMO 4 ft, 62 deg: locked %.2f s, %d locked frames, sigma min %.2f, settled %@", r.lockedAt ?? -1, sig.count,
-                     sig.min() ?? -1, r.settledAt.map { String(format: "%.2f s", $0) } ?? "never"))
+        let shown = r.frames.filter { $0.settled }
+        print(String(format: "DEMO 4 ft, 62 deg: locked %.2f s, %d locked frames, sigma min %.2f, settled %@, %d frames shown, shown sigma %.2f-%.2f, "
+                     + "error worst %.2f", r.lockedAt ?? -1, sig.count, sig.min() ?? -1, r.settledAt.map { String(format: "%.2f s", $0) } ?? "never",
+                     shown.count, shown.compactMap { $0.shown }.min() ?? -1, shown.compactMap { $0.shown }.max() ?? -1,
+                     shown.compactMap { $0.error }.max() ?? -1))
         XCTAssertNotNil(r.lockedAt, "locks")
-        XCTAssertNil(r.settledAt, "settling throughout")
         XCTAssertGreaterThan(sig.min() ?? 0, 1.0)
+        XCTAssertTrue(shown.allSatisfy { ($0.shown ?? 0) > 1.0 }, "shown with its ±")
+        XCTAssertTrue(shown.allSatisfy { ($0.error ?? 99) <= ($0.shown ?? 0) }, "the truth inside the shown ±")
+        XCTAssertEqual(r.unsettledAfterSettle, 0, "held once shown")
     }
 
     /// The demo held steeply over the slab (72 deg elevation at 0.85 m: one view's honest sigma 1.7-4 deg, as the
     /// sigma table predicts for that view) locks but reads "settling" for as long as it stays there (measured: no
     /// settled frame in 7 s; at 68 deg it settled after 6 s, at 76-80 deg never); lowered to the demo's usual 48 deg, it
     /// shows the tilt within about a second (what SlabBounceUITests.testSettlingThenTheTilt does in the Simulator).
+    /// n18 (shown from 2 deg, held): while steep it reads "settling" or the number with its ± (over 1 deg); lowered, a
+    /// re-check with a smaller deviation replaces the held value and the number reads alone (at most 1 deg).
     func testASteepViewSettlesOnceTheCameraIsLowered() {
         var d = DemoScript(); d.elevation = 72; d.elevationTo = 48; d.elevationAt = 5; d.elevationRamp = 1.5
         let r = run(d, seconds: 10)
@@ -105,12 +115,22 @@ final class DemoSettleTests: XCTestCase {
                      + "settled tilt error median %.2f worst %.2f, up to %d view groups",
                      r.lockedAt ?? -1, steepSigma.min() ?? -1, r.settledAt ?? -1, (r.settledAt ?? -1) - lowered,
                      errs.isEmpty ? -1 : errs[errs.count / 2], errs.last ?? -1, r.viewGroups))
+        let steepShown = steep.filter { $0.settled }
+        let plainAt = r.frames.first { $0.t >= d.elevationAt && $0.settled && ($0.shown ?? 99) <= 1.0 }?.t
+        let plainErrs = r.frames.filter { $0.t >= (plainAt ?? 99) }.compactMap { $0.error }.sorted()
+        print(String(format: "DEMO steep then lowered (n18): %d steep frames shown (shown sigma %.2f-%.2f, error worst %.2f), shown without ± %.2f s "
+                     + "after the camera reached 48 deg, then error median %.2f worst %.2f, %d frames back to settling",
+                     steepShown.count, steepShown.compactMap { $0.shown }.min() ?? -1, steepShown.compactMap { $0.shown }.max() ?? -1,
+                     steepShown.compactMap { $0.error }.max() ?? -1, (plainAt ?? -1) - lowered,
+                     plainErrs.isEmpty ? -1 : plainErrs[plainErrs.count / 2], plainErrs.last ?? -1, r.unsettledAfterSettle))
         XCTAssertLessThan(r.lockedAt ?? 99, d.elevationAt, "locks while steep")
-        XCTAssertTrue(steep.allSatisfy { !$0.settled }, "settling while steep")
+        XCTAssertTrue(steepShown.allSatisfy { ($0.shown ?? 0) > 1.0 }, "while steep: settling, or the number with its ±")
+        XCTAssertTrue(steepShown.allSatisfy { ($0.error ?? 99) <= ($0.shown ?? 0) }, "while steep: the truth inside the shown ±")
         XCTAssertGreaterThan(steepSigma.min() ?? 0, 1.0)
         XCTAssertNotNil(r.settledAt)
-        XCTAssertLessThanOrEqual((r.settledAt ?? 99) - lowered, 1.5)
-        XCTAssertLessThan(errs.isEmpty ? 99 : errs[errs.count / 2], 0.5)
-        XCTAssertLessThan(errs.last ?? 99, 1.0)
+        XCTAssertLessThanOrEqual((plainAt ?? 99) - lowered, 1.5, "lowered: the number alone within 1.5 s")
+        XCTAssertLessThan(plainErrs.isEmpty ? 99 : plainErrs[plainErrs.count / 2], 0.5)
+        XCTAssertLessThan(plainErrs.last ?? 99, 1.0)
+        XCTAssertEqual(r.unsettledAfterSettle, 0, "held once shown")
     }
 }

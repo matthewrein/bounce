@@ -996,7 +996,8 @@ final class ARController: NSObject, ARSessionDelegate {
         h.locked = out.state == .locked && !out.lockUnconfirmed
         h.settling = out.state == .locked && !out.angleSettled
         if let r = out.readouts {
-            h.tilt = h.settling ? HUDState.settlingText : String(format: "%.1f°", r.tiltDegrees)
+            // n18: the shown estimate's deviation after the tilt while it is over 1 deg ("3.2° ±1.4", TiltText)
+            h.tilt = h.settling ? HUDState.settlingText : TiltText.format(degrees: r.tiltDegrees, sigmaDegrees: out.shownTiltSigmaDegrees)
             h.apex = Format.length(r.apexHeight)
             h.landing = h.settling ? HUDState.settlingText : Format.length(r.landingDistance)
             h.air = String(format: "%.2f s", r.airTime)

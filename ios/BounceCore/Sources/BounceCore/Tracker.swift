@@ -665,6 +665,10 @@ public struct TrackerOutput {
     public var tiltSigmaDegrees: Double? = nil
     public var angleSettled: Bool = false
     public var viewGroups: Int = 0
+    /// while the tilt is shown (`angleSettled`): the standard deviation (degrees, both axes) of the estimate the readouts
+    /// show (`SlabTracker.shownTiltSigmaDegrees`: with `SettleSettings.holdShown` the held one, n18); nil otherwise. The
+    /// app shows it after the tilt when it is over 1 degree (`TiltText`).
+    public var shownTiltSigmaDegrees: Double? = nil
     /// this frame's tap and what it was taken for (`TrackerSettings.tapHints`), for the app's brief feedback; nil: no tap
     public var tap: TrackerTap? = nil
     /// a ball tap's search is on (`SlabTracker.ballHint`), and how many dismissed rings' spots are passed over
@@ -727,8 +731,12 @@ public final class SlabTracker {
     /// While confirming: the newest candidate detection's centre (world); nil otherwise (n17: the main screen's cue says
     /// "Step closer" or "Lower the phone" when the slab being confirmed is far, `MainScreenCue`)
     public var candidateCenter: Vec3? { state == .confirming ? candidates.last?.pose.center : nil }
-    /// the honest estimate's normal (world), and how many views of the slab it rests on
-    public var settledNormal: Vec3? { state == .locked ? honest.normal : nil }
+    /// the honest estimate's normal (world) as the tilt shows it (the held one with `SettleSettings.holdShown` once
+    /// settled, n18), and how many views of the slab it rests on
+    public var settledNormal: Vec3? { state == .locked ? honest.shownNormal : nil }
+    /// While the tilt is shown (`angleSettled`): the standard deviation (degrees, both axes) of the estimate it shows
+    /// (the held one with `SettleSettings.holdShown`, n18); nil otherwise
+    public var shownTiltSigmaDegrees: Double? { angleSettled ? honest.shownSigmaDegrees : nil }
     /// the honest estimate's covariance across its normal (world, rad^2) while locked, and how many times it has been
     /// refreshed (for scoring it once per refresh)
     var settledCovariance: Mat3? { state == .locked ? honest.cov : nil }
@@ -1335,6 +1343,7 @@ public final class SlabTracker {
         out.refinedDetections = frameRefined
         out.tiltSigmaDegrees = tiltSigmaDegrees
         out.angleSettled = angleSettled
+        out.shownTiltSigmaDegrees = shownTiltSigmaDegrees
         out.viewGroups = viewGroupCount
         out.tap = tapNote
         // a re-lock (the slab moved, or its outline moved onto the top): the ball tap and the dismissed spots go (and a set
@@ -1435,7 +1444,7 @@ public final class SlabTracker {
         // the bounce, in world coordinates: from the lock, or once the tilt is settled (and the settings say so) from the
         // lock's centre with the settled normal
         var shown = s
-        if settings.readoutsFromSettledNormal, out.angleSettled, let n = honest.normal, n.isFinite {
+        if settings.readoutsFromSettledNormal, out.angleSettled, let n = honest.shownNormal, n.isFinite {
             let u = s.axisU.rejecting(n).normalized
             shown = SlabPose(center: s.center, normal: n, axisU: u, axisV: n.cross(u), halfU: s.halfU, halfV: s.halfV)
         }

@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// The build label shown in Settings > Developer and in diagnostics. Bump it on every change to the app or to BounceCore.
-let appBuild = "n17"
+let appBuild = "n18"
 
 /// The app's settings. The app is point and go: the only things a user ever sets are the drop height and the ball's
 /// restitution (both optional, stored in UserDefaults). Everything else is baked in below and never asked of the user.
@@ -126,7 +126,9 @@ struct HUDState: Equatable {
     var drop: String = "–"
     var demo = false
     /// the slab is locked but its tilt is still settling (`TrackerOutput.angleSettled` false): Tilt and Lands read
-    /// `HUDState.settlingText`, dimmed; Apex and Air keep their values (a degree moves them by at most 6 mm and 4 ms)
+    /// `HUDState.settlingText`, dimmed; Apex and Air keep their values (a degree moves them by at most 6 mm and 4 ms).
+    /// n18: the tilt shows from 2 deg of honest deviation, with it after the number while over 1 deg ("3.2° ±1.4"), and
+    /// holds while the lock holds (`SettleSettings.holdShown`)
     var settling = false
     /// n17: one short line under the status chip, only when the owner can do something about what the app waits for
     /// (BounceCore's MainScreenCue: "Point at the slab", "Hold the phone steady", "Step closer", "Hold the phone higher",

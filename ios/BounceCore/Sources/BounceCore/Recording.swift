@@ -130,6 +130,15 @@ public struct RecordingSettings: Codable, Equatable {
     /// The app shows a ball only through the ball gate (`TrackerSettings.ballGate`, n15): the gate's own values
     /// (`BallGateSettings`), measured on the owner's two kits.
     public static let appBallGate: BallGateSettings? = BallGateSettings()
+    /// The app shows the tilt once its honest standard deviation is at or under this (degrees, both axes; two re-checks
+    /// in a row, `SettleSettings.settleDegrees`), with the deviation after it while over 1 degree ("3.2° ±1.4", `TiltText`),
+    /// and holds the value shown (`SettleSettings.holdShown`) until a re-check brings a smaller deviation or the lock
+    /// starts again (n18). Replayed on the owner's two kits (README, Build n18): at 1.0 (n11-n17) only about 3 of 24
+    /// still shots showed a number within 2 s; at 2.0 the shown values stayed within their stated ± of the measured
+    /// tilt on the still shots with a known tilt.
+    public static let appSettleDegrees = 2.0
+    /// back to settling above this (`SettleSettings.unsettleDegrees`; not used while `holdShown` holds a value)
+    public static let appUnsettleDegrees = 2.5
 
     /// The tracker settings the app runs with for these settings (AppSettings.tracker should use this, so the app and
     /// a replay of an older recording build them the same way).
@@ -148,6 +157,9 @@ public struct RecordingSettings: Codable, Equatable {
         t.depthNormalWeight = RecordingSettings.appDepthNormalWeight
         t.depthCentreWeight = RecordingSettings.appDepthCentreWeight
         t.readoutsFromSettledNormal = true
+        t.settle.settleDegrees = RecordingSettings.appSettleDegrees
+        t.settle.unsettleDegrees = RecordingSettings.appUnsettleDegrees
+        t.settle.holdShown = true
         t.lockKeepsNewestPerView = true
         t.ballGate = RecordingSettings.appBallGate
         t.tapHints = true

@@ -2,6 +2,55 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n18 (20 November 2026): the tilt number sooner
+
+Small build on top of n17 (the cue, the 44 pt ball tap): the slab search, the lock and the ball finder are unchanged.
+Developer shows **n18**.
+
+**The number shows sooner, with its uncertainty.** The tilt now shows once its honest standard deviation is at most
+**2.0 degrees** on two re-checks in a row (n11-n17: 1.0). While that deviation is over 1 degree it follows the number,
+compact: **"3.2° ±1.4"**; at 1 degree or less the number reads alone ("3.2°"). Lands shows with it, as before.
+
+**A shown number holds.** Once shown, the number stays while the lock holds: a later estimate replaces it only when a
+re-check brings a smaller deviation, and it goes only when the lock is lost or the slab moved (a re-lock or slide). A hand
+near the slab, which widens the estimate for a while, no longer takes it back to "settling". Apex, Lands and the drop point
+use the same held value.
+
+**Replayed on your two kits** (all video shots, the app's whole per-frame path; n16 is n17's slab and settle rule):
+
+| | n16 / n17 | n18 |
+|---|---|---|
+| still shots (24 locked): a number within 2 s of the lock | 3 | 10 |
+| still shots: a number within 2 s of the shot's start | 2 | 9 |
+| still shots: a number at all | 5 | 12 |
+| arcs (11 locked): a number within 2 s of the lock | 1 | 8 |
+| arcs: a number at all | 7 | 11 |
+| back to "settling" while still locked (drops included) | 2 | 0 |
+
+- Still shots with a measured tilt that show a number (the level shots, kit 1 0.19 deg and kit 2 0.30 deg; kit 2's
+  s06 and later were moved near level, so their tilt is not counted): first shown 0.6 s after the lock at ±1.35 and ±1.06,
+  off by 0.03 and 0.41 deg, and every shown value stayed inside its ± (worst 0.07 and 0.44 deg).
+- The other still shots with a measured tilt (kit 1 10.6 deg at 1.27 m, kit 1 17.2 deg at 0.93 m, kit 2 12.1 deg at
+  1.31 m) never got under 2 deg on two re-checks (median deviation 3.7-8 deg), so they show no number; n17's cue
+  then says what to do after 1.5 s.
+- Arcs with a measured tilt (8): first number 0.6-3.9 s after the lock (k1 level arc 7.2 s), first error 0.4-1.7 deg.
+  On 4 of 8 every shown value stayed inside its ±. Outside: kit 1's 10.6 deg arc showed 12.4 ±1.5 (1.7 deg off) for
+  3.9 s until a better re-check replaced it with 10.1-10.4 ±0.7-0.9; kit 2's 3.6 deg arc read about 1.05 deg off at
+  about ±1.0 (n16 showed the same value there, also outside), kit 2's 12.1 deg arc and level arc up to 1.05 and
+  1.31 deg off, inside their ± (or within 1 deg while the number reads alone) on 83% and 89% of their shown frames.
+- Drops: kit 1 drop 3 shows a number 86% of the time (n16 25%), kit 2 drop-edge 77% (n16 27%), kit 2 drops 2 and 3 38%
+  and 86% (n16 none); kit 1 drops 1, 2 and drop-edge and kit 2 drop 1 still show none (median deviation 2.6-3.9 deg).
+- The 2.0 threshold: 1.5 and 2.5 were replayed on the shots with a measured tilt. On the two still shots that show a
+  number all three stay inside their ±, so the data gives no reason to go past 2.0; at 2.5 two arcs first showed at
+  ±2.2-2.4, with errors up to 1.55 deg (inside their ±).
+
+**What is checked, and how:** BounceCore's tests (HonestTilt: the held value, its replacement and the old behaviour with
+the setting off; the "±" text; DemoSettle: the demo's app path at 48 deg, steep then lowered, and 4 ft at 62 deg, where
+n18 now shows the number with its ±; the recording format: older recordings keep 1 deg and no hold, so they replay as
+the phone ran them) and the replay above. The app only compiles in CI: the "±" on the Tilt tile, and the updated UI test
+`testSettlingThenTheTilt` (while steep the tilt may now read "settling" or the number with its ±; lowered, the number
+alone), are first seen there and on your phone.
+
 ## Build n17 (20 November 2026): demo build
 
 Small build on top of n16 for the live demo: the slab search, the tilt's settling rule, the ball finder and its gate

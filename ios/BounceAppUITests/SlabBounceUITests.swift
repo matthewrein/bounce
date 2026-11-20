@@ -240,7 +240,8 @@ final class SlabBounceUITests: XCTestCase {
         screenshot(app, "after launch")
         XCTAssertNotNil(lockTime, "never locked; status: \(label(app, "status"))")
         // the tilt shows once it has settled (n11: "settling" until then; from the demo's 48 deg view it settles once two
-        // re-checks after the lock agree, about 0.6 s after it)
+        // re-checks after the lock agree, about 0.6 s after it). n18: a deviation over 1 deg follows the number ("3.2° ±1.4");
+        // number() reads the number before it
         let shownAfter = waitUntil(30) { number(label(app, "tilt")) != nil }
         XCTAssertNotNil(shownAfter, "the tilt never settled: \(label(app, "tilt")), status \(label(app, "status"))")
         screenshot(app, "locked")
@@ -261,6 +262,11 @@ final class SlabBounceUITests: XCTestCase {
     /// n11: held steeply over the slab (72 deg elevation), the app locks but the tilt reads "settling" (Tilt and Lands; the
     /// status says so): from there one view cannot pin the tilt to a degree. Lowered to 48 deg, the number shows, matching
     /// the scene's truth, with the landing.
+    /// n18 (the owner: a number within about 2 s, never "settling" with no hint): the tilt now shows from 2 deg of honest
+    /// deviation with the deviation after it while over 1 deg, and the shown value holds until a re-check brings a smaller
+    /// deviation. So the steep view (one view's deviation 1.7-4 deg, DemoSettleTests) reads "settling" at first and then,
+    /// once two re-checks are at or under 2 deg, the number with its ± ("3.2° ±1.8"); lowered to 48 deg, the better
+    /// estimate replaces it and, under 1 deg, the number reads alone, matching the scene's truth, with the landing.
     func testSettlingThenTheTilt() {
         // the steep view lasts 15 s of the demo's own (wall-clock) time: a slow Debug Simulator locks well inside it
         var d = DemoScript(); d.elevation = 72; d.elevationTo = 48; d.elevationAt = 15
@@ -271,27 +277,32 @@ final class SlabBounceUITests: XCTestCase {
         let lockedDemoTime = Date().timeIntervalSince(launched)
         XCTAssertNotNil(lockedAt, "never locked; status: \(label(app, "status"))")
         XCTAssertLessThan(lockedDemoTime, d.elevationAt, "the lock came only after the demo lowered the camera (at \(d.elevationAt) s)")
-        // seen while the view is steep: "settling" in the readouts and the status, with the lock
+        // seen while the view is steep, with the lock: "settling" in the readouts and the status, or (n18) the number with
+        // its ± (the steep view's deviation is over 1 deg)
         var statusSettling = "", tiltSettling = "", landsSettling = ""
         let settlingAt = waitUntil(30) {
             let s = label(app, "status"), tilt = label(app, "tilt")
-            if s.contains("Slab locked") && (s.contains("settling") || tilt == "settling") {
+            if s.contains("Slab locked") && (s.contains("settling") || tilt == "settling" || (number(tilt) != nil && tilt.contains("±"))) {
                 statusSettling = s; tiltSettling = tilt; landsSettling = label(app, "lands"); return true
             }
             return false
         }
         screenshot(app, "settling")
-        XCTAssertNotNil(settlingAt, "never saw \"settling\" with the lock; status \(label(app, "status")), tilt \(label(app, "tilt"))")
-        let shownAt = waitUntil(40) { number(label(app, "tilt")) != nil }
+        XCTAssertNotNil(settlingAt, "never saw \"settling\" or the tilt with its ± with the lock; status \(label(app, "status")), tilt \(label(app, "tilt"))")
+        // lowered: the number alone (its deviation at most 1 deg)
+        let shownAt = waitUntil(40) { let t = label(app, "tilt"); return number(t) != nil && !t.contains("±") }
         screenshot(app, "settled")
         let tilt = number(label(app, "tilt")), lands = label(app, "lands"), status = label(app, "status")
         let tr = truth(d, at: 20)
         summary(String(format: "settling: \"settling\" seen %.1f s after the lock (status \"%@\", tilt \"%@\", lands \"%@\"), tilt shown %.1f s after that: %@ (truth %.2f), lands %@, status \"%@\"",
                        settlingAt ?? -1, statusSettling, tiltSettling, landsSettling, shownAt ?? -1, tilt.map { String(format: "%.2f", $0) } ?? "-",
                        tr.tilt, lands, status))
-        XCTAssertEqual(tiltSettling, "settling", "the tilt reads settling while steep: \(tiltSettling)")
-        XCTAssertNil(number(landsSettling), "no landing while settling: \(landsSettling)")
-        XCTAssertNotNil(shownAt, "the tilt never showed: \(label(app, "tilt")), status \(status)")
+        if tiltSettling == "settling" {
+            XCTAssertNil(number(landsSettling), "no landing while settling: \(landsSettling)")
+        } else {
+            XCTAssertTrue(tiltSettling.contains("±"), "while steep the tilt reads settling or shows its ±: \(tiltSettling)")
+        }
+        XCTAssertNotNil(shownAt, "the tilt never showed without its ± once lowered: \(label(app, "tilt")), status \(status)")
         XCTAssertEqual(tilt ?? -99, tr.tilt, accuracy: 1.0, "tilt readout \(label(app, "tilt"))")
         XCTAssertNotNil(number(lands), "the landing shows with the tilt: \(lands)")
         XCTAssertFalse(status.contains("settling"), "status still says settling: \(status)")

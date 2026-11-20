@@ -25,7 +25,7 @@ final class RecordingFormatTests: XCTestCase {
         // every settling constant survives a round trip, and a file without them keeps the defaults
         var st = SettleSettings()
         st.parallelFloorRadians = 1e-4; st.turnFloorRadians = 3e-4; st.blurShare = 0.3; st.defaultExposure = 0.02; st.groupDegrees = 6
-        st.perGroup = 4; st.misfitChi2 = 13.8; st.settleDegrees = 0.8; st.unsettleDegrees = 1.1; st.settleRefreshes = 3
+        st.perGroup = 4; st.misfitChi2 = 13.8; st.settleDegrees = 0.8; st.unsettleDegrees = 1.1; st.settleRefreshes = 3; st.holdShown = true
         for c in Mirror(reflecting: st).children {
             let d = Mirror(reflecting: SettleSettings()).children.first { $0.label == c.label }!
             XCTAssertNotEqual(String(describing: c.value), String(describing: d.value), "test changes settle.\(c.label!)")
@@ -568,6 +568,18 @@ final class RecordingFormatTests: XCTestCase {
         var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(s.trackerSettings)) as! [String: Any]
         old.removeValue(forKey: "lockKeepsNewestPerView")
         XCTAssertFalse(try JSONDecoder().decode(TrackerSettings.self, from: JSONSerialization.data(withJSONObject: old)).lockKeepsNewestPerView)
+        // n18: the app shows the tilt from 2 deg and holds it; older recordings (n11's 1 deg stored, no hold key) as before
+        XCTAssertEqual(s.trackerSettings.settle.settleDegrees, 2.0)
+        XCTAssertEqual(s.trackerSettings.settle.unsettleDegrees, 2.5)
+        XCTAssertTrue(s.trackerSettings.settle.holdShown)
+        XCTAssertEqual(TrackerSettings().settle.settleDegrees, 1.0)
+        XCTAssertFalse(TrackerSettings().settle.holdShown)
+        var n17 = try JSONSerialization.jsonObject(with: JSONEncoder().encode(TrackerSettings())) as! [String: Any]
+        var settle = n17["settle"] as! [String: Any]
+        settle.removeValue(forKey: "holdShown"); n17["settle"] = settle
+        let n17Back = try JSONDecoder().decode(TrackerSettings.self, from: JSONSerialization.data(withJSONObject: n17))
+        XCTAssertFalse(n17Back.settle.holdShown)
+        XCTAssertEqual(n17Back.settle.settleDegrees, 1.0)
     }
 
     /// A diagnostics file from the phone written before the profile existed (BOUNCE_DIAGNOSTICS: a path, e.g. the owner's
