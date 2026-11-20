@@ -1,8 +1,9 @@
 import XCTest
 @testable import BounceCore
 
-/// LiDAR folded into the lock (n11): the app keeps the picture's tilt (its depth plane's normal has weight 0) and uses
-/// LiDAR's range for the centre; settings from before n11 read back with the old behaviour.
+/// LiDAR folded into the lock (n11): the app keeps the picture's tilt (its depth plane's normal has weight 0) and, from
+/// n11 to n17, used LiDAR's range for the centre (n18: no longer); settings from before n11 read back with the old
+/// behaviour.
 final class LidarFusionTests: XCTestCase {
     let blank = ColorFrame(gray: Plane(width: 4, height: 4))
 
@@ -38,7 +39,16 @@ final class LidarFusionTests: XCTestCase {
         // off by the two sizes' ratio)
         app.spec = .standard
         XCTAssertEqual(app.depthNormalWeight, 0)
-        XCTAssertEqual(app.depthCentreWeight, 0.5)
+        // n18: the app's LiDAR no longer moves the centre either (the owner's tape confirmed the slab's size, and the
+        // multi-view lock pins the range from several views): the lock is the picture's, LiDAR's checks still run
+        XCTAssertEqual(app.depthCentreWeight, 0)
+        let now = run(app)
+        XCTAssertFalse(now.out.depthFused)
+        XCTAssertFalse(now.events.contains("depth-fused"))
+        XCTAssertEqual(try XCTUnwrap(now.out.slab), try XCTUnwrap(now.tracker.imageSlab))
+        XCTAssertGreaterThan(now.tracker.depthChecks.checks, 0)
+        // n11-n17's centre weight (0.5): the centre moves half way to LiDAR's range
+        app.depthCentreWeight = 0.5
         let a = run(app)
         let img = try XCTUnwrap(a.tracker.imageSlab), fused = try XCTUnwrap(a.out.slab)
         // the depth check passed its gates and fusion ran, centre only (the event is kept)

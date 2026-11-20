@@ -146,6 +146,10 @@ public struct DiagnosticsReport: Codable, Equatable {
     public var angleSettled: Bool?
     public var viewGroups: Int?
     public var settledTiltDegrees: Double?
+    /// The multi-view lock while locked (`SlabTracker.multiView`, n18): views and detections fitted together, whether the
+    /// outline uses the fit, its misfit and shift, the top's size the views imply against the size setting (mm), the
+    /// detections' own corners' spread and the shown lock's drift (mm); nil while not locked or off
+    public var multiView: MultiViewSummary?
     /// The owner's taps (`TrackerSettings.tapHints`; how many of each kind: `counts`' "tap..." keys): how long a slab tap
     /// took to lead to a lock and a ball tap to the first ball found in its box (s; the right ball or not: "tapBallFound"
     /// counts those taps, "tapBallExpired" the taps whose box found none), and what is in effect now; nil before the
@@ -236,6 +240,7 @@ public struct DiagnosticsReport: Codable, Equatable {
         "framePacing": "camera clock: frames received / processed / dropped busy (replaced in the hand-off while processing was busy) / skipped late (the demo: waited behind processing) / late but idle (ARKit's own delay) / missed by the camera; the most frames the app held (maxFramesHeld, at most 2) and the processed frames' wait in the hand-off; pauses (s); latencies and processing times in ms (p50, p95, max), processing also by what ran; detector runs per second; recent window and total",
         "captureLockSettle": "camera clock (s): when the capture lock was armed and taken, how long it waited, whether it timed out and what was still adjusting",
         "slabCrop": "full camera image pixels: x0, y0, width, height; the crop is shrunk by factor",
+        "multiView": "the lock's views fitted together (n18): views (more than 7.5 deg apart) and detections used, spreadDegrees between the widest two, applied (the outline and path use it; else reason: views, fit, rms, shift), rmsPixels (corner misfit, processing px), shiftMm (from the single-view average), impliedSizeMm (the top's mean side with the size free) against sizeSettingMm, cornerSpreadMm (the detections' own single-view corners about their mean, rms), lockDriftMm (the shown corners over the latest 12 refreshes, largest from their mean)",
         "tiltSigmaDegrees": "the tilt's honest uncertainty (deg, 1 sigma, both axes) over the lock's views (each its newest detections, one view's uncertainty); angleSettled: the tilt is shown (else 'settling'); viewGroups: views of the slab more than 7.5 deg apart; settledTiltDegrees: its normal's tilt (what is shown once settled)",
         "depthChecks": "LiDAR's checks of the lock's top while locked: checks, used, rejected per reason (points, angle, inliers, offset); offsetMm: the lock's centre above LiDAR's plane less the dish's offset (mm); angleDegrees: LiDAR's plane to the image normal (deg); rangeRatio: LiDAR's range to the corner plane over the picture's along the line of sight (k); each count, min, max, median of the latest 101, last",
         "ballHistory": "the ball's latest events, oldest first (at most 20): time (camera clock s; until, count: a run of one event kept as one, its other fields the latest's); event: the ball gate's verdict on a find (accepted, kept, heldOver: let through; waiting: not yet, fewer than three agreeing finds, why heldOver: a hold-over of a ball not let through; refused, why offTop, tooLow, tooHigh, surface (LiDAR) or disagree (not where the ball let through was, which ends it); found: no gate), gone (the ring went, nothing found), tapAccepted (a find under a ball tap, shown at once without the agreeing finds), set (why lidar or plane), nothing (a ball tap that set nothing, why), cleared, replaced (why find, tap or set), ended (why: the lock) for a ball set by a tap, dismissed (a ring tapped away); source: finder, tap (the ring a tap accepted: shown without the agreeing finds, gone when refused for its place) or set (the ball a tap set); shown (on a find): whether a ring was on screen after that search (not while a set ball stands); center: world (m); heightOverTop: the ball's bottom over the slab's top face (m); circle: x, y, radius in full camera image pixels; lidar: LiDAR's depth at the centre less the centre's (m)",
@@ -283,6 +288,7 @@ public struct DiagnosticsReport: Codable, Equatable {
             tiltSigmaDegrees = tracker.tiltSigmaDegrees.flatMap { $0.isFinite ? DiagnosticsReport.r2($0) : nil }
             angleSettled = tracker.angleSettled
             viewGroups = tracker.viewGroupCount
+            multiView = tracker.multiView?.rounded
             settledTiltDegrees = tracker.settledNormal.map { DiagnosticsReport.r2(Units.degrees($0.angle(to: -ARKitConvention.worldDown))) }
         }
         if tracker.counts.keys.contains(where: { $0.hasPrefix("tap") }) {

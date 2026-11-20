@@ -49,7 +49,11 @@ final class ReplayPhoneTests: XCTestCase {
         XCTAssertEqual(rec.frames.count, phone.outputs.count, "a line for every processed frame")
         // the session exercised what it should
         let allEvents = phone.outputs.flatMap { $0.events }
-        for e in ["locked", "lock-unconfirmed: interruption", "depth-fused"] { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
+        // (LiDAR's fusion only while the app folds LiDAR in: from n18 neither its normal nor its centre is, and its checks
+        // still run)
+        let app = RecordingSettings().trackerSettings
+        let fuses = app.depthNormalWeight > 0 || app.depthCentreWeight > 0
+        for e in ["locked", "lock-unconfirmed: interruption"] + (fuses ? ["depth-fused"] : []) { XCTAssertTrue(allEvents.contains(e), "\(e) in \(allEvents)") }
         // the taps: on the slab on the first frame (a slab tap: the search starts there, its place from LiDAR, "tap"), on
         // the locked slab (with the app's tap hints it looks for the ball there, "tap-ball"; n11 started the slab search
         // over, "tap"), and on the floor beside it (a slab tap: looked at, the lock kept, "tap-slab")

@@ -472,6 +472,13 @@ public struct TrackerSettings: Equatable {
     /// settings and replay with the app's current ones, the gate included, as for `lockKeepsNewestPerView` and
     /// `idleBallAfter`; version-2 recordings without the key replay without it.)
     public var ballGate: BallGateSettings? = nil
+    /// The multi-view lock (n18, `MultiViewLock`): the outline and the path's centre come from the lock's own detections
+    /// fitted together in world space (centre and turn about the normal; the normal and the size held), once they span two
+    /// views at least `MultiViewLock.minSpreadDegrees` apart, so the outline stays on the slab from every side instead of
+    /// looking right only from where it was made. With one view, or when the fit's guards fail, the lock is the
+    /// single-view average, as before; the agreement gates, the tilt and its honest uncertainty are unchanged. Off (the
+    /// default, so older recordings replay as the phone ran them); the app's is on (`RecordingSettings.trackerSettings`).
+    public var multiViewLock = false
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
@@ -707,7 +714,9 @@ public final class SlabTracker {
     /// recent accepted measurements (world) that make up the lock
     public var history: [SlabPose] { hist.map { $0.pose } }
     public private(set) var slab: SlabPose?               // the lock (world), with LiDAR folded in when present
-    public private(set) var imageSlab: SlabPose?          // the lock from the image alone (average of `history`)
+    public private(set) var imageSlab: SlabPose?          // the lock from the image alone (average of `history`; n18: its views fitted together)
+    /// What the multi-view lock did on the latest refresh (`TrackerSettings.multiViewLock`); nil while not locked or off
+    public private(set) var multiView: MultiViewSummary?
     public private(set) var depth: DepthCheck?
     public private(set) var counts: [String: Int] = [:]
     /// the last detection's per-side edge modes, in the pose's side order (side i runs from outline corner i to i+1)
@@ -828,6 +837,12 @@ public final class SlabTracker {
 
     private var hist: [Measurement] = []
     private var lockEstimate: Estimate?
+    /// With `multiViewLock`: the lock's own detections (its confirming ones, then the re-checks that agreed; not those
+    /// grown from a tap), each view its newest few (`MultiViewLock.ViewStore`), longer-lived than `hist`; and the shown
+    /// lock's corners on its latest refreshes (for `MultiViewSummary.lockDriftMm`). Both start again with the lock.
+    private var lockViews = MultiViewLock.ViewStore<Measurement>()
+    private var lockTrail: [[Vec3]] = []
+    static let lockTrailSize = 12
     /// the tilt's honest uncertainty over the lock's detections (see `tiltSigmaDegrees`)
     private var honest: HonestTilt
     /// the last detection added to it (for the detection log)
@@ -1109,6 +1124,54 @@ public final class SlabTracker {
         lockEstimate = SlabTracker.estimate(hist)
         imageSlab = lockEstimate?.pose
         lockSigmaDegrees = lockEstimate.map { Units.degrees($0.sigma) * cornerNoiseEstimate }
+        if settings.multiViewLock { refineLock() } else { multiView = nil }
+    }
+
+    /// The lock's views fitted together (`MultiViewLock`, `TrackerSettings.multiViewLock`): `imageSlab` (the outline, the
+    /// path's centre, LiDAR's checks) becomes the fit when its guards pass; `lockEstimate` (the gates) stays the average.
+    private func refineLock() {
+        guard let L = lockEstimate?.pose else { multiView = nil; lockTrail = []; return }
+        let g = settings.settle.groupDegrees
+        let obs = lockViews.values.compactMap { m in m.camera.map { MultiViewLock.Observation(quad: m.quad, camera: $0, pose: m.pose) } }
+        let v = MultiViewLock.views(obs.map { $0.camera.position - L.center }, groupDegrees: g)
+        var sum = MultiViewSummary(views: v.count, detections: obs.count, spreadDegrees: v.spreadDegrees, applied: false, reason: "views",
+                                   sizeSettingMm: settings.spec.meanSide * 1000)
+        if v.count >= 2 && v.spreadDegrees >= MultiViewLock.minSpreadDegrees {
+            if let fit = MultiViewLock.fit(lock: L, observations: obs, groupDegrees: g) {
+                let shift = fit.pose.center.distance(to: L.center)
+                sum.views = fit.views; sum.detections = fit.used; sum.spreadDegrees = fit.spreadDegrees
+                sum.rmsPixels = fit.rmsPixels; sum.shiftMm = shift * 1000; sum.cornerSpreadMm = fit.cornerSpread.map { $0 * 1000 }
+                if fit.views < 2 || fit.spreadDegrees < MultiViewLock.minSpreadDegrees {
+                    sum.reason = "views"
+                } else if !(fit.rmsPixels <= MultiViewLock.maxRmsPixels) {
+                    sum.reason = "rms"
+                } else if !(shift <= MultiViewLock.maxShift) {
+                    sum.reason = "shift"
+                } else {
+                    imageSlab = fit.pose; sum.applied = true; sum.reason = nil
+                }
+                if let free = MultiViewLock.fit(lock: fit.pose, observations: obs, groupDegrees: g, freeSize: true), free.scale > 0.5, free.scale < 2 {
+                    sum.impliedSizeMm = (free.pose.halfU + free.pose.halfV) * 1000
+                }
+            } else {
+                sum.reason = "fit"
+            }
+        }
+        if let s = imageSlab {
+            lockTrail.append(s.topCorners)
+            if lockTrail.count > SlabTracker.lockTrailSize { lockTrail.removeFirst(lockTrail.count - SlabTracker.lockTrailSize) }
+        }
+        sum.lockDriftMm = MultiViewLock.drift(lockTrail).map { $0 * 1000 }
+        multiView = sum
+    }
+
+    /// Add detections of the lock to the multi-view fit's store (`MultiViewLock.ViewStore`): each view its newest
+    /// `SettleSettings.perGroup`, at most `MultiViewLock.maxViews` views (directions from `around` to the cameras)
+    private func keepViews(_ ms: [Measurement], around c: Vec3?) {
+        guard settings.multiViewLock, let c = c else { return }
+        for m in ms where !m.fromTap {
+            lockViews.add(m, direction: m.camera.map { $0.position - c }, groupDegrees: settings.settle.groupDegrees, perGroup: settings.settle.perGroup)
+        }
     }
 
     /// The newest `historySize` measurements, or more (up to three times as many) while fewer could not pin the normal
@@ -1737,7 +1800,7 @@ public final class SlabTracker {
     }
 
     private func lock(_ t: Double, _ events: inout [String]) {
-        hist = candidates; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
+        hist = candidates; lockViews.removeAll(); keepViews(candidates, around: SlabTracker.estimate(candidates)?.pose.center); lockTrail = []; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
         endTapChallenge(); probeHits = []
         hist = honestRestart(with: hist)
@@ -1803,6 +1866,7 @@ public final class SlabTracker {
             mh.ownNormalCov = own
             hist.append(mh)
             hist = trimmedLock(hist)
+            keepViews([mh], around: L2.pose.center)
             refreshLock()
             // a re-check nearer the would-be move than the lock still counts toward it
             if let me = SlabTracker.estimate(movers), m.pose.normal.angle(to: me.pose.normal) < m.pose.normal.angle(to: L2.pose.normal) {
@@ -1850,7 +1914,7 @@ public final class SlabTracker {
             if implausible == 1 { bump("relockImplausible"); events.append("relock-implausible") }
             if implausible < 2 * settings.moveCount { return false }
         }
-        hist = ms; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
+        hist = ms; lockViews.removeAll(); keepViews(ms, around: M.pose.center); lockTrail = []; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
         hist = honestRestart(with: ms)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
@@ -1959,6 +2023,7 @@ public final class SlabTracker {
     private func lose(_ events: inout [String]) {
         emptyBallScans = nil
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
+        lockViews.removeAll(); lockTrail = []; multiView = nil
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset(); ringLogged = nil
         honest.reset()
@@ -1970,6 +2035,7 @@ public final class SlabTracker {
     private func forget() {
         emptyBallScans = nil
         state = .searching; hist = []; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; candidates = []; movers = []
+        lockViews.removeAll(); lockTrail = []; multiView = nil
         recent = []; partners = []; implausible = 0
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset(); ringLogged = nil
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
@@ -2004,7 +2070,7 @@ public final class SlabTracker {
                 x.sideFrameSigmasPixels = m.sideFrameSigmasPixels?.map { $0 * r }
                 return x
             }
-            hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled)
+            hist = hist.map(rescaled); candidates = candidates.map(rescaled); movers = movers.map(rescaled); lockViews.update(rescaled)
             recent = recent.map(rescaled); partners = partners.map(rescaled)
             sideEvidence = min(settings.sideEvidenceCap, sideEvidence * r * r)
         }
@@ -2025,8 +2091,10 @@ public final class SlabTracker {
         switch state {
         case .locked:
             unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
-            // the views were seen in the old world frame: the tilt settles again from the next re-checks
+            // the views were seen in the old world frame: the tilt settles again from the next re-checks, and the
+            // multi-view lock gathers its views again
             honest.reset()
+            lockViews.removeAll(); lockTrail = []
             events.append("lock-unconfirmed: " + reason)
         case .confirming:
             candidates = []; state = .searching; events.append("candidate-lost: " + reason)
