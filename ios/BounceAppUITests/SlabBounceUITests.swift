@@ -704,8 +704,11 @@ final class SlabBounceUITests: XCTestCase {
                 + String(format: "share sheet after %.1f s", shared ?? -1))
         XCTAssertTrue(recordingSeen, "no recording indicator during the scan")
         XCTAssertTrue(quitMidShot, "the fifth shot never showed its recording, so Quit was not tested mid-shot")
-        XCTAssertEqual(skips, arcSaved ? 21 : 22,
-                       "skips: the remaining required shots (21, or 20 if the arc was saved) and the optional third tilt (one skip for its three shots)")
+        // the plan's required shots not captured here (the form, the scan, the flat and the hold still; the arc too if it
+        // was saved), plus one skip for the optional third tilt's three shots: 23 (22) since standard-v2's drop reading
+        let expectedSkips = KitPlan.standard.requiredShots.count - (arcSaved ? 5 : 4) + 1
+        XCTAssertEqual(skips, expectedSkips,
+                       "skips: the remaining required shots (\(expectedSkips - 1)) and the optional third tilt (one skip for its three shots)")
         XCTAssertTrue(bundle.contains("part"), "bundle: \(bundle)")
         XCTAssertNotNil(shared, "no share sheet after Share kit")
     }
