@@ -165,6 +165,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.ballGate = RecordingSettings.appBallGate
         t.tapHints = true
         t.tapSetsBall = true
+        t.findsMovedSlab = true
         return t
     }
 

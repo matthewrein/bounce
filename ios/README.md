@@ -2,6 +2,138 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n20kr (21 November 2026): the tilted-drop kit and lost-lock recovery together
+
+A candidate for the phone, on top of n20; Developer shows **n20kr**. It is n20k (below: the capture kit asks for drops on
+a tilted slab with a phone-on-slab reading right before them) and n20r (below: a slab moved off its lock is found again
+within a second) merged, with no other change. The two touch different code (the capture kit; the tracker), so each
+section below holds as written; the build labels in them are the ones each change was first built as.
+
+## Build n20r (21 November 2026): a lost lock recovers
+
+Candidate on top of n20 (not on `native-ios`); Developer shows **n20r**. Your kits never lost a lock, so the recovery
+paths had never run on the app's own detectors. New tests force them (`LostLockRecoveryTests`): scenes rendered by the
+package's ray caster and run through the app's path (12.5 frames a second, the app's tracker settings and detectors,
+the main screen's cue): the slab covered, moved, the camera swept away and back, and ARKit's world jumping. Each is held
+to: a lock at the slab (centre within 2 cm, tilt within 1 deg, holding 1.5 s) within 3 s of the slab lying still in
+view; no lock or shown tilt at the old place more than about 1 s after the slab shows elsewhere; never "Point at the
+slab" with the slab in the picture; a set ball gone when the slab moves.
+
+**What broke on n20.** A slab moved further than the re-checks' reach (10 cm was followed, 20 cm was not) was lost track
+of: the re-checks look only around the lock's outline, so the old lock stayed until the lost rule ran out (4 s of misses), and a set ball
+stayed over the old place all that time. If the old place was out of the picture, or only partly in it, the lock was never given up at all.
+**The fix** (`TrackerSettings.findsMovedSlab`, on in the app; off by default so older recordings replay as recorded):
+every re-check is exactly n20's (the same close-up look around the lock, feeding the lock, the tilt and the re-lock rule
+as before). Only when a re-check did not see the lock at its place (a miss with its place in view that nothing excuses:
+not a ball or a hand over it, not LiDAR; or its place partly or wholly out of the picture) a second look over the whole
+view runs in the same frame, for the moved-slab rule alone: two finds on consecutive re-checks that agree with each
+other, more than 10 cm from the lock (20 cm when its place is not wholly in the picture) but within 1 m, top within 3 cm
+of the lock's height, and not where a lookalike was seen beside the slab (below), give the lock up and start the
+confirmation at the new place (the usual rules lock it). The 3 cm height gate does not keep floor patterns out. The
+tracker sizes every outline as the slab's 180 mm top, so it reads a flat pattern's height from its size: a pattern of
+exactly the slab's size reads at the floor (rejected when the slab's top sits more than 3 cm above the floor in its
+cradle) and a smaller one further away, below the floor; a larger one reads nearer the camera, higher by about the
+phone's height above the floor times how much larger it is (from 1.2 m up, 3% larger reads 3.5 cm higher). A floor
+pattern a few percent larger than the slab reads at the slab's height and passes, as does a box or a second slab with
+its top at about the slab's height. On your second kit the search read patterns on the play mat at the slab's height
+(below).
+
+**What the look costs on the phone.** One whole-view sweep per re-check that did not see the lock at its place: at most
+one every 0.3 s (3.3 a second, the re-check rate), each about a search's cost, roughly 3 times a close-up re-check. It
+runs only while the lock was not seen at its place (a miss nothing excuses, or the place not wholly in the picture);
+while the lock is seen, nothing is added. When the lock's place is behind the camera the re-check itself is already a
+whole-view sweep, and the look reuses its outlines (the same frame, the same inputs: exactly what a second sweep would
+return) instead of sweeping again. On your kits (both replayed in full) it ran on 111 of 698 re-checks (kit 1: 55 of
+350, kit 2: 56 of 348), all of them with the lock's place in front of the camera, so none reused a sweep.
+
+**The lookalike memory.** Where outlines with their top at the slab's height (within 3 cm) were seen more than 20 cm
+beside the slab, the moved-slab rule does not take a find (within 10 cm of such a place). The app's close-up re-check
+looks only around the lock (at most two outlines, both of the slab), so the memory is filled from the whole-view looks
+the tracker runs anyway: every search sweep while searching and confirming (before and at the lock: the others beside
+the find it chose), a whole-view re-check after a world jump, and a moved-slab look that finds the lock at its place.
+It is kept while ARKit's world holds (a lost lock or a re-lock does not clear it: the objects stay where they are; the
+place where the slab locks again is taken off it; what that costs is below), and cleared by a reset and by any
+world-frame jump, in any state (its coordinates are the old world's). It only feeds the moved-slab rule: nothing else
+reads it.
+
+| scene (rendered) | n20: lock at the slab after / old place shown for | n20r |
+|---|---|---|
+| covered 0.5, 1.5 s | kept | the same, frame for frame |
+| covered 3 s | kept; at the camera's widest swing a re-lock 0.5-0.7 deg off, 5 frames over 1.5 deg off | the same, frame for frame (n20's re-lock rule, not a lost lock) |
+| covered 6 s | lost by the 4 s rule, found 3.3 s after the cover, right (2 cm, 1 deg) 4.3 s after | the same |
+| slid 5, 10 cm; re-tilted 6 to 2 deg; tilted the other way | 1.2 s / 1.2 s (the re-lock rule) | the same |
+| turned 30 deg | 0.2 s / 0.2 s | the same |
+| slid 20 cm | 3.9 s / 3.4 s | 0.7 s / 0.5 s |
+| slid 30 cm | 3.7 s / 3.3 s | 0.5 s / 0.4 s |
+| put 45 cm away, phone follows it | 5.8 s / 5.4 s | 0.4 s / 0.2 s |
+| slid 30 cm, phone follows it (old place stays at the picture's edge) | never / for good (6.4 s to the scene's end) | 0.4 s / 0.2 s |
+| moved 25 cm while covered 2 s | 2.6 s / 2.1 s | 0.6 s / 0.5 s |
+| set ball, then slid 20 cm | 3.8 s / 3.3 s, set ball left over the old place | 0.6 s / 0.4 s, set ball cleared |
+| phone turned away 1, 3, 10 s, slab not moved | lock kept; after 1 and 3 s a re-lock at the camera's widest swing (after 3 s: 4 frames over 1.5 deg off, then 0.1 deg) | the same, frame for frame |
+| phone turned away 3 s, slab slid 10 cm | never / 3.8 s | 0.5 s / 0.3 s |
+| phone turned away 3 s, slab put 40 cm away | 4.5 s / 4.0 s | 0.6 s / 0.5 s |
+| ARKit relocalised 0.6 m; world snap 0.4 m | 1.0 s; 1.1 s (the lock proves itself at the new coordinates) | the same |
+
+"Point at the slab" never showed with the slab in the picture, in any scene, on either build. Every scene where the
+slab does not move runs frame for frame as on n20. The lookalike memory and the reused sweep (below) left every
+scene above exactly as it was.
+
+**Accepted risk.** A lookalike whose top is at the slab's height (a box, a second slab) within 1 m of the lock that no
+whole-view look saw beside the slab (in practice: not in the picture while the search found the slab, e.g. put down
+after the lock), found on two re-checks in a row while the slab goes unseen at its place (a hand over it that does not
+excuse the miss, glare) or while its place is out of the picture, takes the lock. Measured in a test scene with a
+detector that re-checks only around the lock, as the app's does: a box 35 cm away put down after the lock (in the
+picture beside the slab for 1 s, which a close-up re-check does not see), then the slab unseen 1.5 s: the lock moved
+onto the box (0.350 m) 0.37 s after the slab went unseen. Over four noise seeds: the slab unseen 0.3 s, never; 0.5 s,
+once; 0.7 s or longer, always, 0.37-0.57 s after it went unseen. The same box already there while the search found the
+slab: the lock stays (tested; never moved in the same 32 runs; on the first n20r, whose memory the search did not fill,
+it moved whenever the slab was unseen 0.7 s or longer). Further than 1 m: it stays (tested). A floor pattern of about
+the slab's size (a few percent larger reads at its height, above) that no whole-view look saw takes it the same way a
+box does; the first n20r, without the memory, had that risk for every such pattern.
+On your kits the memory stayed empty on all 21 of kit 1's shots and held one place on 3 of kit 2's 23, all from the
+search's sweeps (17 sweeps saw more than one outline; 4 of the others were read at the slab's height). All three places
+are patterns printed on your play mat, on the floor: on the scan and the level arc the white patch inside the road's
+U-turn, 21 cm beside the slab (read 1.6 and 2.7 cm below the slab's top as read on the frames that remembered it;
+single readings move by a few cm: on the 6 frames a whole-view look outlined it, 3.6-7.6 cm below the slab's top
+triangulated over 99 frames), and on the second tilt's arc a white patch between the road and a tree drawing, 0.75 m away. Both lie
+within 1 m of the slab, so the memory is what keeps a moved-slab look that sees one while the slab goes unseen from
+counting it as a find. The close-up re-checks never added to it: of the 401 that returned two outlines, 400 returned
+the slab twice and one the slab and an outline at another height. No moved-slab find was counted on either kit.
+
+**What the memory costs.** A remembered place blocks a real move too: a slab put down within 10 cm of one (where
+another object stood and was taken away, or on a floor pattern the search saw) is not taken by the moved-slab rule and
+is found again only by n20's lost rule, about 4 s with the old lock still shown. Measured with a scratch probe (not in
+the repository: the app's detector and settings on rendered scenes, a second slab in its cradle 33 cm away, seen by the
+search): the second slab taken away and the slab put in its place: the right lock after 4.4 s, the old lock shown for
+3.9 s (49 frames) with the slab plainly elsewhere, exactly as with the rule off (n20: 4.4 s, 49 frames); the same move
+with no second slab: 0.6 s (5 frames). A move away from a remembered place is not blocked (the slab slid 25 cm toward
+the phone: 2.8 s with or without the second slab, n20 never; slower than the table's slides, not looked into here). On
+your second kit the mat patch the search remembered lies 21 cm beside the slab, so a slab moved onto it (about 11-31 cm
+that way) would wait the 4 s. No worse than n20, but it costs the recovery in exactly those moves. Left for you to
+decide: forgetting a remembered place once moved-slab finds there agree with each other for longer than some limit while
+the lock is still missed.
+
+**Your kit clips, cut** (scratch only; nothing from the kits is in the repository): the slab painted over for 0.5-6 s,
+the no-slab clip spliced into an arc for 1-6 s, and two shots of different placements played back to back (your shots
+share one ARKit world, so that is a real move: 2-5 cm and 1.5-7 deg for the tilt steps, 22 cm and 13-15 deg from the
+third tilt to the drops). Every cover, sweep and tilt step ran exactly as on n20 (covers up to 3 s and every sweep kept
+the lock; a 6 s cover was given up by the 4 s rule on kit 1 on both builds). The 22 cm move: n20 kept the old lock for
+3.0 s; n20r gave it up after 0.6 s (the drop clip locked again 0.5 s after that; the held-ball clip only at 4.9 s, the
+same moment as on n20, not looked into).
+Turning the phone away (your no-slab clip, 35-49 deg off the old place) for 1.5 or 3 s while the slab moved 22 cm, then
+back: n20 kept the old lock through the turn and 3.6 s after it (the 4 s rule); n20r moved nothing while the phone was
+turned away and gave the old lock up 0.6 s after it came back, locking again 0.5 s later (the drop clip: centre within
+0.5 cm of a fresh tracker's lock on that clip, tilt 0.5-0.8 deg against its 3.0; that placement has no flat-phone
+reading and fresh locks on its shots read 0.2-4.2 deg; the held-ball clip: at the fresh tracker's lock 4.9 s in, n20
+never in the 5 s clip). None of your clips starts with the old place at the picture's edge, so that case is covered by
+the rendered scenes only.
+
+**Normal use** (both kits replayed in full, 12,120 frames): every frame identical to n20 (lock, tilt, shown tilt,
+events, detections); the only difference is the extra whole-view look on 55 (kit 1) and 56 (kit 2) re-checks that did
+not see the lock, none of which counted a find, so no lock was moved or given up. The lookalike memory filled from the
+search and the reuse of a sweep changed nothing there: every field of every frame is as before them. The kit cuts above
+were run again with them, with the same result.
+
 ## Build n20k (20 November 2026): capture kit, drops on a tilted slab
 
 Capture kit only, on top of n20; Developer shows **n20k**. The main screen, the tracker, the detectors and the bounce
