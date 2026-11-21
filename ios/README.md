@@ -9,6 +9,9 @@ a tilted slab with a phone-on-slab reading right before them) and n20r (below: a
 within a second) merged, with no other change. The two touch different code (the capture kit; the tracker), so each
 section below holds as written; the build labels in them are the ones each change was first built as.
 
+Checked: the full BounceCore suite on Linux, optimised: 593 tests (n20r's 580 and n20k's 13), 3 skipped (they need
+an environment variable), 0 failures. The app's own change is only the build label.
+
 ## Build n20r (21 November 2026): a lost lock recovers
 
 Candidate on top of n20 (not on `native-ios`); Developer shows **n20r**. Your kits never lost a lock, so the recovery
