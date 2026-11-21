@@ -22,9 +22,14 @@ not a ball or a hand over it, not LiDAR; or its place partly or wholly out of th
 view runs in the same frame, for the moved-slab rule alone: two finds on consecutive re-checks that agree with each
 other, more than 10 cm from the lock (20 cm when its place is not wholly in the picture) but within 1 m, top within 3 cm
 of the lock's height, and not where a lookalike was seen beside the slab (below), give the lock up and start the
-confirmation at the new place (the usual rules lock it). The 3 cm height gate is barely more than the slab's own
-25.4 mm: it rejects a floor-level tile only because the slab sits in its cradle more than 3 cm above the floor; a box
-or a second slab with its top at about the slab's height passes it.
+confirmation at the new place (the usual rules lock it). The 3 cm height gate does not keep floor patterns out. The
+tracker sizes every outline as the slab's 180 mm top, so it reads a flat pattern's height from its size: a pattern of
+exactly the slab's size reads at the floor (rejected when the slab's top sits more than 3 cm above the floor in its
+cradle) and a smaller one further away, below the floor; a larger one reads nearer the camera, higher by about the
+phone's height above the floor times how much larger it is (from 1.2 m up, 3% larger reads 3.5 cm higher). A floor
+pattern a few percent larger than the slab reads at the slab's height and passes, as does a box or a second slab with
+its top at about the slab's height. On your second kit the search read patterns on the play mat at the slab's height
+(below).
 
 **What the look costs on the phone.** One whole-view sweep per re-check that did not see the lock at its place: at most
 one every 0.3 s (3.3 a second, the re-check rate), each about a search's cost, roughly 3 times a close-up re-check. It
@@ -40,8 +45,9 @@ looks only around the lock (at most two outlines, both of the slab), so the memo
 the tracker runs anyway: every search sweep while searching and confirming (before and at the lock: the others beside
 the find it chose), a whole-view re-check after a world jump, and a moved-slab look that finds the lock at its place.
 It is kept while ARKit's world holds (a lost lock or a re-lock does not clear it: the objects stay where they are; the
-place where the slab locks again is taken off it), and cleared by a reset and by any world-frame jump, in any state
-(its coordinates are the old world's). It only feeds the moved-slab rule: nothing else reads it.
+place where the slab locks again is taken off it; what that costs is below), and cleared by a reset and by any
+world-frame jump, in any state (its coordinates are the old world's). It only feeds the moved-slab rule: nothing else
+reads it.
 
 | scene (rendered) | n20: lock at the slab after / old place shown for | n20r |
 |---|---|---|
@@ -74,12 +80,31 @@ picture beside the slab for 1 s, which a close-up re-check does not see), then t
 onto the box (0.350 m) 0.37 s after the slab went unseen. Over four noise seeds: the slab unseen 0.3 s, never; 0.5 s,
 once; 0.7 s or longer, always, 0.37-0.57 s after it went unseen. The same box already there while the search found the
 slab: the lock stays (tested; never moved in the same 32 runs; on the first n20r, whose memory the search did not fill,
-it moved whenever the slab was unseen 0.7 s or longer). Further than 1 m: it stays (tested); a floor-level tile never takes it (the height gate).
+it moved whenever the slab was unseen 0.7 s or longer). Further than 1 m: it stays (tested). A floor pattern of about
+the slab's size (a few percent larger reads at its height, above) that no whole-view look saw takes it the same way a
+box does; the first n20r, without the memory, had that risk for every such pattern.
 On your kits the memory stayed empty on all 21 of kit 1's shots and held one place on 3 of kit 2's 23, all from the
-search's sweeps (17 sweeps saw more than one outline; 4 of the others were at the slab's height: on the scan and the
-level arc an outline with its top 2-3 cm below the slab's, 21 cm from its centre, not looked into further; on the second
-tilt's arc one 0.75 m away). The close-up re-checks never added to it: of the 401 that returned two outlines, 400 returned
+search's sweeps (17 sweeps saw more than one outline; 4 of the others were read at the slab's height). All three places
+are patterns printed on your play mat, on the floor: on the scan and the level arc the white patch inside the road's
+U-turn, 21 cm beside the slab (read 1.6 and 2.7 cm below the slab's top as read on the frames that remembered it;
+single readings move by a few cm: on the 6 frames a whole-view look outlined it, 3.6-7.6 cm below the slab's top
+triangulated over 99 frames), and on the second tilt's arc a white patch between the road and a tree drawing, 0.75 m away. Both lie
+within 1 m of the slab, so the memory is what keeps a moved-slab look that sees one while the slab goes unseen from
+counting it as a find. The close-up re-checks never added to it: of the 401 that returned two outlines, 400 returned
 the slab twice and one the slab and an outline at another height. No moved-slab find was counted on either kit.
+
+**What the memory costs.** A remembered place blocks a real move too: a slab put down within 10 cm of one (where
+another object stood and was taken away, or on a floor pattern the search saw) is not taken by the moved-slab rule and
+is found again only by n20's lost rule, about 4 s with the old lock still shown. Measured with a scratch probe (not in
+the repository: the app's detector and settings on rendered scenes, a second slab in its cradle 33 cm away, seen by the
+search): the second slab taken away and the slab put in its place: the right lock after 4.4 s, the old lock shown for
+3.9 s (49 frames) with the slab plainly elsewhere, exactly as with the rule off (n20: 4.4 s, 49 frames); the same move
+with no second slab: 0.6 s (5 frames). A move away from a remembered place is not blocked (the slab slid 25 cm toward
+the phone: 2.8 s with or without the second slab, n20 never; slower than the table's slides, not looked into here). On
+your second kit the mat patch the search remembered lies 21 cm beside the slab, so a slab moved onto it (about 11-31 cm
+that way) would wait the 4 s. No worse than n20, but it costs the recovery in exactly those moves. Left for you to
+decide: forgetting a remembered place once moved-slab finds there agree with each other for longer than some limit while
+the lock is still missed.
 
 **Your kit clips, cut** (scratch only; nothing from the kits is in the repository): the slab painted over for 0.5-6 s,
 the no-slab clip spliced into an arc for 1-6 s, and two shots of different placements played back to back (your shots

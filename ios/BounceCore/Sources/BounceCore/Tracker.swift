@@ -370,8 +370,8 @@ public struct TrackerSettings: Equatable {
     /// unexcused miss with the place in view, or the place partly or wholly out of the picture) a second look over the
     /// whole view, in the same frame, feeds the moved-slab rule alone: `movedSlabFinds` finds on consecutive re-checks that
     /// agree with each other, away from the lock (more than 10 cm with its place in view, more than `moveRadius` without)
-    /// but within `movedSlabRadius` of it, with the top at the lock's height (`movedSlabHeight`: the slab sits in its
-    /// cradle more than 3 cm above the floor, so a floor tile is not the slab) and not where a lookalike was seen beside
+    /// but within `movedSlabRadius` of it, with the top at the lock's height (`movedSlabHeight`; outlines are sized as
+    /// the slab, so a floor pattern a few percent larger reads at its height) and not where a lookalike was seen beside
     /// the slab (`SlabTracker.lookalikes`: filled from the whole-view looks the tracker runs anyway, chiefly the search's
     /// sweeps before and at the lock), give the lock up and start the confirmation at the new place with them (the usual
     /// rules lock it). Nothing changes while the lock is seen at its place or excused (a ball or a hand over it, LiDAR).

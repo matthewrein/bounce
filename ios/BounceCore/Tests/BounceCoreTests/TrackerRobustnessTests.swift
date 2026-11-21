@@ -669,7 +669,7 @@ final class TrackerRobustnessTests: XCTestCase {
     }
 
     /// The lookalike memory (n20r): filled by the search's whole-view sweeps (a find at the slab's height beside the
-    /// chosen one; not a floor tile), kept when the lock is lost (the objects stay where they are), cleared by a world-frame
+    /// chosen one; not a floor tile of its size), kept when the lock is lost (the objects stay where they are), cleared by a world-frame
     /// jump in any state (here while confirming) and by a reset.
     func testTheLookalikeMemoryIsKeptWhenLostAndClearedByAWorldJumpInAnyState() {
         let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
@@ -685,7 +685,7 @@ final class TrackerRobustnessTests: XCTestCase {
         XCTAssertEqual(tr.state, .locked)
         XCTAssertEqual(tr.lookalikes.count, 1)
         XCTAssertLessThan(tr.lookalikes.first.map { $0.distance(to: det.other!.center) } ?? 99, 0.05)
-        // a floor tile beside the slab is not at its height: not a lookalike
+        // a floor tile of the slab's size beside it reads at the floor, not at the slab's height: not a lookalike
         det.other = World.slabAt(Vec3(0.35, 0.0, -1.0), tilt: 0, heading: 0, yaw: 10)
         tr.reset()
         XCTAssertEqual(tr.lookalikes.count, 0, "a reset clears it")
