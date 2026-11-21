@@ -2,6 +2,56 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n21-exp (21 November 2026): the tilt's direction from all the views (an experiment, not a candidate)
+
+**Not a candidate: do not install it instead of n20.** This branch tried what n19 left out: n19's multi-view lock
+fits the lock's views together for the centre and the turn but keeps the slab's normal fixed. Here the same views are
+fitted again with the normal free too (`MultiViewLock.fitNormal`: corners seen from views at least 15 degrees apart
+pin the plane by parallax; each view weighs as one detection; its standard deviation is the larger of the fit's own and
+a jackknife over the views) and the result is offered to the shown tilt under n18's hold rule: it replaces the number
+and the bounce's normal only when its deviation is smaller than the one shown (`TrackerSettings.multiViewNormal`, on
+in this branch's app settings, off by default so recordings replay unchanged). Fewer than three views, a misfit over
+1.5 px, a centre move over 2.5 cm or a change of over 4 degrees from the lock's normal: not offered, n20's normal stays.
+The outline, the lock, the gates and LiDAR are untouched. Developer shows **n21-exp**.
+
+**Replayed on both kits it failed the bar** (direction error clearly lower on every clip with several views, the
+amount no worse). The direction of the shown normal against your phone-on-slab truth (across the tilt, in degrees of
+the normal, which is what moves a bounce sideways; total angle on the level clips), median / 90th percentile over the
+frames showing a number:
+
+| kit | clip | n20 direction | n21-exp direction | n20 amount | n21-exp amount | |
+|---|---|---|---|---|---|---|
+| 1 | level, still | 0.30 / 0.39 | 0.30 / 0.39 | 0.03 / 0.07 | 0.03 / 0.07 | unchanged |
+| 1 | level, arc | 0.15 / 0.46 | 0.15 / 2.24 | 0.08 / 0.45 | 0.08 / 2.04 | worse |
+| 1 | tilt 1 (4.7 deg), arc | 0.31 / 0.90 | 0.31 / 0.53 | 0.68 / 0.68 | 0.68 / 0.68 | median same |
+| 1 | tilt 2 (10.7 deg), arc | 1.39 / 1.39 | 0.49 / 1.39 | 1.74 / 1.74 | 1.74 / 2.16 | direction better, amount worse |
+| 1 | tilt 3 (17.2 deg), arc | 0.50 / 0.71 | 0.50 / 0.54 | 0.91 / 0.91 | 0.20 / 0.39 | median same |
+| 2 | level, still | 0.72 / 0.72 | 0.72 / 0.72 | 0.44 / 0.44 | 0.44 / 0.44 | unchanged |
+| 2 | level, arc | 1.15 / 1.77 | 2.49 / 2.52 | 0.55 / 1.18 | 1.90 / 1.93 | worse |
+| 2 | tilt 1 (3.6 deg), arc | 0.38 / 0.38 | 0.38 / 0.38 | 0.61 / 0.68 | 0.61 / 0.68 | never taken |
+| 2 | tilt 2 (7.8 deg), arc | 0.43 / 0.43 | 0.14 / 0.43 | 0.58 / 0.58 | 0.39 / 0.58 | better |
+| 2 | tilt 3 (12.1 deg), arc | 0.52 / 0.68 | 0.72 / 0.75 | 0.94 / 1.03 | 1.49 / 1.54 | worse |
+
+The tilted still clips show no number in either build (one view); the stills that do are unchanged. Nothing else moved:
+on every frame of every video shot of both kits the state, the lock's corners and every detection are identical, no
+lock was lost, and as many frames show a number; only the shown tilt and the bounce's normal change (the first number
+within 2 degrees of the truth came 0.9 s later on kit 1's level arc, 11.4 to 12.3 s; the same on the other clips).
+
+**What it says about the left-right error.** n20's direction error is real but not larger than its amount error: across
+the tilt 0.3-1.4 degrees median on the six tilted arcs (0.04-0.75 at the arcs' last frames), the downhill heading 1.6-7.4
+degrees off, against 0.6-1.7 degrees in the amount (1 degree moves the landing about 4.5 cm). The views fitted with the
+normal free do not fix it because the error is the same in every view, not noise that more views average away: on kit
+2's level arc the fit from four views was 2.5 degrees off while stating 0.75 (the lock's own average 2.0, the shown n20
+estimate 1.15), and with the size free too (tried, `fitNormal(freeSize:)`) it was no better. That points at the
+outline itself (which edge of a side it sits on, seen the same way from one side of the slab), which is where the next
+work on the direction belongs. The truth's heading is usable: the CoreMotion-to-ARKit link's heading varied by 0.01-0.07
+degrees over each shot.
+
+**Checked:** BounceCore unit tests (`MultiViewNormalTests`: the views bring a normal tipped 2 degrees back to under 0.01;
+with a pixel of noise and an outline on the wrong edge the error stays under its stated deviation times three; the hold
+rule; through the tracker on a synthetic walk round the shown normal ends nearer the truth with the outline unchanged)
+and the full BounceCore suite. The app change is only the build label.
+
 ## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
 
 Bug fix on top of n19; Developer shows **n20**. Before the lock, the slab search often drops its candidate for a moment

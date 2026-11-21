@@ -20,6 +20,8 @@ public enum MultiViewLock {
     /// otherwise the lock is the single-view average, as before
     public static let maxRmsPixels = 1.5
     public static let maxShift = 0.025
+    /// n21: the normal fit (`fitNormal`) is offered to the tilt only within this angle of the lock's normal (deg)
+    public static let maxNormalChangeDegrees = 4.0
     /// a detection misfitting by more than this many times the median detection's rms (at least `minDropPixels`) is left
     /// out (an outline on the outer edge of a side, a lookalike) and the fit run again
     public static let dropFactor = 3.0
@@ -209,6 +211,182 @@ public enum MultiViewLock {
                    views: v.count, spreadDegrees: v.spreadDegrees, scale: freeSize ? exp(x[4]) : 1, cornerSpread: spread)
     }
 
+    // MARK: n21: the normal from the views too
+
+    /// n21 (`TrackerSettings.multiViewNormal`): the same views fitted with the normal free as well.
+    public struct NormalFit {
+        /// the fitted pose (centre, normal and turn; the size the start's)
+        public var pose: SlabPose
+        /// rms reprojection misfit over the corners of the detections kept (processing px), detections kept, views among
+        /// them and the widest angle between two views (deg), as `Fit`'s
+        public var rmsPixels: Double
+        public var used: Int
+        public var views: Int
+        public var spreadDegrees: Double
+        /// the normal's covariance across it (world, rad^2) and its standard deviation (deg, both axes together, as
+        /// `HonestTilt`'s): the larger of the fit's own (each view weighing as one detection: one view's errors are
+        /// mostly the same error) and the spread of the fits that leave one view out at a time (jackknife; nil with fewer
+        /// than three views, and the fit counts as weak)
+        public var covariance: Mat3
+        public var sigmaDegrees: Double
+        public var formalSigmaDegrees: Double
+        public var jackknifeSigmaDegrees: Double?
+    }
+
+    /// the normal fit's per-coordinate noise is taken as at least this (processing px): a handful of views can fit
+    /// their own noise
+    public static let minNormalNoisePixels = 0.25
+
+    /// The pose at parameters x (centre offset 3, rotation vector 3, world; with a seventh, the log of the size's scale)
+    /// from S.
+    static func freePose(_ S: SlabPose, _ x: [Double]) -> SlabPose {
+        let w = Vec3(x[3], x[4], x[5]), k = x.count > 6 ? exp(x[6]) : 1
+        let n = S.normal.rotated(by: w).normalized
+        let u = S.axisU.rotated(by: w).rejecting(n).normalized
+        return SlabPose(center: S.center + Vec3(x[0], x[1], x[2]), normal: n, axisU: u, axisV: n.cross(u), halfU: S.halfU * k, halfV: S.halfV * k)
+    }
+
+    /// The lock's detections fitted together with the normal free too (n21): the centre, the normal and the turn about it
+    /// (the size held) that put the square's corners nearest every detection's outline corners in its own camera.
+    /// Corners seen from views well apart pin the plane by parallax, which a single view's foreshortening does only
+    /// weakly. Each view (directions from `start`'s centre to the cameras within `groupDegrees`) weighs as one detection,
+    /// its detections sharing the weight. Detections misfitting beyond `dropFactor` times the median are left out and
+    /// the fit run again, as `fit`'s. nil when no detection projects or the fit fails. The guards are the caller's.
+    public static func fitNormal(start S: SlabPose, observations: [Observation], groupDegrees: Double, freeSize: Bool = false) -> NormalFit? {
+        var obs: [(quad: [Vec2], camera: CameraView)] = []
+        for o in observations where o.quad.count == 4 {
+            let p = S.topCorners.compactMap { o.camera.project(world: $0) }
+            guard p.count == 4 else { continue }
+            obs.append((matched(o.quad, to: p) { $0.distance(to: $1) }, o.camera))
+        }
+        guard !obs.isEmpty else { return nil }
+        // views: greedy groups of the directions (as `views`)
+        let lim = Units.radians(groupDegrees)
+        var anchors: [Vec3] = [], view: [Int] = []
+        for o in obs {
+            let d = (o.camera.position - S.center).normalized
+            if let j = anchors.firstIndex(where: { $0.angle(to: d) < lim }) { view.append(j) } else { view.append(anchors.count); anchors.append(d) }
+        }
+        let np = freeSize ? 7 : 6
+        func residuals(_ x: [Double], _ ids: [Int]) -> [Double]? {
+            let C = freePose(S, x).topCorners
+            var r: [Double] = []
+            r.reserveCapacity(ids.count * 8)
+            for i in ids {
+                for k in 0..<4 {
+                    guard let q = obs[i].camera.project(world: C[k]), q.x.isFinite, q.y.isFinite else { return nil }
+                    r.append(q.x - obs[i].quad[k].x); r.append(q.y - obs[i].quad[k].y)
+                }
+            }
+            return r
+        }
+        func weights(_ ids: [Int]) -> [Double] {
+            var per: [Int: Int] = [:]
+            for i in ids { per[view[i], default: 0] += 1 }
+            return ids.map { 1 / Double(per[view[$0]]!) }
+        }
+        // weighted Gauss-Newton from x; returns the parameters and the normal matrix J^T W J at them
+        func solve(_ x0: [Double], _ ids: [Int], iterations: Int) -> (x: [Double], A: [[Double]])? {
+            var x = x0
+            let w = weights(ids)
+            var A = [[Double]](repeating: [Double](repeating: 0, count: np), count: np)
+            for it in 0...iterations {
+                guard let r0 = residuals(x, ids) else { return nil }
+                let h = 1e-6
+                var J = [[Double]](repeating: [Double](repeating: 0, count: np), count: r0.count)
+                for j in 0..<np {
+                    var xp = x; xp[j] += h
+                    guard let r1 = residuals(xp, ids) else { return nil }
+                    for i in r0.indices { J[i][j] = (r1[i] - r0[i]) / h }
+                }
+                A = [[Double]](repeating: [Double](repeating: 0, count: np), count: np)
+                var b = [Double](repeating: 0, count: np)
+                for i in r0.indices {
+                    let wi = w[i / 8]
+                    for p in 0..<np {
+                        b[p] -= wi * J[i][p] * r0[i]
+                        for q in 0..<np { A[p][q] += wi * J[i][p] * J[i][q] }
+                    }
+                }
+                if it == iterations { break }
+                var Ad = A
+                for p in 0..<np { Ad[p][p] *= 1 + 1e-9; Ad[p][p] += 1e-12 }
+                guard let dx = solveLinear(Ad, b), dx.allSatisfy({ $0.isFinite }) else { return nil }
+                for j in 0..<np { x[j] += dx[j] }
+                if dx.reduce(0, { $0 + $1 * $1 }).squareRoot() < 1e-9 {
+                    // one more pass for the normal matrix at the solution
+                    return solve(x, ids, iterations: 0)
+                }
+            }
+            return (x, A)
+        }
+        var active = Array(obs.indices)
+        guard var sol = solve([Double](repeating: 0, count: np), active, iterations: 12) else { return nil }
+        func rms(_ i: Int) -> Double? {
+            guard let r = residuals(sol.x, [i]) else { return nil }
+            return (r.reduce(0) { $0 + $1 * $1 } / 4).squareRoot()
+        }
+        let per = active.map { rms($0) ?? .infinity }
+        let cut = max(minDropPixels, dropFactor * KitStats.median(per.filter { $0.isFinite }))
+        let kept = zip(active, per).filter { $0.1 <= cut }.map { $0.0 }
+        if kept.count < active.count, !kept.isEmpty {
+            active = kept
+            guard let s2 = solve(sol.x, active, iterations: 12) else { return nil }
+            sol = s2
+        }
+        guard let r = residuals(sol.x, active) else { return nil }
+        let P = freePose(S, sol.x), n = P.normal
+        let groups = Array(Set(active.map { view[$0] })).sorted()
+        let v = views(active.map { obs[$0].camera.position - P.center }, groupDegrees: groupDegrees)
+        // the fit's own covariance: the weighted residuals' noise per coordinate (at least `minNormalNoisePixels`)
+        let w = weights(active)
+        var wr2 = 0.0
+        for i in r.indices { wr2 += w[i / 8] * r[i] * r[i] }
+        let wsum = w.reduce(0, +)
+        let s2 = max(pow(minNormalNoisePixels, 2), wr2 / max(1, 8 * wsum - Double(np)))
+        guard let Ai = inverse(sol.A) else { return nil }
+        // the rotation part's covariance carried to the normal: dn = dw x n
+        var Cw = zero3
+        for a in 0..<3 { for b in 0..<3 { Cw.m[a * 3 + b] = Ai[3 + a][3 + b] * s2 } }
+        let K = Mat3(rows: [0, n.z, -n.y, -n.z, 0, n.x, n.y, -n.x, 0])   // dn = K dw (dw x n)
+        let Cf = HonestTilt.across(K * Cw * K.transposed, n)
+        // jackknife over the views
+        var Cj: Mat3? = nil
+        if groups.count >= 3 {
+            var ns: [Vec3] = []
+            for g in groups {
+                let ids = active.filter { view[$0] != g }
+                guard let s = solve(sol.x, ids, iterations: 6) else { ns = []; break }
+                ns.append(freePose(S, s.x).normal)
+            }
+            if ns.count == groups.count {
+                let G = Double(ns.count)
+                let mean = (ns.reduce(Vec3.zero, +) / G).normalized
+                var C = zero3
+                for x in ns { let d = (x - mean).rejecting(n); C = add3(C, outer3(d, d)) }
+                Cj = scale3(C, (G - 1) / G)
+            }
+        }
+        let tf = HonestTilt.trace(Cf), tj = Cj.map { HonestTilt.trace($0) } ?? 0
+        let C = tj > tf ? Cj! : Cf
+        let deg: (Double) -> Double = { Units.degrees(max(0, $0).squareRoot()) }
+        guard C.m.allSatisfy({ $0.isFinite }), n.isFinite else { return nil }
+        return NormalFit(pose: P, rmsPixels: (r.reduce(0) { $0 + $1 * $1 } / Double(r.count / 2)).squareRoot(), used: active.count,
+                         views: v.count, spreadDegrees: v.spreadDegrees, covariance: C, sigmaDegrees: deg(max(tf, tj)),
+                         formalSigmaDegrees: deg(tf), jackknifeSigmaDegrees: Cj.map { deg(HonestTilt.trace($0)) })
+    }
+
+    /// The inverse of a small square matrix, column by column (`solveLinear`); nil when singular.
+    static func inverse(_ A: [[Double]]) -> [[Double]]? {
+        let n = A.count
+        var cols: [[Double]] = []
+        for j in 0..<n {
+            guard let c = solveLinear(A, (0..<n).map { $0 == j ? 1 : 0 }), c.allSatisfy({ $0.isFinite }) else { return nil }
+            cols.append(c)
+        }
+        return (0..<n).map { i in (0..<n).map { cols[$0][i] } }
+    }
+
     /// Ax = b by Gaussian elimination with partial pivoting (small systems); nil when singular.
     static func solveLinear(_ A0: [[Double]], _ b0: [Double]) -> [Double]? {
         var A = A0, b = b0
@@ -268,12 +446,24 @@ public struct MultiViewSummary: Codable, Equatable {
     public var cornerSpreadMm: Double?
     /// the shown lock's corners over its latest refreshes (world): the largest distance of one from its mean (mm)
     public var lockDriftMm: Double?
+    /// n21 (`TrackerSettings.multiViewNormal`): the views fitted with the normal free too (`MultiViewLock.fitNormal`):
+    /// its normal (world), standard deviation (deg) and angle from the lock's normal (deg); whether the tilt took it
+    /// (`HonestTilt.offer`: only with a smaller deviation than the one shown), else why not ("views", "fit", "rms",
+    /// "shift", "change": a guard; "weak": no jackknife over three views or more; "sigma": not below the shown one's;
+    /// "unshown": the tilt is not shown yet). nil while off or before the position fit applies.
+    public var normal: [Double]?
+    public var normalSigmaDegrees: Double?
+    public var normalChangeDegrees: Double?
+    public var normalApplied: Bool?
+    public var normalReason: String?
 
     public var rounded: MultiViewSummary {
         func r(_ v: Double) -> Double { (v * 100).rounded() / 100 }
         var s = self
         s.spreadDegrees = r(spreadDegrees); s.rmsPixels = rmsPixels.map(r); s.shiftMm = shiftMm.map(r); s.impliedSizeMm = impliedSizeMm.map(r)
         s.sizeSettingMm = r(sizeSettingMm); s.cornerSpreadMm = cornerSpreadMm.map(r); s.lockDriftMm = lockDriftMm.map(r)
+        s.normal = normal.map { $0.map { ($0 * 1e6).rounded() / 1e6 } }
+        s.normalSigmaDegrees = normalSigmaDegrees.map(r); s.normalChangeDegrees = normalChangeDegrees.map(r)
         return s
     }
 }

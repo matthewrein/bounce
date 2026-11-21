@@ -162,6 +162,7 @@ public struct RecordingSettings: Codable, Equatable {
         t.settle.holdShown = true
         t.lockKeepsNewestPerView = true
         t.multiViewLock = true
+        t.multiViewNormal = true
         t.ballGate = RecordingSettings.appBallGate
         t.tapHints = true
         t.tapSetsBall = true

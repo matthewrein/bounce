@@ -40,7 +40,7 @@ final class RecordingFormatTests: XCTestCase {
         s.matchDistance = 0.02; s.matchAngleDegrees = 3; s.moveCount = 5; s.lostAfter = 3; s.historySize = 12; s.depthNormalWeight = 0.3
         s.depthCentreWeight = 0.35
         s.settle.groupDegrees = 6; s.settle.settleDegrees = 0.9; s.readoutsFromSettledNormal = true; s.lockKeepsNewestPerView = true
-        s.multiViewLock = true
+        s.multiViewLock = true; s.multiViewNormal = true
         s.ballInterval = 0.15; s.shapeLimits.maxMisfitFraction = 0.04; s.shapeLimits.maxNormalSigmaDegrees = nil; s.shapeLimits.minDistance = 0.3
         s.shapeLimits.maxDistance = 2.5; s.shapeLimits.maxTiltDegrees = 20
         s.cornerNoisePixels = 0.8; s.matchSigmas = 2.5; s.maxMatchDistance = 0.07; s.maxMatchAngleDegrees = 9; s.maxLockSigmaDegrees = 1.2

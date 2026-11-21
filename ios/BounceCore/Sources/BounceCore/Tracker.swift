@@ -479,6 +479,15 @@ public struct TrackerSettings: Equatable {
     /// single-view average, as before; the agreement gates, the tilt and its honest uncertainty are unchanged. Off (the
     /// default, so older recordings replay as the phone ran them); the app's is on (`RecordingSettings.trackerSettings`).
     public var multiViewLock = false
+    /// The tilt's direction from the views too (n21, `MultiViewLock.fitNormal`): with the multi-view lock applied, its
+    /// views are fitted again with the normal free (corners seen from views at least `MultiViewLock.minSpreadDegrees`
+    /// apart pin the plane by parallax), and the result, with its own standard deviation, is offered to the shown tilt
+    /// under the hold rule (`SettleSettings.holdShown`: it replaces the shown estimate only with a smaller deviation), so
+    /// the readouts and the bounce use it (`readoutsFromSettledNormal`). A weak fit (fewer than three views, a misfit, a
+    /// move, a change of more than `MultiViewLock.maxNormalChangeDegrees`) is not offered: n20's normal stays. The
+    /// outline, the gates and the lock are unchanged. Needs `multiViewLock` and `holdShown`. Off (the default, so older
+    /// recordings replay as the phone ran them); the app's is on (`RecordingSettings.trackerSettings`).
+    public var multiViewNormal = false
 
     public static let defaultShapeLimits: ShapeCheck.Limits = { var l = ShapeCheck.Limits(); l.maxNormalSigmaDegrees = 10; return l }()
 
@@ -1149,6 +1158,7 @@ public final class SlabTracker {
                     sum.reason = "shift"
                 } else {
                     imageSlab = fit.pose; sum.applied = true; sum.reason = nil
+                    if settings.multiViewNormal { offerViewsNormal(lock: L, start: fit.pose, obs, &sum) }
                 }
                 if let free = MultiViewLock.fit(lock: fit.pose, observations: obs, groupDegrees: g, freeSize: true), free.scale > 0.5, free.scale < 2 {
                     sum.impliedSizeMm = (free.pose.halfU + free.pose.halfV) * 1000
@@ -1163,6 +1173,27 @@ public final class SlabTracker {
         }
         sum.lockDriftMm = MultiViewLock.drift(lockTrail).map { $0 * 1000 }
         multiView = sum
+    }
+
+    /// n21 (`TrackerSettings.multiViewNormal`): the lock's views fitted with the normal free (`MultiViewLock.fitNormal`,
+    /// from the position fit `start`), and offered to the shown tilt (`HonestTilt.offer`) when the fit is strong: views
+    /// at least `minSpreadDegrees` apart, the misfit and the centre's move within the position fit's guards, the
+    /// normal within `maxNormalChangeDegrees` of the lock's, and a jackknife over three views or more.
+    private func offerViewsNormal(lock L: SlabPose, start: SlabPose, _ obs: [MultiViewLock.Observation], _ sum: inout MultiViewSummary) {
+        sum.normalApplied = false
+        guard let nf = MultiViewLock.fitNormal(start: start, observations: obs, groupDegrees: settings.settle.groupDegrees) else {
+            sum.normalReason = "fit"; return
+        }
+        let n = nf.pose.normal, change = Units.degrees(n.angle(to: L.normal))
+        sum.normal = n.array; sum.normalSigmaDegrees = nf.sigmaDegrees; sum.normalChangeDegrees = change
+        if nf.views < 2 || nf.spreadDegrees < MultiViewLock.minSpreadDegrees { sum.normalReason = "views" }
+        else if !(nf.rmsPixels <= MultiViewLock.maxRmsPixels) { sum.normalReason = "rms" }
+        else if !(nf.pose.center.distance(to: L.center) <= MultiViewLock.maxShift) { sum.normalReason = "shift" }
+        else if !(change <= MultiViewLock.maxNormalChangeDegrees) { sum.normalReason = "change" }
+        else if nf.jackknifeSigmaDegrees == nil { sum.normalReason = "weak" }
+        else if !honest.settled || unconfirmed != nil { sum.normalReason = "unshown" }
+        else if honest.offer(normal: n, sigmaDegrees: nf.sigmaDegrees) { sum.normalApplied = true; sum.normalReason = nil }
+        else { sum.normalReason = "sigma" }
     }
 
     /// Add detections of the lock to the multi-view fit's store (`MultiViewLock.ViewStore`): each view its newest

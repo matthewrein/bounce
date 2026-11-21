@@ -306,6 +306,17 @@ struct HonestTilt {
         }
     }
 
+    /// n21: an estimate made apart from the views' combination (the lock's views fitted with the normal free,
+    /// `MultiViewLock.fitNormal`) with its own standard deviation (degrees, both axes together): under the hold rule
+    /// (`SettleSettings.holdShown`), it replaces the shown estimate once the tilt is shown and only with a smaller
+    /// deviation, as a re-check's would. Returns whether it was taken (never without `holdShown` or before it is shown).
+    @discardableResult
+    mutating func offer(normal n: Vec3, sigmaDegrees s: Double) -> Bool {
+        guard settings.holdShown, let h = held, n.isFinite, n.length > 0, s.isFinite, s >= 0, s < h.sigma else { return false }
+        held = (n.normalized, s)
+        return true
+    }
+
     // MARK: small matrices
 
     static func trace(_ a: Mat3) -> Double { a[0, 0] + a[1, 1] + a[2, 2] }
