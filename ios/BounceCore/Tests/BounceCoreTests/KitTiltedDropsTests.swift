@@ -406,10 +406,10 @@ final class KitTiltedDropsTests: XCTestCase {
     static let oldKitJSON = """
     {
       "build" : "n20",
-      "createdAt" : "2026-11-19T17:40:03Z",
+      "createdAt" : "2026-01-01T12:00:00Z",
       "device" : { "hasLiDAR" : true, "modelIdentifier" : "iPhone16,1", "systemVersion" : "18.1" },
       "format" : "bouncekit",
-      "kitId" : "slab-kit-20261119-174003",
+      "kitId" : "slab-kit-20260101-120000",
       "measurements" : { "ballDiameterMm" : 35, "dishInches" : 0.125, "slabDepthInches" : 7, "slabThicknessInches" : 1, "slabWidthInches" : 7 },
       "measurementsEnteredAt" : "2026-11-19T17:41:00Z",
       "planId" : "standard-v1",
@@ -431,7 +431,7 @@ final class KitTiltedDropsTests: XCTestCase {
     static let oldShotJSON = """
     {
       "attempt" : 1, "build" : "n20", "device" : { "hasLiDAR" : true, "modelIdentifier" : "iPhone16,1", "systemVersion" : "18.1" },
-      "duration" : 6.01, "format" : "bouncekit-shot", "hasDepth" : true, "kitId" : "slab-kit-20261119-174003",
+      "duration" : 6.01, "format" : "bouncekit-shot", "hasDepth" : true, "kitId" : "slab-kit-20260101-120000",
       "measurements" : { "ballDiameterMm" : 35, "slabDepthInches" : 7, "slabThicknessInches" : 1, "slabWidthInches" : 7 },
       "positionId" : "p4", "releaseCue" : 2, "shotId" : "s10-drop1", "startedAt" : "2026-11-19T17:59:54Z", "step" : 10,
       "trueTilt" : { "method" : "twoReading", "reasons" : [ "Two readings." ], "tiltDegrees" : 17.2 }, "version" : 1
