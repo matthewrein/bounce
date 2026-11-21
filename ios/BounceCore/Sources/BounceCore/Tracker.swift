@@ -356,6 +356,18 @@ public struct TrackerSettings: Equatable {
     // Losing the lock.
     /// consecutive in-view misses needed (as well as `lostAfter`) before the lock is lost
     public var minMissesForLost: Int = 3
+    /// A slab moved off its lock (n20r, lost-lock recovery). Off (the default, so older recordings replay as the phone ran
+    /// them): a re-check looks only around the lock's outline, so a slab moved further than that is found again only once
+    /// the lost rule gives the lock up (`lostAfter`, 4 s of misses with its place in view), and never while the lock's
+    /// place stays out of the picture. On (the app's, `RecordingSettings.trackerSettings`): while the lock's place is in
+    /// view and its last re-check missed, or the lock is wholly out of the picture, a re-check looks over the whole view;
+    /// `movedSlabFinds` finds there that agree with each other, away from the lock and with its top at the lock's height
+    /// (`movedSlabHeight`: the same floor; a tile or a box elsewhere is not the slab), give the lock up and start the
+    /// confirmation at the new place with them (the usual rules lock it). Nothing changes while the lock is seen at its
+    /// place, excused (a ball or a hand over it, LiDAR), or only partly out of the picture.
+    public var findsMovedSlab = false
+    public var movedSlabFinds: Int = 2
+    public var movedSlabHeight: Double = 0.03
 
     // World-frame discontinuities (ARKit relocalisation, an interruption, a pose snap).
     /// after one, a lock that is not seen where it should be within this many seconds of normal tracking expires
@@ -872,6 +884,8 @@ public final class SlabTracker {
     private var ballGate = BallGate(settings: BallGateSettings())
     private var shownBall: (center: Vec3, circle: Vec2, radius: Double)?
     private var misses = 0
+    /// re-checks over the whole view that found the slab away from the lock while its place said nothing (`findsMovedSlab`)
+    private var movedFinds: [Measurement] = []
     private var unconfirmed: (elapsed: Double, rechecks: Int)?
     private var pendingDiscontinuity: String?
     private var lastNormalFrame: (time: Double, position: Vec3)?
@@ -1561,6 +1575,10 @@ public final class SlabTracker {
         let lockQ = imageSlab.flatMap { project($0, f.view) }
         let inView = lockQ.map { q in q.allSatisfy { f.view.intrinsics.contains($0, margin: 2) } } ?? false
         var near: [Vec2]? = state == .locked ? lockQ : nil
+        // n20r: the lock's place in view but missed on its last re-check, or the lock wholly out of the picture: look over
+        // the whole view (a slab moved off its place is found there; `findsMovedSlab`)
+        let lockGone = lockQ.map { q in !q.contains { f.view.intrinsics.contains($0) } } ?? true
+        if state == .locked, unconfirmed == nil, settings.findsMovedSlab, (inView && misses > 0) || lockGone { near = nil }
         if state == .locked, var u = unconfirmed {
             // the lock may be stale: also look over the whole view
             u.rechecks += 1
@@ -1658,7 +1676,7 @@ public final class SlabTracker {
             if settings.tapHints, let sp = seedPx, SlabTracker.contains(chosen.quad, sp, slack: 0.25), tapChallenge(chosen, f, &events) { break }
             confirm(applySideEvidence(chosen, &events), f, &events)
         case .locked:
-            recheck(chosen, f, inView: inView, chk: chk, depthCheck: depthCheck, found: found, lockQ: lockQ, &events)
+            recheck(chosen, f, inView: inView, lockGone: lockGone, chk: chk, depthCheck: depthCheck, found: found, lockQ: lockQ, &events)
         }
         return found
     }
@@ -1801,7 +1819,7 @@ public final class SlabTracker {
 
     private func lock(_ t: Double, _ events: inout [String]) {
         hist = candidates; lockViews.removeAll(); keepViews(candidates, around: SlabTracker.estimate(candidates)?.pose.center); lockTrail = []; refreshLock(); slab = imageSlab; state = .locked; candidates = []; movers = []; recent = []; partners = []; implausible = 0
-        lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"
+        lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"; movedFinds = []
         endTapChallenge(); probeHits = []
         hist = honestRestart(with: hist)
         events.append("locked"); bump("locks")
@@ -1811,8 +1829,8 @@ public final class SlabTracker {
 
     // MARK: re-checks while locked
 
-    private func recheck(_ m0: Measurement, _ f: TrackerFrame, inView: Bool, chk: DepthCheck?, depthCheck: (SlabPose) -> DepthCheck?,
-                         found: [DetectedOutline], lockQ: [Vec2]?, _ events: inout [String]) {
+    private func recheck(_ m0: Measurement, _ f: TrackerFrame, inView: Bool, lockGone: Bool = false, chk: DepthCheck?,
+                         depthCheck: (SlabPose) -> DepthCheck?, found: [DetectedOutline], lockQ: [Vec2]?, _ events: inout [String]) {
         guard let L = lockEstimate else { return }
         let t = f.timestamp, s = cornerNoiseEstimate
         // the near edge caught at the bottom of its cut face: the lock is where it was, but this outline is not the top
@@ -1832,7 +1850,18 @@ public final class SlabTracker {
         // a lookalike far away, or anything while the lock is out of view: not a move (a tap or the lost rule handles that)
         if unconfirmed == nil && !(inView && nearLock) {
             bump("recheckDisagree"); bump("recheckFar"); note("recheck-far", &events)
+            // n20r: the slab found away from its lock while the lock's place says nothing (`findsMovedSlab`)
+            let moved = settings.findsMovedSlab && movedSlab(m0, L, missedInView: inView && misses > 0, lockGone: lockGone)
+            let finds = movedFinds
             if inView { miss(f, inView: inView, chk: chk, found: [], lockQ: lockQ, &events) } else { lastGood = t; misses = 0 }
+            // enough finds (or the lost rule ran out on this very re-check): the lock goes, and the finds start the
+            // confirmation at the new place; the usual rules (`confirmCount`, `maxLockSigmaDegrees`) lock it
+            if moved && (finds.count >= max(1, settings.movedSlabFinds) || state != .locked) {
+                if state == .locked { lose(&events) }
+                events.append("moved-away"); bump("movedAway")
+                candidates = finds; state = .confirming
+                tryLock(t, &events)
+            }
             return
         }
         let m = applySideEvidence(m0, &events)
@@ -1877,7 +1906,7 @@ public final class SlabTracker {
             // against a lock on the wrong edge of a band, its re-checks on that edge agree with it: they do not count
             // against the top re-checks gathered so far, anything else does
             if let e = SlabTracker.estimate(partners), !bandApart(m, e.pose, f, noise: s) { partners = [] }
-            lastGood = t; misses = 0
+            lastGood = t; misses = 0; movedFinds = []
             bump("recheckAgree"); note("ok", &events)
             if unconfirmed != nil { confirmLock(&events) }
         } else {
@@ -1891,6 +1920,21 @@ public final class SlabTracker {
             relocked = tryRelock(to: r, f, chk: chk, depthCheck: depthCheck, slide: true, &events)
         }
         if !agreed && !relocked { note("recheck-disagree", &events) }
+    }
+
+    /// n20r (`findsMovedSlab`): a re-check over the whole view found an outline away from the lock. It counts toward the
+    /// slab having moved there when the lock's own place says nothing (in view and missed on its last re-check, or wholly
+    /// out of the picture) and its top sits at the lock's height (the same floor); finds that agree with each other add up
+    /// (`movedFinds`), anything else starts them again. Returns whether this one counted.
+    private func movedSlab(_ m: Measurement, _ L: Estimate, missedInView: Bool, lockGone: Bool) -> Bool {
+        let up = -ARKitConvention.worldDown
+        guard missedInView || lockGone, abs((m.pose.center - L.pose.center).dot(up)) <= settings.movedSlabHeight else {
+            movedFinds = []
+            return false
+        }
+        bump("movedSlabFinds")
+        if let e = SlabTracker.estimate(movedFinds), agrees(e, m.est, noise: cornerNoiseEstimate) { movedFinds.append(m) } else { movedFinds = [m] }
+        return true
     }
 
     /// Re-detections that agree with each other but not with the lock (the slab was moved, or slid a little): re-lock
@@ -1915,7 +1959,7 @@ public final class SlabTracker {
             if implausible < 2 * settings.moveCount { return false }
         }
         hist = ms; lockViews.removeAll(); keepViews(ms, around: M.pose.center); lockTrail = []; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
-        lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"
+        lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"; movedFinds = []
         hist = honestRestart(with: ms)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
         ballLocator?.reset(); ballState = nil; shownBall = nil; ballGate.reset(); ringLogged = nil
@@ -2025,6 +2069,7 @@ public final class SlabTracker {
         state = .searching; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; hist = []; depth = nil
         lockViews.removeAll(); lockTrail = []; multiView = nil
         movers = []; recent = []; partners = []; implausible = 0; candidates = []; unconfirmed = nil; depthEstimate = nil; fusing = false; misses = 0
+        movedFinds = []
         longSideWorld = nil; sideEvidence = 0; lastMeasured = nil; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset(); ringLogged = nil
         honest.reset()
         clearTapBall("lost"); endTapChallenge(); probeHits = []
@@ -2036,7 +2081,7 @@ public final class SlabTracker {
         emptyBallScans = nil
         state = .searching; hist = []; slab = nil; imageSlab = nil; lockEstimate = nil; lockSigmaDegrees = nil; candidates = []; movers = []
         lockViews.removeAll(); lockTrail = []; multiView = nil
-        recent = []; partners = []; implausible = 0
+        recent = []; partners = []; implausible = 0; movedFinds = []
         depth = nil; lastCheck = -.infinity; lastGood = -.infinity; ballState = nil; ballLocator?.reset(); shownBall = nil; ballGate.reset(); ringLogged = nil
         unconfirmed = nil; misses = 0; depthEstimate = nil; fusing = false; longSideWorld = nil; sideEvidence = 0; lastMeasured = nil
         lastRecheckKind = "ok"; learnedProfile = nil
@@ -2091,6 +2136,7 @@ public final class SlabTracker {
         switch state {
         case .locked:
             unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
+            movedFinds = []
             // the views were seen in the old world frame: the tilt settles again from the next re-checks, and the
             // multi-view lock gathers its views again
             honest.reset()

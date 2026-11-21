@@ -2,6 +2,58 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n20r (21 November 2026): a lost lock recovers
+
+Candidate on top of n20 (not on `native-ios`); Developer shows **n20r**. Your kits never lost a lock, so the recovery
+paths had never run on the app's own detectors. New tests force them (`LostLockRecoveryTests`): scenes rendered by the
+package's ray caster and run through the app's path (12.5 frames a second, the app's tracker settings and detectors,
+the main screen's cue): the slab covered, moved, the camera swept away and back, and ARKit's world jumping. Each is held
+to: a lock at the slab (centre within 2 cm, tilt within 1 deg, holding 1.5 s) within 3 s of the slab lying still in
+view; no lock or shown tilt at the old place more than about 1 s after the slab shows elsewhere; never "Point at the
+slab" with the slab in the picture; a set ball gone when the slab moves.
+
+**What broke on n20.** A slab moved further than the re-checks' reach (10 cm was followed, 20 cm was not) was lost track
+of: the re-checks look only around the lock's outline, so the old lock stayed until the lost rule ran out (4 s of misses), and a set ball
+stayed over the old place all that time. If the old place was out of the picture the lock was never given up at all.
+**The fix** (`TrackerSettings.findsMovedSlab`, on in the app; off by default so older recordings replay as recorded):
+once a re-check of a lock in view has missed, or while the lock is wholly out of the picture, the next re-check looks
+over the whole view; two finds there that agree with each other, away from the lock and on the same floor (top within
+3 cm of the lock's height), give the lock up and start the confirmation at the new place (the usual rules lock it). A
+lock seen at its place, a ball or hand over it, or a lock only partly out of the picture are treated as before.
+
+| scene (rendered) | n20: lock at the slab after / old place shown for | n20r |
+|---|---|---|
+| covered 0.5, 1.5, 3 s | kept (3 s: a re-lock 3 s after the cover, its normal over 1.5 deg off) | kept, nothing wrong |
+| covered 6 s | lost by the 4 s rule, found 3.3 s after the cover | the same (known gap: that new lock never meets 2 cm / 1 deg) |
+| slid 5, 10 cm; re-tilted 6 to 2 deg; tilted the other way | 1.2 s / 1.2 s (the re-lock rule) | the same |
+| turned 30 deg | 0.2 s / 0.2 s | the same |
+| slid 20 cm | 3.9 s / 3.4 s | 0.7 s / 0.5 s |
+| slid 30 cm | 3.7 s / 3.3 s | 0.5 s / 0.4 s |
+| put 45 cm away, phone follows it | 5.8 s / 5.4 s | 2.0 s / 1.8 s |
+| slid 30 cm, phone follows it (old place stays at the picture's edge) | never / 6.4 s | the same (known gap) |
+| moved 25 cm while covered 2 s | 2.6 s / 2.1 s | 0.6 s / 0.5 s |
+| set ball, then slid 20 cm | 3.8 s / 3.3 s, set ball left over the old place | 0.6 s / 0.4 s, set ball cleared |
+| phone turned away 1, 3, 10 s, slab not moved | lock kept; after 1 and 3 s a re-lock 0.5 deg off at the camera's widest swing | lock kept; that re-lock after 3 s only (known gap, the re-lock rule) |
+| phone turned away 3 s, slab slid 10 cm | never / 3.8 s | 1.3 s / 1.3 s |
+| phone turned away 3 s, slab put 40 cm away | 4.5 s / 4.0 s | 1.0 s / 0.8 s |
+| ARKit relocalised 0.6 m; world snap 0.4 m | 1.0 s; 1.1 s (the lock proves itself at the new coordinates) | the same |
+
+"Point at the slab" never showed with the slab in the picture, in any scene, on either build.
+
+**Your kit clips, cut** (scratch only; nothing from the kits is in the repository): the slab painted over for 0.5-6 s,
+the no-slab clip spliced into an arc for 1-6 s, and two shots of different placements played back to back (your shots
+share one ARKit world, so that is a real move: 2-5 cm and 1.5-7 deg for the tilt steps, 22 cm and 13-15 deg from the
+third tilt to the drops). Covers up to 3 s and every sweep kept the lock on both builds; a 6 s cover was given up by the
+4 s rule on both. The tilt steps were followed by the re-lock rule on both. The 22 cm move: n20 kept the old lock for
+3.0 s; n20r gave it up after 0.3-0.6 s (the drop clip locked again 0.4 s after the move, the held-ball clip at 4.9 s,
+as on n20).
+
+**Normal use** (both kits replayed in full, 12,120 frames): the same frames locked in every shot, no lock lost or given
+up, no shown tilt more than 2 deg off. The whole-view re-check after a miss changes which detections feed the tilt, so
+when the tilt is first shown moves a little shot by shot: more frames show it (kit 1: 1,964 to 2,067; kit 2: 2,460 to
+2,493), sooner in three shots (one by 5.7 s), later in three (two shots that showed it only near their end no longer
+do), and one extra re-lock (kit 2, first tilt arc).
+
 ## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
 
 Bug fix on top of n19; Developer shows **n20**. Before the lock, the slab search often drops its candidate for a moment
