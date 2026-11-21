@@ -21,8 +21,27 @@ as before). Only when a re-check did not see the lock at its place (a miss with 
 not a ball or a hand over it, not LiDAR; or its place partly or wholly out of the picture) a second look over the whole
 view runs in the same frame, for the moved-slab rule alone: two finds on consecutive re-checks that agree with each
 other, more than 10 cm from the lock (20 cm when its place is not wholly in the picture) but within 1 m, top within 3 cm
-of the lock's height, and not where a lookalike was seen beside the locked slab, give the lock up and start the
-confirmation at the new place (the usual rules lock it).
+of the lock's height, and not where a lookalike was seen beside the slab (below), give the lock up and start the
+confirmation at the new place (the usual rules lock it). The 3 cm height gate is barely more than the slab's own
+25.4 mm: it rejects a floor-level tile only because the slab sits in its cradle more than 3 cm above the floor; a box
+or a second slab with its top at about the slab's height passes it.
+
+**What the look costs on the phone.** One whole-view sweep per re-check that did not see the lock at its place: at most
+one every 0.3 s (3.3 a second, the re-check rate), each about a search's cost, roughly 3 times a close-up re-check. It
+runs only while the lock was not seen at its place (a miss nothing excuses, or the place not wholly in the picture);
+while the lock is seen, nothing is added. When the lock's place is behind the camera the re-check itself is already a
+whole-view sweep, and the look reuses its outlines (the same frame, the same inputs: exactly what a second sweep would
+return) instead of sweeping again. On your kits (both replayed in full) it ran on 111 of 698 re-checks (kit 1: 55 of
+350, kit 2: 56 of 348), all of them with the lock's place in front of the camera, so none reused a sweep.
+
+**The lookalike memory.** Where outlines with their top at the slab's height (within 3 cm) were seen more than 20 cm
+beside the slab, the moved-slab rule does not take a find (within 10 cm of such a place). The app's close-up re-check
+looks only around the lock (at most two outlines, both of the slab), so the memory is filled from the whole-view looks
+the tracker runs anyway: every search sweep while searching and confirming (before and at the lock: the others beside
+the find it chose), a whole-view re-check after a world jump, and a moved-slab look that finds the lock at its place.
+It is kept while ARKit's world holds (a lost lock or a re-lock does not clear it: the objects stay where they are; the
+place where the slab locks again is taken off it), and cleared by a reset and by any world-frame jump, in any state
+(its coordinates are the old world's). It only feeds the moved-slab rule: nothing else reads it.
 
 | scene (rendered) | n20: lock at the slab after / old place shown for | n20r |
 |---|---|---|
@@ -43,13 +62,24 @@ confirmation at the new place (the usual rules lock it).
 | ARKit relocalised 0.6 m; world snap 0.4 m | 1.0 s; 1.1 s (the lock proves itself at the new coordinates) | the same |
 
 "Point at the slab" never showed with the slab in the picture, in any scene, on either build. Every scene where the
-slab does not move runs frame for frame as on n20.
+slab does not move runs frame for frame as on n20. The lookalike memory and the reused sweep (below) left every
+scene above exactly as it was.
 
-**Accepted risk.** A lookalike whose top is at the slab's height (a box, a second slab) within 1 m of the lock, never
-seen beside the locked slab, found on two re-checks in a row while the slab goes unseen at its place (a hand over it
-that does not excuse the miss, glare) or while its place is out of the picture, takes the lock (a test scene: a box
-35 cm away, the slab unseen 1.5 s, the lock moves onto the box). Further than 1 m, or seen beside the locked slab
-before, it does not (tested); a floor-level tile never does (the 3 cm height gate). Your kits had no such event.
+**Accepted risk.** A lookalike whose top is at the slab's height (a box, a second slab) within 1 m of the lock that no
+whole-view look saw beside the slab (in practice: not in the picture while the search found the slab, e.g. put down
+after the lock), found on two re-checks in a row while the slab goes unseen at its place (a hand over it that does not
+excuse the miss, glare) or while its place is out of the picture, takes the lock. Measured in a test scene with a
+detector that re-checks only around the lock, as the app's does: a box 35 cm away put down after the lock (in the
+picture beside the slab for 1 s, which a close-up re-check does not see), then the slab unseen 1.5 s: the lock moved
+onto the box (0.350 m) 0.37 s after the slab went unseen. Over four noise seeds: the slab unseen 0.3 s, never; 0.5 s,
+once; 0.7 s or longer, always, 0.37-0.57 s after it went unseen. The same box already there while the search found the
+slab: the lock stays (tested; never moved in the same 32 runs; on the first n20r, whose memory the search did not fill,
+it moved whenever the slab was unseen 0.7 s or longer). Further than 1 m: it stays (tested); a floor-level tile never takes it (the height gate).
+On your kits the memory stayed empty on all 21 of kit 1's shots and held one place on 3 of kit 2's 23, all from the
+search's sweeps (17 sweeps saw more than one outline; 4 of the others were at the slab's height: on the scan and the
+level arc an outline with its top 2-3 cm below the slab's, 21 cm from its centre, not looked into further; on the second
+tilt's arc one 0.75 m away). The close-up re-checks never added to it: of the 401 that returned two outlines, 400 returned
+the slab twice and one the slab and an outline at another height. No moved-slab find was counted on either kit.
 
 **Your kit clips, cut** (scratch only; nothing from the kits is in the repository): the slab painted over for 0.5-6 s,
 the no-slab clip spliced into an arc for 1-6 s, and two shots of different placements played back to back (your shots
@@ -68,7 +98,9 @@ the rendered scenes only.
 
 **Normal use** (both kits replayed in full, 12,120 frames): every frame identical to n20 (lock, tilt, shown tilt,
 events, detections); the only difference is the extra whole-view look on 55 (kit 1) and 56 (kit 2) re-checks that did
-not see the lock, none of which counted a find, so no lock was moved or given up.
+not see the lock, none of which counted a find, so no lock was moved or given up. The lookalike memory filled from the
+search and the reuse of a sweep changed nothing there: every field of every frame is as before them. The kit cuts above
+were run again with them, with the same result.
 
 ## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
 

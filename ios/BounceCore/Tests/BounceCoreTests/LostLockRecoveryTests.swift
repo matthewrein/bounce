@@ -21,8 +21,8 @@ import XCTest
 /// the slab moved.
 ///
 /// Linux CI runs the package's tests unoptimised, where these rendered scenes run 6-7 times slower than optimised (about
-/// 33 minutes for the full set): a debug build runs two of them (`debugScenes`); the macOS job's optimised run
-/// (`swift test -c release`) runs them all.
+/// 33 minutes for the full set): a debug build runs two of them (`debugScenes`) and skips the tests left with none
+/// (reported as skipped, with the reason); the macOS job's optimised run (`swift test -c release`) runs them all.
 final class LostLockRecoveryTests: XCTestCase {
     #if DEBUG
     static let debugScenes: Set<String>? = ["slide 20 cm", "away 3 s, slab put 40 cm away"]
@@ -347,12 +347,18 @@ final class LostLockRecoveryTests: XCTestCase {
     // MARK: tests
 
     func check(_ scenes: [Scene], file: StaticString = #filePath, line: UInt = #line,
-               _ expect: (Run, Scene) -> Void) {
+               _ expect: (Run, Scene) -> Void) throws {
+        var ran = 0
         for s in scenes {
             if let only = LostLockRecoveryTests.debugScenes, !only.contains(s.name) { continue }
+            ran += 1
             let r = run(s, verbose: ProcessInfo.processInfo.environment["LOSTLOCK_VERBOSE"] == s.name)
             print("LOSTLOCK " + LostLockRecoveryTests.summary(r, s))
             expect(r, s)
+        }
+        if ran == 0 {
+            throw XCTSkip("a debug build runs only the scenes \((LostLockRecoveryTests.debugScenes ?? []).sorted()) (too slow unoptimised); "
+                          + "run `swift test -c release` for these: " + scenes.map(\.name).joined(separator: ", "))
         }
     }
 
@@ -364,7 +370,7 @@ final class LostLockRecoveryTests: XCTestCase {
         XCTAssertEqual(r.pointAtSlabInView, 0, "\(s.name): no 'Point at the slab' with the slab in view")
     }
 
-    func testCoveringTheSlabKeepsOrFindsTheLockAtTheSamePlace() {
+    func testCoveringTheSlabKeepsOrFindsTheLockAtTheSamePlace() throws {
         var scenes = [0.5, 1.5, 3].map { LostLockRecoveryTests.coverScene($0) }
         for i in scenes.indices { scenes[i].maxWrongFrames = 0 }   // never locked anywhere else
         // n20's own gap (the slab not moved, n20 the same frame for frame): at the demo camera's widest swing (9 s in) the
@@ -377,7 +383,7 @@ final class LostLockRecoveryTests: XCTestCase {
         var six = LostLockRecoveryTests.coverScene(6, after: 8)
         six.maxLock = 5; six.maxWrongFrames = 0
         scenes.append(six)
-        check(scenes) { r, s in
+        try check(scenes) { r, s in
             XCTAssertNotNil(r.lockedAt, s.name)
             self.expectLimits(r, s)
             if let lost = r.lossTimes.last {
@@ -411,11 +417,11 @@ final class LostLockRecoveryTests: XCTestCase {
         ]
     }
 
-    func testMovingTheSlabRelocksAtTheNewPlace() {
-        check(LostLockRecoveryTests.moveScenes) { r, s in self.expectLimits(r, s) }
+    func testMovingTheSlabRelocksAtTheNewPlace() throws {
+        try check(LostLockRecoveryTests.moveScenes) { r, s in self.expectLimits(r, s) }
     }
 
-    func testPickedUpWhileCoveredAndPutElsewhere() {
+    func testPickedUpWhileCoveredAndPutElsewhere() throws {
         var s = LostLockRecoveryTests.moveScene("moved 25 cm while covered 2 s", to: LostLockRecoveryTests.pose(x: 0.18, z: -0.17, tilt: 4, heading: 90),
                                                 coverSeconds: 2)
         s.seconds = 11
@@ -429,7 +435,7 @@ final class LostLockRecoveryTests: XCTestCase {
         // after the move sits within 0.4 cm and 0.1 deg, then the re-checks there pull its tilt 0.2 to 0.8 deg low (n20
         // alike, an edge-of-picture measurement, not the recovery): held to the owner's words (centre 2 cm, tilt 1 deg)
         b.tiltAmountOnly = true
-        check([s, b]) { r, s in
+        try check([s, b]) { r, s in
             XCTAssertLessThanOrEqual(LostLockRecoveryTests.timeToLock(r, s) ?? 99, 3, "\(s.name): locked at the new place")
             XCTAssertLessThanOrEqual(LostLockRecoveryTests.wrongFor(r, s), 1.0, "\(s.name): nothing left at the old place")
             XCTAssertEqual(r.pointAtSlabInView, 0, "\(s.name)")
@@ -458,13 +464,13 @@ final class LostLockRecoveryTests: XCTestCase {
         ]
     }
 
-    func testSweepingTheCameraAwayAndBack() {
-        check(LostLockRecoveryTests.sweepScenes) { r, s in
+    func testSweepingTheCameraAwayAndBack() throws {
+        try check(LostLockRecoveryTests.sweepScenes) { r, s in
             self.expectLimits(r, s)
         }
     }
 
-    func testARKitRelocalisingMovesTheLockWithTheWorld() {
+    func testARKitRelocalisingMovesTheLockWithTheWorld() throws {
         // 2.5 s of limited tracking, then the reported world is 0.6 m off the old one
         var s = Scene(name: "relocalised 0.6 m", slab: { _ in LostLockRecoveryTests.base })
         s.limited = { $0 >= 3 && $0 < 5.5 }
@@ -474,9 +480,42 @@ final class LostLockRecoveryTests: XCTestCase {
         var j = Scene(name: "world snap 0.4 m", slab: { _ in LostLockRecoveryTests.base })
         j.worldShift = { $0 >= 3 ? Vec3(-0.3, 0.02, 0.27) : .zero }
         j.settledFrom = 3; j.elsewhereFrom = 3; j.seconds = 9
-        check([s, j]) { r, s in
+        try check([s, j]) { r, s in
             XCTAssertLessThanOrEqual(LostLockRecoveryTests.timeToLock(r, s) ?? 99, 3, "\(s.name): locked at the slab's new coordinates")
             XCTAssertLessThanOrEqual(LostLockRecoveryTests.wrongFor(r, s), 1.0, "\(s.name)")
         }
+    }
+
+    /// The moved-slab look right after a re-check that swept the whole view on the same frame (a lock behind the camera:
+    /// no outline to follow) reuses that sweep's outlines (`SlabFinderDetector.lastSweep`): the very outlines a fresh look
+    /// returns (`SlabFinder.find` is a function of its inputs). Not after a close-up re-check, nor on another frame.
+    func testTheLookReusesTheSweepJustRunOnTheSameFrame() {
+        let spec = LostLockRecoveryTests.slabSpec
+        func frame(_ t: Double) -> (ColorFrame, CameraView) {
+            var s = Scene(name: "one frame", slab: { _ in LostLockRecoveryTests.base })
+            s.seconds = 1
+            let v = LostLockRecoveryTests.view(s, at: t, aim: LostLockRecoveryTests.base.center + Vec3(0, -0.02, 0))
+            var scene = SyntheticScene(spec: spec, slab: LostLockRecoveryTests.base)
+            scene.supersample = 1
+            let K = v.intrinsics
+            return (SyntheticScene.ycc(rgb: scene.renderRGB(view: v), width: K.width, height: K.height).colorFrame, v)
+        }
+        let (f0, v0) = frame(0), (f1, v1) = frame(1.3)
+        let down0 = v0.directionToCamera(Vec3(0, -1, 0)), down1 = v1.directionToCamera(Vec3(0, -1, 0))
+        let a = SlabFinderDetector(), fresh = SlabFinderDetector()
+        let swept = a.detect(frame: f0, intrinsics: v0.intrinsics, spec: spec, down: down0, seed: nil, near: nil)
+        XCTAssertFalse(swept.isEmpty, "the slab found")
+        let looked = a.look(frame: f0, intrinsics: v0.intrinsics, spec: spec, down: down0)
+        XCTAssertEqual(a.looksReused, 1)
+        XCTAssertEqual(looked, swept)
+        XCTAssertEqual(looked, fresh.look(frame: f0, intrinsics: v0.intrinsics, spec: spec, down: down0), "what a fresh look returns")
+        // another frame: swept again
+        let other = a.look(frame: f1, intrinsics: v1.intrinsics, spec: spec, down: down1)
+        XCTAssertEqual(a.looksReused, 1)
+        XCTAssertEqual(other, fresh.look(frame: f1, intrinsics: v1.intrinsics, spec: spec, down: down1))
+        // after a close-up re-check on the same frame: swept again
+        _ = a.detect(frame: f0, intrinsics: v0.intrinsics, spec: spec, down: down0, seed: nil, near: swept[0].quad)
+        XCTAssertEqual(a.look(frame: f0, intrinsics: v0.intrinsics, spec: spec, down: down0), looked)
+        XCTAssertEqual(a.looksReused, 1)
     }
 }

@@ -125,8 +125,10 @@ final class SceneDetector: SlabDetecting {
     /// the mirror error: the near side put a band inside the top (an outer edge that was already the top's, shifted in)
     var inwardProbability = 0.0
     private(set) var flips = 0, calls = 0, inward = 0
-    /// another square object (a lookalike), reported first unless the seed lies on the real slab
+    /// another square object (a lookalike), reported first unless the seed lies on the real slab (after it with
+    /// `otherFirst` off)
     var other: SlabPose? = nil
+    var otherFirst = true
     /// report the lookalike only (the real slab is out of view, say)
     var onlyOther = false
     /// like SlabFinder with a predicted outline: look only within this many pixels of the prediction's centre
@@ -171,7 +173,7 @@ final class SceneDetector: SlabDetecting {
         if let o = other, let q = outline(of: o, in: v) {
             // the lookalike comes first unless the seed is on the real slab
             let seedOnSlab = seed.map { s in found.first.map { SceneDetector.inside($0, s) } ?? false } ?? false
-            if seedOnSlab { } else { found.insert(noisy(q), at: 0) }
+            if seedOnSlab { } else if !otherFirst { found.append(noisy(q)) } else { found.insert(noisy(q), at: 0) }
         }
         if let r = nearRadius, let n = near {
             let c = (n[0] + n[1] + n[2] + n[3]) / 4
@@ -592,13 +594,15 @@ final class TrackerRobustnessTests: XCTestCase {
 
     /// Looking away at a lookalike whose top is at the slab's height (a box, a second slab) 1.5 m away: with the app's
     /// moved-slab rule a whole-view look sees it while the lock is out of the picture, but it lies beyond
-    /// `movedSlabRadius` (1 m) of the lock: not the slab moved, the lock stays.
+    /// `movedSlabRadius` (1 m) of the lock: not the slab moved, the lock stays. The detector re-checks a lock close up, as
+    /// the app's does (`nearRadius`: SlabFinder's tracked look sees only around the predicted outline).
     func testMovedSlabRuleIgnoresASlabHeightLookalikeAcrossTheRoom() {
         XCTAssertTrue(RecordingSettings().trackerSettings.findsMovedSlab, "the app's settings have the rule on")
         for top in [0.03, 0.066, 0.09] {
             let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
             let w = World(slab: slab, lens: .processing)
             let det = SceneDetector(w, noise: 0.5, seed: 91)
+            det.nearRadius = 60
             let tr = SlabTracker(settings: appSettings(findsMovedSlab: true), detector: det)
             let pos = Vec3(0, 0.9, 0)
             var k = 0
@@ -612,38 +616,100 @@ final class TrackerRobustnessTests: XCTestCase {
         }
     }
 
-    /// A lookalike at the slab's height 35 cm from it, in the picture beside the locked slab for 1 s; then the slab goes
-    /// unseen for 1.5 s (glare, a hand that does not excuse the miss) while the lookalike is still found: the whole-view
-    /// looks find only it, where a lookalike was seen beside the locked slab, so the lock stays. (A lookalike within 1 m
-    /// that was never seen beside the locked slab is taken for the slab moved there after two looks: the accepted risk,
-    /// printed here and stated in the README.)
+    /// A lookalike at the slab's height 35 cm from it (a second slab, a box), and a detector that re-checks a lock close
+    /// up as the app's does (`nearRadius`: SlabFinder's tracked look sees only around the predicted outline, so a re-check
+    /// never reports the lookalike). The slab then goes unseen for 1.5 s (glare, a hand that does not excuse the miss)
+    /// while the lookalike is still found, and the whole-view looks find only it:
+    /// - the lookalike there during the search (its sweeps look over the whole view: the slab found, the lookalike beside
+    ///   it): remembered (`SlabTracker.lookalikes`), so the lock stays;
+    /// - put there after the lock, in the picture beside the slab for 1 s but never seen by a whole-view look: taken for
+    ///   the slab moved there after `movedSlabFinds` looks (the accepted risk: printed here, stated in the README).
     func testMovedSlabRuleIgnoresALookalikeSeenBesideTheSlab() {
-        for seenBeside in [true, false] {
+        for seenBySearch in [true, false] {
             let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
             let w = World(slab: slab, lens: .processing)
             let det = SceneDetector(w, noise: 0.5, seed: 93)
+            det.nearRadius = 60
+            det.otherFirst = false   // the search's first find is the slab, the lookalike beside it
+            let lookalike = World.slabAt(Vec3(0.35, 0.066, -1.0), tilt: 0, heading: 0, yaw: 10)
+            if seenBySearch { det.other = lookalike }
             let tr = SlabTracker(settings: appSettings(findsMovedSlab: true), detector: det)
             let pos = Vec3(0, 0.9, 0.1)
             var k = 0
             let v = w.view(from: pos, at: slab.center + Vec3(0.15, 0, 0))
             for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+            XCTAssertEqual(tr.state, .locked)
             let before = tr.slab!
-            det.other = World.slabAt(Vec3(0.35, 0.066, -1.0), tilt: 0, heading: 0, yaw: 10)
-            if seenBeside { for _ in 0..<30 { step(tr, det, v, Double(k) / 30); k += 1 } }
+            XCTAssertLessThan(before.center.distance(to: slab.center), 0.02, "locked on the slab")
+            XCTAssertEqual(tr.lookalikes.count, seenBySearch ? 1 : 0, "the search's sweeps saw the lookalike beside the slab")
+            det.other = lookalike
+            for _ in 0..<30 { step(tr, det, v, Double(k) / 30); k += 1 }
+            XCTAssertEqual(tr.lookalikes.count, seenBySearch ? 1 : 0, "a close-up re-check adds nothing")
             det.onlyOther = true
-            for _ in 0..<45 { step(tr, det, v, Double(k) / 30); k += 1 }
+            let unseenAt = Double(k) / 30
+            var movedAt: Double? = nil
+            for _ in 0..<45 {
+                let o = step(tr, det, v, Double(k) / 30)
+                if movedAt == nil, o.events.contains("moved-away") { movedAt = Double(k) / 30 }
+                k += 1
+            }
             det.onlyOther = false
             for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
             let moved = tr.slab?.center.distance(to: before.center) ?? 99
-            if seenBeside {
+            if seenBySearch {
                 XCTAssertLessThan(moved, 0.01, "the lock stays at the slab")
                 XCTAssertEqual(tr.counts["movedAway"] ?? 0, 0)
                 XCTAssertEqual(tr.counts["lost"] ?? 0, 0)
+                XCTAssertGreaterThan(tr.counts["movedSlabLooks"] ?? 0, 0, "the whole view was looked over")
             } else {
-                print(String(format: "ACCEPTED RISK (README, n20r): a slab-height lookalike 35 cm away never seen beside the slab, the slab unseen 1.5 s: lock moved %.3f m, moved-away %d",
-                             moved, tr.counts["movedAway"] ?? 0))
+                print(String(format: "ACCEPTED RISK (README, n20r): a slab-height lookalike 35 cm away, never seen by a whole-view look, the slab unseen 1.5 s: moved-away %d, %@ after the slab went unseen; lock at the end %.3f m from the slab",
+                             tr.counts["movedAway"] ?? 0, movedAt.map { String(format: "%.2f s", $0 - unseenAt) } ?? "never", moved))
             }
         }
+    }
+
+    /// The lookalike memory (n20r): filled by the search's whole-view sweeps (a find at the slab's height beside the
+    /// chosen one; not a floor tile), kept when the lock is lost (the objects stay where they are), cleared by a world-frame
+    /// jump in any state (here while confirming) and by a reset.
+    func testTheLookalikeMemoryIsKeptWhenLostAndClearedByAWorldJumpInAnyState() {
+        let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
+        let w = World(slab: slab, lens: .processing)
+        let det = SceneDetector(w, noise: 0.5, seed: 95)
+        det.nearRadius = 60
+        det.otherFirst = false
+        det.other = World.slabAt(Vec3(0.35, 0.066, -1.0), tilt: 0, heading: 0, yaw: 10)
+        let tr = SlabTracker(settings: appSettings(findsMovedSlab: true), detector: det)
+        let v = w.view(from: Vec3(0, 0.9, 0.1), at: slab.center + Vec3(0.15, 0, 0))
+        var k = 0
+        for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+        XCTAssertEqual(tr.state, .locked)
+        XCTAssertEqual(tr.lookalikes.count, 1)
+        XCTAssertLessThan(tr.lookalikes.first.map { $0.distance(to: det.other!.center) } ?? 99, 0.05)
+        // a floor tile beside the slab is not at its height: not a lookalike
+        det.other = World.slabAt(Vec3(0.35, 0.0, -1.0), tilt: 0, heading: 0, yaw: 10)
+        tr.reset()
+        XCTAssertEqual(tr.lookalikes.count, 0, "a reset clears it")
+        for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+        XCTAssertEqual(tr.state, .locked)
+        XCTAssertEqual(tr.lookalikes.count, 0, "a floor tile is not at the slab's height")
+        det.other = World.slabAt(Vec3(0.35, 0.066, -1.0), tilt: 0, heading: 0, yaw: 10)
+        tr.reset()
+        for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+        XCTAssertEqual(tr.lookalikes.count, 1)
+        // the slab unseen until the lost rule gives the lock up: the memory stays
+        det.silent = true
+        for _ in 0..<(30 * 5) { step(tr, det, v, Double(k) / 30); k += 1 }
+        XCTAssertEqual(tr.counts["lost"] ?? 0, 1)
+        XCTAssertEqual(tr.lookalikes.count, 1, "kept when the lock is lost")
+        // found again: confirming; a world jump there clears it
+        det.silent = false
+        var guardK = 0
+        while tr.state != .confirming && guardK < 30 { step(tr, det, v, Double(k) / 30); k += 1; guardK += 1 }
+        XCTAssertEqual(tr.state, .confirming)
+        det.silent = true
+        tr.noteWorldDiscontinuity("test")
+        step(tr, det, v, Double(k) / 30); k += 1
+        XCTAssertEqual(tr.lookalikes.count, 0, "a world jump clears it while confirming")
     }
 
     func testLookingAwayAtALookalikeDoesNotMoveTheLock() {

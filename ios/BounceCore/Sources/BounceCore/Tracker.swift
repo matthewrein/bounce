@@ -370,10 +370,11 @@ public struct TrackerSettings: Equatable {
     /// unexcused miss with the place in view, or the place partly or wholly out of the picture) a second look over the
     /// whole view, in the same frame, feeds the moved-slab rule alone: `movedSlabFinds` finds on consecutive re-checks that
     /// agree with each other, away from the lock (more than 10 cm with its place in view, more than `moveRadius` without)
-    /// but within `movedSlabRadius` of it, with the top at the lock's height (`movedSlabHeight`: the same floor; a tile is
-    /// not the slab) and not where a lookalike was seen beside the locked slab, give the lock up and start the
-    /// confirmation at the new place with them (the usual rules lock it). Nothing changes while the lock is seen at its
-    /// place or excused (a ball or a hand over it, LiDAR).
+    /// but within `movedSlabRadius` of it, with the top at the lock's height (`movedSlabHeight`: the slab sits in its
+    /// cradle more than 3 cm above the floor, so a floor tile is not the slab) and not where a lookalike was seen beside
+    /// the slab (`SlabTracker.lookalikes`: filled from the whole-view looks the tracker runs anyway, chiefly the search's
+    /// sweeps before and at the lock), give the lock up and start the confirmation at the new place with them (the usual
+    /// rules lock it). Nothing changes while the lock is seen at its place or excused (a ball or a hand over it, LiDAR).
     public var findsMovedSlab = false
     public var movedSlabFinds: Int = 2
     public var movedSlabHeight: Double = 0.03
@@ -898,9 +899,16 @@ public final class SlabTracker {
     /// whole-view looks on consecutive re-checks that found the slab away from the lock while its place said nothing
     /// (`findsMovedSlab`)
     private var movedFinds: [Measurement] = []
-    /// where outlines at the slab's height were seen beside the locked slab in the same frame (world): not the slab if it
-    /// is missed later (`findsMovedSlab`)
-    private var lookalikes: [Vec3] = []
+    /// Where outlines at the slab's height were seen beside it (world; `findsMovedSlab`): not the slab moved there if the
+    /// lock is missed later (`movedLook`). Filled from every whole-view look the tracker runs (its pixels decide nothing
+    /// else): each search sweep while searching and confirming (before and at the lock: the others at the chosen find's
+    /// top height, within `movedSlabHeight`, more than `moveRadius` from it), a whole-view re-check (after a world jump)
+    /// and the moved-slab look that sees the lock at its place (the others beside the lock). A close-up re-check sees only
+    /// around the lock (the finder's tracked look, at most two outlines, both of the slab), so it adds nothing in practice.
+    /// Kept while the world frame holds: a lost lock or a re-lock does not clear it (the objects stay where they are; the
+    /// entry where the slab is locked or re-locked, within 10 cm, is dropped: the slab lies there now); cleared by `reset`
+    /// and by any world-frame discontinuity, in every state (its coordinates are the old world's). At most 16, oldest out.
+    private(set) var lookalikes: [Vec3] = []
     /// this frame's re-check: an unexcused miss with the lock's place in view / the lock seen at its place
     private var missedNow = false, lockSeenNow = false
     private var unconfirmed: (elapsed: Double, rechecks: Int)?
@@ -1691,6 +1699,9 @@ public final class SlabTracker {
         if settings.spec.hasProfile, let p = chosen.profile { learnedProfile = p }
         measurementQuad = chosen.quad
         lastSideModes = chosen.sideModes
+        // n20r (`findsMovedSlab`): a search's sweep looks over the whole view; the others at the chosen find's height beside
+        // it are lookalikes (this writes the memory alone; the lock drops the entry where the slab locks)
+        if settings.findsMovedSlab, state != .locked, options.count > 1 { rememberLookalikes(options, around: chosen.pose.center) }
         switch state {
         case .searching:
             let m = applySideEvidence(chosen, &events)
@@ -1703,8 +1714,11 @@ public final class SlabTracker {
             confirm(applySideEvidence(chosen, &events), f, &events)
         case .locked:
             recheck(chosen, f, inView: inView, chk: chk, depthCheck: depthCheck, found: found, lockQ: lockQ, &events)
-            // n20r: others at the slab's height seen beside the lock in this frame are lookalikes (`findsMovedSlab`)
-            if movedCheck, lockSeenNow, options.count > 1, let L = lockEstimate { rememberLookalikes(options, around: L.pose.center) }
+            // n20r: others at the slab's height seen beside the lock in this frame are lookalikes (`findsMovedSlab`; in
+            // practice only a whole-view re-check, after a world jump, has any)
+            if settings.findsMovedSlab, state == .locked, lockSeenNow, options.count > 1, let L = lockEstimate {
+                rememberLookalikes(options, around: L.pose.center)
+            }
         }
         return found
     }
@@ -1850,6 +1864,7 @@ public final class SlabTracker {
         lastGood = t; misses = 0; unconfirmed = nil; seed = nil; depthEstimate = nil; lastRecheckKind = "ok"; movedFinds = []
         endTapChallenge(); probeHits = []
         hist = honestRestart(with: hist)
+        forgetLookalike(at: lockEstimate?.pose.center)
         events.append("locked"); bump("locks")
         if let t0 = slabTapTime { tapSlabLockSeconds.add(t - t0); bump("tapSlabLocks") }
         slabTapTime = nil
@@ -1947,9 +1962,11 @@ public final class SlabTracker {
     /// touches the lock, its tilt or the re-check rules. A find counts toward the slab having moved there when it lies
     /// away from the lock (more than 10 cm with its place in view, more than `moveRadius` without: an outline cut by the
     /// picture's edge is not a move) but within `movedSlabRadius` of it, with its top at the lock's height
-    /// (`movedSlabHeight`), and not where a lookalike was seen beside the locked slab; `movedSlabFinds` of them on
-    /// consecutive re-checks that agree with each other give the lock up and start the confirmation at the new place.
-    /// The slab found at its lock in this look: not moved (the others there are remembered as lookalikes).
+    /// (`movedSlabHeight`), and not where a lookalike was seen beside the slab (`lookalikes`); `movedSlabFinds` of them
+    /// on consecutive re-checks that agree with each other give the lock up and start the confirmation at the new place.
+    /// The slab found at its lock in this look: not moved (the others there are remembered as lookalikes). After a
+    /// re-check that swept the whole view on this frame (the lock's place behind the camera), the detector may answer
+    /// from that sweep (`SlabFinderDetector` does: the same outlines).
     private func movedLook(_ f: TrackerFrame, _ downCam: Vec3, prior: [Measurement], inView: Bool, _ events: inout [String]) {
         guard let L = lockEstimate else { return }
         let t = f.timestamp, s = cornerNoiseEstimate, up = -ARKitConvention.worldDown
@@ -1982,7 +1999,8 @@ public final class SlabTracker {
         tryLock(t, &events)
     }
 
-    /// outlines at the slab's height seen beside it (more than `moveRadius` away) in one frame: lookalikes (`findsMovedSlab`)
+    /// outlines at the slab's height seen beside it (more than `moveRadius` away) in one whole-view look: lookalikes
+    /// (`findsMovedSlab`, `lookalikes`). `c`: the slab's centre in that look (the lock, or the search's chosen find).
     private func rememberLookalikes(_ ms: [Measurement], around c: Vec3) {
         let up = -ARKitConvention.worldDown
         for m in ms {
@@ -1990,8 +2008,16 @@ public final class SlabTracker {
             guard abs(h) <= settings.movedSlabHeight, (d - up * h).length > settings.moveRadius,
                   !lookalikes.contains(where: { $0.distance(to: m.pose.center) < 0.05 }) else { continue }
             lookalikes.append(m.pose.center)
-            if lookalikes.count > 8 { lookalikes.removeFirst(lookalikes.count - 8) }
+            if lookalikes.count > SlabTracker.lookalikeMemory { lookalikes.removeFirst(lookalikes.count - SlabTracker.lookalikeMemory) }
         }
+    }
+    static let lookalikeMemory = 16
+
+    /// the slab locked or re-locked here: an entry of the lookalike memory where it lies (the 10 cm the moved-slab rule
+    /// matches entries by) was the slab, seen beside another find before
+    private func forgetLookalike(at c: Vec3?) {
+        guard let c = c, !lookalikes.isEmpty else { return }
+        lookalikes.removeAll { $0.distance(to: c) < 0.1 }
     }
 
     /// Re-detections that agree with each other but not with the lock (the slab was moved, or slid a little): re-lock
@@ -2018,6 +2044,7 @@ public final class SlabTracker {
         hist = ms; lockViews.removeAll(); keepViews(ms, around: M.pose.center); lockTrail = []; refreshLock(); movers = []; recent = []; partners = []; implausible = 0
         lastGood = f.timestamp; misses = 0; unconfirmed = nil; depthEstimate = nil; lastRecheckKind = "ok"; movedFinds = []
         hist = honestRestart(with: ms)
+        forgetLookalike(at: lockEstimate?.pose.center)
         events.append("relocked"); bump("relocks"); if slide { bump("slides") }; if top { bump("relocksToTop") }
         ballLocator?.reset(); ballState = nil; shownBall = nil; ballGate.reset(); ringLogged = nil
         return true
@@ -2190,10 +2217,11 @@ public final class SlabTracker {
         seed = nil   // its world point is in the old frame
         slabTapTime = nil; endTapChallenge(); probeHits = []
         clearTapBall("world frame: " + reason)   // so are the ball tap's line, the dismissed spots and a set ball
+        lookalikes = []   // and the lookalikes seen (n20r), in any state
         switch state {
         case .locked:
             unconfirmed = (0, 0); movers = []; recent = []; partners = []; implausible = 0; depthEstimate = nil; lastCheck = -.infinity
-            movedFinds = []; lookalikes = []
+            movedFinds = []
             // the views were seen in the old world frame: the tilt settles again from the next re-checks, and the
             // multi-view lock gathers its views again
             honest.reset()
