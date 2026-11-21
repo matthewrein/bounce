@@ -83,7 +83,7 @@ final class KitHandoffTests: XCTestCase {
         let h264 = try XCTUnwrap(KitPhoneVideo.largestVideoBytes(plan: .standard, hevc: false))
         XCTAssertGreaterThan(Double(capacity) / Double(h264.bytes), 1.75, "the margin for the encoder's overshoot")
         // the third tilt's shots are shorter than the scan
-        XCTAssertLessThanOrEqual(KitPlan.standard.optionalShots.compactMap { $0.kind.videoSeconds }.max() ?? 0, 20)
+        XCTAssertLessThanOrEqual(KitPlan.standardV1.optionalShots.compactMap { $0.kind.videoSeconds }.max() ?? 0, 20)
 
         // the longest frames.jsonl: every field filled in, at the longest shot's frame count, stored as is
         let corners = (0..<4).map { Vec2(1439.123456 - Double($0), 1079.123456 - Double($0)) }
@@ -93,7 +93,7 @@ final class KitHandoffTests: XCTestCase {
                             luma: 123.456789, blur: 12.345678, depthFile: KitDepth.fileName(frame: 999_999),
                             live: KitLiveResult(state: .confirming, tilt: 12.3456789, corners: corners, ball: (Vec2(1234.5678, 987.6543), 98.7654)))
         let lineBytes = Int64(try KitJSON.encode(line).count + 1)
-        let frames = KitPlan.standard.shots.compactMap { s in s.kind.videoSeconds.map { $0 * KitPhoneVideo.fps(s) } }.max() ?? 0
+        let frames = KitPlan.standardV1.shots.compactMap { s in s.kind.videoSeconds.map { $0 * KitPhoneVideo.fps(s) } }.max() ?? 0
         XCTAssertLessThan(lineBytes * Int64(frames.rounded(.up)), capacity / 10)
         // depth files are small and many; the motion of a flat-phone shot left running for ten minutes at 100 Hz
         XCTAssertLessThan(KitPhoneVideo.depthFileBytes, capacity / 100)
@@ -120,7 +120,7 @@ final class KitHandoffTests: XCTestCase {
         XCTAssertEqual(r.kitId, kit.kitId)
         XCTAssertTrue(r.finished)
         XCTAssertEqual(Set(r.captured), ["s01-measure", "s02-scan", "s03-flat-level", "s04-level-still", "s09-held-low", "s09-held-mid"])
-        XCTAssertEqual(r.captured.count + r.skipped.count, KitPlan.standard.shotCount)
+        XCTAssertEqual(r.captured.count + r.skipped.count, KitPlan.standardV1.shotCount)
         XCTAssertTrue(r.pending.isEmpty)
         XCTAssertTrue(r.skipped.contains("s05-tilt3-flat"))
         XCTAssertEqual(r.videoFiles, 0, "the in-memory synthetic kit renders its frames when scored")
@@ -182,7 +182,7 @@ final class KitHandoffTests: XCTestCase {
         XCTAssertTrue(r.complete, "\(r.problems)")
         XCTAssertTrue(r.captured.contains("s99-new-shot"))
         XCTAssertFalse(r.skipped.contains("s05-tilt3-flat"))
-        XCTAssertEqual(r.captured.count + r.skipped.count, KitPlan.standard.shotCount)
+        XCTAssertEqual(r.captured.count + r.skipped.count, KitPlan.standardV1.shotCount)
         XCTAssertTrue(r.notes.contains { $0.hasPrefix("in this checkout's plan but not in kit.json") && $0.contains("s05-tilt3-flat") }, "\(r.notes)")
         XCTAssertTrue(r.notes.contains { $0.hasPrefix("in kit.json but not in this checkout's plan") && $0.contains("s99-new-shot") }, "\(r.notes)")
         XCTAssertTrue(r.lines.contains { $0.hasPrefix("note: in kit.json but not") })
@@ -216,7 +216,7 @@ final class KitHandoffTests: XCTestCase {
         o.cameraWidth = 320; o.cameraHeight = 240   // small, to stay quick; the dry run writes 1440x1080
         o.renderFps = 2
         let kept: Set<String> = ["s01-measure", "s02-scan", "s03-flat-level", "s04-level-still", "s09-held-low", "s10-drop1"]
-        o.skip = Set(KitPlan.standard.shots.map { $0.id }).subtracting(kept)
+        o.skip = Set(KitPlan.standardV1.shots.map { $0.id }).subtracting(kept)
         o.retry = ["s04-level-still"]
         o.noHeight = []
         let kit = try KitSyntheticPhoneKit.build(root: root.appendingPathComponent("AppSupport"), options: o)

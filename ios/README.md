@@ -2,6 +2,43 @@
 
 [![iOS build](https://github.com/matthewrein/bounce/actions/workflows/ios.yml/badge.svg?branch=native-ios)](https://github.com/matthewrein/bounce/actions/workflows/ios.yml?query=branch%3Anative-ios)
 
+## Build n20k (20 November 2026): capture kit, drops on a tilted slab
+
+Capture kit only, on top of n20; Developer shows **n20k**. The main screen, the tracker, the detectors and the bounce
+model are n20's, unchanged. In both of your kits the slab was put back level for the drops (from the ball on the slab,
+step 8, on), while the kit gave those shots the third tilt's reading (17° and 12°; the app itself read 0.2-4° on them).
+Those drops are good for the rebound and the apex, not for which way a bounce goes sideways. To get drops on a tilted
+slab:
+
+- **A reading right before the drops.** Step 10 now starts with its own phone-on-slab reading, "Drops: true tilt". Its
+  screen says in bold: **Leave the slab tilted for the drops: do not level it.** If the slab is level, tilt it about 10°
+  first. Lay the phone flat on it as before, then do not touch the slab until the drops are done.
+- **Every drop says it too**, in bold above the instruction: **Do not level the slab or touch it until the drops are
+  done.** The instruction starts "Leave the slab tilted."
+- **The ball on the slab (step 8) says to leave the slab tilted** too, and to tap **Skip** if the ball will not stay:
+  in both of your kits the slab was already level from that shot on (the app read 0.3-4° there and after).
+- **No drop without that reading.** If the reading was skipped or gave no tilt, the drop's screen says "Take the
+  phone-on-slab reading first: the drops need the slab's tilt measured right before them.", **Start** is greyed out, and
+  **Take the reading** goes back to it. **Skip** still works.
+- **A tilt check after every shot.** The app compares its own tilt during the shot with the phone-on-slab reading. If
+  they are more than 3° apart (and the app is sure of its number), a drop's check says, for example: "The app reads
+  0.3° but the phone-on-slab reading says 17.2°: has the slab moved? Retake the reading." and offers **Take the
+  reading again** (tilt the slab again first if it was levelled). Other shots only ask "has the slab moved since its
+  reading?" with no button (the app's own tilt can be off on a still shot: in kit 1 it read 9.3° low on s05 with the
+  slab unmoved). The end screen lists such shots, and kit.json and shot.json record the check (`tiltCheck`) for every
+  shot.
+
+The kit now has 29 shots (one more reading); kits started before this build carry on with the old plan and score as
+before.
+
+**The shortest way to record tilted drops today (on n20, before this build is on the phone).** Settings > Developer >
+Capture kit > **New kit**. Tap **Skip** on every screen until "Tilt 2: true tilt" (Step 5 of 12; 8 taps). Tilt the slab
+about 10° in its cradle and **leave it there**. Tap **Start** and take the phone-on-slab reading, then lift the phone off
+gently without moving the slab and tap **Next**. Tap **Skip** on every screen until "Drop 1 of 3" (Step 10 of 12; 11 taps:
+skipping "Tilt 3: true tilt" skips all three tilt-3 shots). Take the three drops without touching the slab, then tap
+**Finish now** and **Make bundle**. Those three drops carry the reading you just took. With n20k it is the same, except
+that you skip on to "Drops: true tilt" (Step 10 of 12; 20 taps) and take the reading there, right before the drops.
+
 ## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
 
 Bug fix on top of n19; Developer shows **n20**. Before the lock, the slab search often drops its candidate for a moment
@@ -809,8 +846,9 @@ of 12") and what to do, with a small picture. Tap **Start**: it counts down, rec
 (Good, Fair or Poor, with the reason). Then tap **Next** to keep it, or **Retry** to take it again. **Every step can be
 skipped**: **Skip** is next to **Start**; once a shot is recorded, **Discard** deletes it (after asking) and skips it.
 In the first step, enter only what you measured with the ruler (the grey numbers are the app's own; leave the dish
-empty if you did not measure it), or tap **Skip**. For the drops, let go of the ball at the high beep, when the screen
-says **Drop now** (the countdown's ticks come before it). For the slab's tilt, the phone lies flat on the slab: at the
+empty if you did not measure it), or tap **Skip**. For the drops, **leave the slab tilted**: step 10 first reads its
+tilt with the phone lying on it (if it is level, tilt it about 10° first), then do not touch the slab until the drops are
+done; let go of the ball at the high beep, when the screen says **Drop now** (the countdown's ticks come before it). For the slab's tilt, the phone lies flat on the slab: at the
 long beep, when the screen says so in big letters, turn it around; a low tone means it is done. For the ball held
 above the slab, you can enter its height afterwards: stand a ruler on the slab right under the ball and read the
 height of the ball's bottom, or leave it empty. You can tap **Quit** at any time: everything done so far is

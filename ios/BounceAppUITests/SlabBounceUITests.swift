@@ -649,7 +649,8 @@ final class SlabBounceUITests: XCTestCase {
         XCTAssertTrue(element(app, "shotStart").waitForExistence(timeout: 10))
 
         // the next shot (the slab arc, 5 s here) is started and Quit is tapped in the middle of its recording: that
-        // attempt is thrown away and every shot before it is kept (Resume below still says 4 of 28 done)
+        // attempt is thrown away and every shot before it is kept (Resume below still says 4 of 29 done: the plan's
+        // shots, `KitPlan.standard.shotCount`, 29 since standard-v2 took the drops' reading before them)
         element(app, "shotStart").tap()
         let quitMidShot = element(app, "kitRecording").waitForExistence(timeout: 15)
         tap(app, "kitQuit")
@@ -661,11 +662,12 @@ final class SlabBounceUITests: XCTestCase {
         let resumeText = resume.label
         screenshot(app, "kit resume")
         // The arc is only 5 s here: on a slow runner the Quit tap can come after the arc was saved. Resume then says
-        // Step 5 of 12, 5 of 28, and the rest of the flow is scored for that (one shot fewer to skip, 5 captured). The
+        // Step 5 of 12, 5 of 29, and the rest of the flow is scored for that (one shot fewer to skip, 5 captured). The
         // Copy log test checks a mid-recording Quit strictly, at the kit's real timings; the summary line says which.
-        let arcSaved = resumeText.contains("Step 5 of 12") && resumeText.contains("5 of 28")
-        XCTAssertTrue((resumeText.contains("Step 4 of 12") && resumeText.contains("4 of 28")) || arcSaved,
-                      "Resume says \"\(resumeText)\" (want Step 4 of 12, 4 of 28 done; or Step 5 of 12, 5 of 28 if the slab arc, "
+        let total = KitPlan.standard.shotCount
+        let arcSaved = resumeText.contains("Step 5 of 12") && resumeText.contains("5 of \(total)")
+        XCTAssertTrue((resumeText.contains("Step 4 of 12") && resumeText.contains("4 of \(total)")) || arcSaved,
+                      "Resume says \"\(resumeText)\" (want Step 4 of 12, 4 of \(total) done; or Step 5 of 12, 5 of \(total) if the slab arc, "
                       + "5 s under -kitFast, was saved before the Quit tap came)")
         resume.tap()
         // in the middle of a slab position the kit asks whether the slab moved: it did not
@@ -686,7 +688,7 @@ final class SlabBounceUITests: XCTestCase {
         let summaryLabel = summaryText.label
         screenshot(app, "kit summary")
         XCTAssertTrue(summaryLabel.contains("captured") && summaryLabel.contains("skipped"), "summary: \(summaryLabel)")
-        XCTAssertTrue(summaryLabel.contains(arcSaved ? "Captured 5 of 28" : "Captured 4 of 28"), "summary: \(summaryLabel) (arc saved before Quit: \(arcSaved))")
+        XCTAssertTrue(summaryLabel.contains(arcSaved ? "Captured 5 of \(total)" : "Captured 4 of \(total)"), "summary: \(summaryLabel) (arc saved before Quit: \(arcSaved))")
 
         // the bundle, and one tap to share it
         tap(app, "kitBundle")
@@ -702,8 +704,11 @@ final class SlabBounceUITests: XCTestCase {
                 + String(format: "share sheet after %.1f s", shared ?? -1))
         XCTAssertTrue(recordingSeen, "no recording indicator during the scan")
         XCTAssertTrue(quitMidShot, "the fifth shot never showed its recording, so Quit was not tested mid-shot")
-        XCTAssertEqual(skips, arcSaved ? 21 : 22,
-                       "skips: the remaining required shots (21, or 20 if the arc was saved) and the optional third tilt (one skip for its three shots)")
+        // the plan's required shots not captured here (the form, the scan, the flat and the hold still; the arc too if it
+        // was saved), plus one skip for the optional third tilt's three shots: 23 (22) since standard-v2's drop reading
+        let expectedSkips = KitPlan.standard.requiredShots.count - (arcSaved ? 5 : 4) + 1
+        XCTAssertEqual(skips, expectedSkips,
+                       "skips: the remaining required shots (\(expectedSkips - 1)) and the optional third tilt (one skip for its three shots)")
         XCTAssertTrue(bundle.contains("part"), "bundle: \(bundle)")
         XCTAssertNotNil(shared, "no share sheet after Share kit")
     }
@@ -882,8 +887,9 @@ final class SlabBounceUITests: XCTestCase {
                 + "then \"\(resumeText)\", resumed at \(resumedAt)); milestones missing: \(missingWords); lines with a path: \(paths.count); "
                 + "errors \(errors), warnings \(warnings)")
         XCTAssertTrue(midShot, "the scan never showed its recording, so Quit was not tested mid-shot")
-        XCTAssertTrue(resumeText.contains("Step 2 of 12") && resumeText.contains("1 of 28"),
-                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of 28 done); Quit landed during \(quitPhase), "
+        let total = KitPlan.standard.shotCount
+        XCTAssertTrue(resumeText.contains("Step 2 of 12") && resumeText.contains("1 of \(total)"),
+                      "after quitting mid-scan Resume says \"\(resumeText)\" (want Step 2 of 12, 1 of \(total) done); Quit landed during \(quitPhase), "
                       + quitInto + (quitPhase == "none" ? " (no cancel line: the scan had ended before the tap came)" : ""))
         XCTAssertTrue(missing.isEmpty, "milestones missing from the log: \(missing); log:\n\(log.suffix(3000))")
         XCTAssertTrue(paths.isEmpty, "the log has file paths: \(paths.prefix(3))")

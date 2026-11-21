@@ -2,7 +2,7 @@ import XCTest
 @testable import BounceCore
 
 final class KitPlanTests: XCTestCase {
-    let plan = KitPlan.standard
+    let plan = KitPlan.standardV1
 
     func testStandardPlanShape() {
         XCTAssertEqual(plan.id, "standard-v1")

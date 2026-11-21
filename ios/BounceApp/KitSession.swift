@@ -45,7 +45,7 @@ final class KitSession: ObservableObject {
     @Published private(set) var phase: Phase = .ready
 
     // the start screen
-    /// "Resume: Step 4 of 12, 5 of 28 shots done", when there is a kit to resume
+    /// "Resume: Step 4 of 12, 5 of 29 shots done", when there is a kit to resume
     @Published private(set) var resumeText: String? = nil
     /// "Last kit: slab-kit-..., finished", when the newest kit on the phone is finished (its end screen can share it
     /// again or delete it)
@@ -77,6 +77,11 @@ final class KitSession: ObservableObject {
     @Published private(set) var error: String? = nil
     /// the shown shot already has a take on the phone (a retake failed or was cut short): offer to keep it, not Skip
     @Published private(set) var hasEarlierCapture = false
+    /// the shown shot needs the slab's true tilt and its slab position has none (`KitStore.missingTruth`): it cannot be
+    /// recorded until its flat-phone shot is taken (`takeReadingFirst`); Skip stays
+    @Published private(set) var missingTruth: KitMissingTruth? = nil
+    /// the drop just taken reads a tilt far from its reading (`KitTiltCheck.disagrees`): offer to take the reading again
+    @Published private(set) var tiltDisagrees = false
 
     // the measurements form (step 1)
     @Published var widthText = ""
@@ -215,7 +220,7 @@ final class KitSession: ObservableObject {
         task?.cancel(); task = nil
         store = nil; resumable = nil; lastFinished = nil; recorder = nil; runner = nil
         resumeText = nil; lastKitText = nil; confirmingNew = false; slabMovedLabel = nil
-        shot = nil; phase = .ready; progressLabel = ""; shotInStep = ""; hasEarlierCapture = false
+        shot = nil; phase = .ready; progressLabel = ""; shotInStep = ""; hasEarlierCapture = false; missingTruth = nil
         resetShotDisplay()
         notice = nil; error = nil; formProblems = []
         summary = nil; finished = false; bundling = false; bundleText = nil; bundleURLs = []; share = nil; confirmingDelete = false
@@ -223,7 +228,7 @@ final class KitSession: ObservableObject {
 
     private func resetShotDisplay() {
         countdownLeft = 0; secondsLeft = 0; dropNow = false; flat = nil; report = nil; trueTilt = nil
-        heightAsked = false; heightText = ""; heightNote = nil
+        heightAsked = false; heightText = ""; heightNote = nil; tiltDisagrees = false
     }
 
     /// The app is leaving the foreground: a shot in progress is thrown away, and the kit stays where it was.
@@ -361,6 +366,10 @@ final class KitSession: ObservableObject {
         guard let s = store else { return }
         shot = spec
         hasEarlierCapture = s.record(spec.id)?.status == .captured
+        missingTruth = s.missingTruth(forShot: spec.id)
+        if let m = missingTruth {
+            AppLog.info("kit", "shot \(spec.id) needs the reading of \(m.flatShotId) first (\(m.reason.rawValue))")
+        }
         progressLabel = s.plan.progressLabel(step: spec.step)
         let inStep = s.plan.shots(inStep: spec.step)
         if inStep.count > 1, let i = inStep.firstIndex(where: { $0.id == spec.id }) {
@@ -378,6 +387,31 @@ final class KitSession: ObservableObject {
     }
 
     func next() { goToNext() }
+
+    /// "Take the reading": the shown shot needs the slab's true tilt and has none, so its flat-phone shot is shown again
+    /// (taken again, or for the first time if it was skipped); after it, Next comes back to the first shot not done.
+    func takeReadingFirst() {
+        guard let s = store, let m = missingTruth, let flat = s.plan.shot(m.flatShotId) else { return }
+        AppLog.info("kit", "shot \(m.shotId): back to \(flat.id) for the reading (\(m.reason.rawValue))")
+        token += 1
+        task?.cancel(); task = nil
+        resetShotDisplay()
+        notice = nil; error = nil
+        show(flat)
+    }
+
+    /// "Take the reading again", after a drop whose tilt check disagrees: the slab is taken to have moved, so its position
+    /// starts again from its flat-phone shot, as "Yes, it moved" on Resume (`KitStore.restartPosition`); the drop just
+    /// taken keeps the earlier reading and its flag. The reading is shown next, then the drops not taken yet.
+    func retakeReading() {
+        guard let s = store, let spec = shot else { return }
+        AppLog.info("kit", "shot \(spec.id): the reading is taken again (the tilt check disagreed)")
+        do { try s.restartPosition(forShot: spec.id, date: Date()) } catch {
+            showError("Could not set the slab up again: \(KitSession.describe(error))", error)
+            return
+        }
+        goToNext()
+    }
 
     /// Skip the shown shot (a capture it had is removed; skipping the optional third tilt's flat-phone shot skips the tilt).
     func skip() {
@@ -466,6 +500,12 @@ final class KitSession: ObservableObject {
     /// Start: the countdown, then the recording (or the flat-phone readings).
     func start() {
         guard let s = store, let spec = shot, !spec.isForm, phase == .ready || phase == .review || phase == .failed else { return }
+        // a drop needs the slab's tilt measured right before it (standard-v2): never recorded without it
+        if let m = s.missingTruth(forShot: spec.id) {
+            missingTruth = m
+            AppLog.info("kit", "shot \(spec.id) not started: it needs the reading of \(m.flatShotId) first (\(m.reason.rawValue))")
+            return
+        }
         token += 1
         let tk = token
         task?.cancel()
@@ -581,6 +621,8 @@ final class KitSession: ObservableObject {
             let q = KitQuality.evaluate(shot: spec, stats: r.stats, expectedFrames: KitQuality.expectedFrames(shot: spec, fps: fps),
                                         reference: s.qualityReference)
             m.quality = q
+            // the app's own tilt during the shot against the slab position's true tilt (has the slab moved?)
+            m.tiltCheck = s.tiltCheck(forShot: spec.id, stats: r.stats)
             if isDemo { m.notes = "demo scene: synthetic frames, no motion samples" }
             // a retake worse than the take on the phone is not committed: the earlier take stays
             if let why = s.retakeLoss(spec.id, manifest: m) {
@@ -588,11 +630,20 @@ final class KitSession: ObservableObject {
                 fail("Not saved: \(why). " + retryHint)
                 return
             }
-            try s.commitShot(spec.id, manifest: m, date: Date())
+            let committed = try s.commitShot(spec.id, manifest: m, date: Date())
             let seconds = String(format: "%.1f s", duration)
             let video = r.video.map { "\($0.codec) \($0.fileBytes) bytes" } ?? "no video"
+            let tiltWords = committed.tiltCheck.map { c in
+                String(format: ", tilt check app %.1f deg vs true %.1f deg%@", c.appTiltDegrees, c.truthTiltDegrees, c.disagrees ? " (disagrees)" : "")
+            } ?? ""
             AppLog.info("kit", "shot \(spec.id) committed: \(r.frames) frames, \(seconds), \(video), depth \(r.depthFrames), "
-                        + "motion \(r.motionSamples), check \(q.verdict.rawValue)")
+                        + "motion \(r.motionSamples), check \(q.verdict.rawValue)" + tiltWords)
+            // only the drops offer "Take the reading again", so only they are told to retake it
+            if let warning = committed.tiltCheck?.message(offersRetake: spec.requiresTruth) {
+                AppLog.warn("kit", "shot \(spec.id): " + warning)
+                notice = warning
+                tiltDisagrees = spec.requiresTruth
+            }
             self.report = q
             hasEarlierCapture = true
             heightAsked = spec.asksHeight
@@ -932,7 +983,7 @@ final class KitSession: ObservableObject {
         if s.unsavedRepairOnLoad { AppLog.warn("kit", "the repaired kit.json could not be saved yet (out of space?); the next step saves it") }
     }
 
-    /// "Step 4 of 12, 4 of 28 done (4 captured, 0 skipped), next p1-arc"
+    /// "Step 4 of 12, 4 of 29 done (4 captured, 0 skipped), next p1-arc"
     nonisolated static func progressWords(_ p: KitProgress) -> String {
         "\(p.label), \(p.done) of \(p.total) done (\(p.captured) captured, \(p.skipped) skipped)" + (p.nextShotId.map { ", next \($0)" } ?? "")
     }

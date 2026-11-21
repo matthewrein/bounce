@@ -99,6 +99,9 @@ public enum KitArrival {
                 problem("\(KitClipFiles.shotManifest) is attempt \(sm.attempt) but kit.json says \(rec.attempts) (parts from two builds of the bundle?)")
             }
             r.bytes += Int64(sd.count)
+            if let c = sm.tiltCheck, c.disagrees {
+                r.notes.append("tilt check: " + c.line(shot: rec.id) + ": the slab may have moved since its reading")
+            }
             let isFlat = spec?.isFlat ?? (sm.video == nil && sm.flat != nil)
             let isVideo = spec?.isVideo ?? (sm.video != nil)
             // motion.jsonl: every shot the phone records has one (the demo's video shots too, empty)

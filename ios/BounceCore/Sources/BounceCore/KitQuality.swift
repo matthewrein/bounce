@@ -24,21 +24,31 @@ public struct KitFrameStat: Codable, Equatable {
     public var ballFound: Bool
     /// ARKit's ambient light estimate (lumens), if any
     public var ambientLumens: Double?
+    /// the app's own tilt on this frame (`Readouts.tiltDegrees`, degrees), its honest standard deviation
+    /// (`TrackerOutput.tiltSigmaDegrees`) and whether it was settled (`angleSettled`): for `KitTiltCheck`. nil when not
+    /// known (a frame read back from frames.jsonl has the tilt only).
+    public var appTiltDegrees: Double?
+    public var appTiltSigmaDegrees: Double?
+    public var appTiltSettled: Bool?
 
     /// Non-finite numbers count as not measured.
     public init(t: Double, trackingNormal: Bool = true, luma: Double? = nil, blurPixels: Double? = nil, slabFound: Bool = false,
-                slabLocked: Bool = false, ballFound: Bool = false, ambientLumens: Double? = nil) {
+                slabLocked: Bool = false, ballFound: Bool = false, ambientLumens: Double? = nil, appTiltDegrees: Double? = nil,
+                appTiltSigmaDegrees: Double? = nil, appTiltSettled: Bool? = nil) {
         self.t = t; self.trackingNormal = trackingNormal
         self.luma = luma.flatMap { $0.isFinite ? $0 : nil }; self.blurPixels = blurPixels.flatMap { $0.isFinite ? $0 : nil }
         self.slabFound = slabFound || slabLocked; self.slabLocked = slabLocked; self.ballFound = ballFound
         self.ambientLumens = ambientLumens.flatMap { $0.isFinite ? $0 : nil }
+        self.appTiltDegrees = appTiltDegrees.flatMap { $0.isFinite ? $0 : nil }
+        self.appTiltSigmaDegrees = appTiltSigmaDegrees.flatMap { $0.isFinite ? $0 : nil }
+        self.appTiltSettled = appTiltSettled
     }
 
     /// From a recorded frame.
     public init(frame f: KitFrame) {
         self.init(t: f.time, trackingNormal: f.tracking.isNormal, luma: f.luma, blurPixels: f.blur,
                   slabFound: f.live?.slabFound ?? false, slabLocked: f.live?.state == .locked, ballFound: f.live?.ballCircle != nil,
-                  ambientLumens: f.ambientLumens)
+                  ambientLumens: f.ambientLumens, appTiltDegrees: f.live?.tilt)
     }
 }
 

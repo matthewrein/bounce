@@ -135,14 +135,22 @@ public struct KitShotSpec: Codable, Equatable {
     public var asksHeight: Bool
     /// the height the instruction asks for (inches), as a hint for the height entry and the scorer
     public var nominalHeightInches: Double?
+    /// a line the screen shows above the instruction, bold and in an accent colour, that must not be missed ("Do not level
+    /// the slab or touch it until the drops are done."); nil for most shots
+    public var warning: String?
+    /// the shot may not be recorded until the slab position it is in has its true tilt from that position's flat-phone
+    /// shot, taken in the same set-up (`KitStore.missingTruth(forShot:)`): the drops of standard-v2, which must carry the
+    /// tilt the slab had when the ball was dropped on it. Skipping the shot is always allowed.
+    public var requiresTruth: Bool
 
     public init(id: String, step: Int, title: String, instruction: String, detail: String? = nil, diagram: KitDiagram,
                 kind: KitShotKind, countdown: Double, expect: KitExpectations = KitExpectations(), startsPosition: KitPositionSpec? = nil,
-                optional: Bool = false, asksHeight: Bool = false, nominalHeightInches: Double? = nil) {
+                optional: Bool = false, asksHeight: Bool = false, nominalHeightInches: Double? = nil, warning: String? = nil,
+                requiresTruth: Bool = false) {
         self.id = id; self.step = step; self.title = title; self.instruction = instruction; self.detail = detail
         self.diagram = diagram; self.kind = kind; self.countdown = countdown; self.expect = expect
         self.startsPosition = startsPosition; self.optional = optional; self.asksHeight = asksHeight
-        self.nominalHeightInches = nominalHeightInches
+        self.nominalHeightInches = nominalHeightInches; self.warning = warning; self.requiresTruth = requiresTruth
     }
 
     public var isVideo: Bool { kind.isVideo }
@@ -152,7 +160,8 @@ public struct KitShotSpec: Codable, Equatable {
 
 /// The whole kit: 12 steps and their shots, in order.
 public struct KitPlan: Codable, Equatable {
-    /// "standard-v1"; kit.json records it so a kit is read against the plan it was taken with
+    /// "standard-v2" (new kits), "standard-v1" (earlier kits); kit.json records it so a kit is read against the plan it
+    /// was taken with
     public var id: String
     /// 1 for real kits. UI tests run the plan faster (e.g. 0.25): recordings, countdowns, release cues and the
     /// flat-phone timings all shrink by this factor. Recorded in kit.json.
@@ -176,6 +185,12 @@ public struct KitPlan: Codable, Equatable {
     /// position of a shot in plan order
     public func index(of shotId: String) -> Int? { shots.firstIndex { $0.id == shotId } }
     public func shot(_ id: String) -> KitShotSpec? { shots.first { $0.id == id } }
+    /// The flat-phone shot that starts the slab position a shot is in: the latest one at or before it in plan order (the
+    /// shot itself, for a flat-phone shot); nil for a shot before the first one, or one the plan does not know.
+    public func positionShot(for id: String) -> KitShotSpec? {
+        guard let i = index(of: id) else { return nil }
+        return shots[0...i].last { $0.startsPosition != nil }
+    }
     /// "Step 4 of 12"
     public func progressLabel(step number: Int) -> String { "Step \(number) of \(stepCount)" }
 
@@ -208,17 +223,33 @@ public struct KitPlan: Codable, Equatable {
         return p
     }
 
+    /// The plans this build knows, by id: every kit taken with one of them loads, resumes and scores against it.
+    public static let known: [KitPlan] = [standard, standardV1]
+
     /// A plan by id (as kit.json records it), at a time scale.
     public static func named(_ id: String, timeScale: Double = 1) -> KitPlan? {
-        guard id == standard.id, timeScale > 0, timeScale.isFinite else { return nil }
-        return timeScale == 1 ? standard : standard.scaled(by: timeScale)
+        guard let plan = known.first(where: { $0.id == id }), timeScale > 0, timeScale.isFinite else { return nil }
+        return timeScale == 1 ? plan : plan.scaled(by: timeScale)
     }
 
-    /// The standard kit (CaptureKit.md): 25 shots, plus 3 optional ones for a third tilt.
-    public static let standard: KitPlan = {
+    /// The standard kit that new kits use (CaptureKit.md), "standard-v2": 26 shots, plus 3 optional ones for a third tilt.
+    /// It is standard-v1 with the drops taken on a tilted slab whose tilt is measured right before them: a flat-phone
+    /// shot, "s10-flat", starts a slab position of its own ("p5", "drops") just before the first drop, the drops say to
+    /// leave the slab tilted (`KitShotSpec.warning`), and they may not be recorded without that position's true tilt
+    /// (`KitShotSpec.requiresTruth`). In the owner's first two kits the slab was put back level for the drops while the
+    /// kit gave them the third tilt's true tilt.
+    public static let standard: KitPlan = make(version: 2)
+
+    /// The first standard kit, "standard-v1": 25 shots, plus 3 optional ones for a third tilt. Kept unchanged so the kits
+    /// taken with it resume and score as before; its drops carry the true tilt of the last tilt taken (p3, or p4).
+    public static let standardV1: KitPlan = make(version: 1)
+
+    /// The standard plan of a version (1 or 2): the same shots, except for the drops (see `standard`).
+    static func make(version: Int) -> KitPlan {
         let slabOnly = KitExpectations(slab: .required, ball: .forbidden, motion: .still)
         let slabArc = KitExpectations(slab: .required, ball: .forbidden, motion: .moving)
         let ballAndSlab = KitExpectations(slab: .required, ball: .required, motion: .still)
+        let tilted = version >= 2
         let steps = [
             KitStepSpec(number: 1, title: "Measurements"),
             KitStepSpec(number: 2, title: "Room scan"),
@@ -229,7 +260,7 @@ public struct KitPlan: Codable, Equatable {
             KitStepSpec(number: 7, title: "Ball only"),
             KitStepSpec(number: 8, title: "Ball on the slab"),
             KitStepSpec(number: 9, title: "Ball held above"),
-            KitStepSpec(number: 10, title: "Bounces"),
+            KitStepSpec(number: 10, title: tilted ? "Bounces, slab tilted" : "Bounces"),
             KitStepSpec(number: 11, title: "Off-centre bounce"),
             KitStepSpec(number: 12, title: "Negatives"),
         ]
@@ -296,10 +327,13 @@ public struct KitPlan: Codable, Equatable {
                         detail: "Keep the slab out of view.", diagram: .ballFloorFar,
                         kind: .video(seconds: 5, highFrameRate: false, releaseCue: nil), countdown: 3,
                         expect: KitExpectations(slab: .forbidden, ball: .required, motion: .still)),
+            // standard-v2: a ball will not rest on a tilted slab, and in both of the owner's v1 kits the slab was levelled
+            // here (the app read about 0.3-4° from this shot on, against 12° and 17°): say to leave it and skip instead
             KitShotSpec(id: "s08-ball-centre", step: 8, title: "Ball on the slab",
-                        instruction: "Rest the ball in the slab's dish, as near the middle as it will stay. Hold still, slab in the middle of the screen.",
-                        detail: "This ties the ball's size to the slab's distance.", diagram: .ballOnSlab,
-                        kind: .video(seconds: 6, highFrameRate: false, releaseCue: nil), countdown: 3, expect: ballAndSlab),
+                        instruction: (tilted ? ballOnSlabLead + " " : "") + "Rest the ball in the slab's dish, as near the middle as it will stay. Hold still, slab in the middle of the screen.",
+                        detail: (tilted ? ballOnSlabDetailLead + " " : "") + "This ties the ball's size to the slab's distance.", diagram: .ballOnSlab,
+                        kind: .video(seconds: 6, highFrameRate: false, releaseCue: nil), countdown: 3, expect: ballAndSlab,
+                        warning: tilted ? ballOnSlabWarning : nil),
         ]
         let held: [(String, String, KitDiagram, Double)] = [("low", "4 in", .ballHeldLow, 4), ("mid", "1 ft", .ballHeldMid, 12), ("high", "2 ft", .ballHeldHigh, 24)]
         for (name, text, diagram, inches) in held {
@@ -309,19 +343,28 @@ public struct KitPlan: Codable, Equatable {
                                      diagram: diagram, kind: .video(seconds: 5, highFrameRate: false, releaseCue: nil), countdown: 3,
                                      expect: ballAndSlab, asksHeight: true, nominalHeightInches: inches))
         }
+        // standard-v2: the slab's tilt is measured right before the drops, on the slab as it stays for them
+        if tilted {
+            shots.append(KitShotSpec(id: "s10-flat", step: 10, title: "Drops: true tilt",
+                                     instruction: dropFlatInstruction, detail: flatDetail + " " + dropFlatDetail,
+                                     diagram: .flatPhoneTilted, kind: .flat, countdown: 5,
+                                     startsPosition: KitPositionSpec(id: "p5", label: "drops"), warning: dropFlatWarning))
+        }
+        let keepTilted = tilted ? dropLead + " " : ""
+        let dropDetail = (tilted ? dropDetailLead + " " : "") + "Keep the slab and the floor around it in view until the recording stops."
         for n in 1...3 {
             shots.append(KitShotSpec(id: "s10-drop\(n)", step: 10, title: "Drop \(n) of 3",
-                                     instruction: "Hold the ball about 1 ft over the middle of the slab and let go at the high beep (Drop now).",
-                                     detail: "Keep the slab and the floor around it in view until the recording stops.",
+                                     instruction: keepTilted + "Hold the ball about 1 ft over the middle of the slab and let go at the high beep (Drop now).",
+                                     detail: dropDetail,
                                      diagram: .dropCentre, kind: .video(seconds: 6, highFrameRate: true, releaseCue: 2), countdown: 3,
-                                     expect: ballAndSlab, nominalHeightInches: 12))
+                                     expect: ballAndSlab, nominalHeightInches: 12, warning: tilted ? dropWarning : nil, requiresTruth: tilted))
         }
         shots += [
             KitShotSpec(id: "s11-drop-edge", step: 11, title: "Drop near an edge",
-                        instruction: "Hold the ball about 1 ft over the slab, just inside one edge, and let go at the high beep (Drop now).",
-                        detail: "Keep the slab and the floor around it in view until the recording stops.",
+                        instruction: keepTilted + "Hold the ball about 1 ft over the slab, just inside one edge, and let go at the high beep (Drop now).",
+                        detail: dropDetail,
                         diagram: .dropEdge, kind: .video(seconds: 6, highFrameRate: true, releaseCue: 2), countdown: 3,
-                        expect: ballAndSlab, nominalHeightInches: 12),
+                        expect: ballAndSlab, nominalHeightInches: 12, warning: tilted ? dropWarning : nil, requiresTruth: tilted),
             KitShotSpec(id: "s12-no-slab", step: 12, title: "No slab",
                         instruction: "Point the phone around the room, moving slowly, with the slab and the ball out of view.",
                         diagram: .noSlab, kind: .video(seconds: 6, highFrameRate: false, releaseCue: nil), countdown: 3,
@@ -331,6 +374,25 @@ public struct KitPlan: Codable, Equatable {
                         diagram: .noBall, kind: .video(seconds: 6, highFrameRate: false, releaseCue: nil), countdown: 3,
                         expect: KitExpectations(slab: .required, ball: .forbidden, motion: .moving)),
         ]
-        return KitPlan(id: "standard-v1", steps: steps, shots: shots, lightReferenceShotId: "s04-level-still")
-    }()
+        return KitPlan(id: tilted ? "standard-v2" : "standard-v1", steps: steps, shots: shots, lightReferenceShotId: "s04-level-still")
+    }
+
+    // standard-v2's words for the drops (CaptureKit.md)
+
+    /// above the drops' flat-phone shot
+    public static let dropFlatWarning = "Leave the slab tilted for the drops: do not level it."
+    /// the drops' flat-phone shot
+    public static let dropFlatInstruction = "If the slab is not tilted, tilt it about 10° in its cradle. Leave it tilted: do not level it. Lay the phone flat in its middle, top pointing away. Let go."
+    /// after the flat-phone shot's usual detail
+    public static let dropFlatDetail = "Then do not touch the slab until the drops are done: they use the tilt measured here."
+    /// above every drop
+    public static let dropWarning = "Do not level the slab or touch it until the drops are done."
+    /// the start of every drop's instruction
+    public static let dropLead = "Leave the slab tilted."
+    /// the start of every drop's detail
+    public static let dropDetailLead = "Do not level it or touch it: the drops use the tilt just measured."
+    /// above the ball resting on the slab (step 8), and the start of its instruction and detail
+    public static let ballOnSlabWarning = "Do not level the slab for the ball: if it will not stay, tap Skip."
+    public static let ballOnSlabLead = "Leave the slab tilted."
+    public static let ballOnSlabDetailLead = "If the ball will not stay on the tilted slab, tap Skip rather than levelling the slab."
 }

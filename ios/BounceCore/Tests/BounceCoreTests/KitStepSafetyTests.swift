@@ -22,7 +22,7 @@ final class KitStepSafetyTests: XCTestCase {
     // MARK: making a kit
 
     func newKit(at date: Date? = nil, ops: KitFileOps = .standard) throws -> KitStore {
-        try KitStore.create(root: root, device: KitManifestTests.device, measurements: KitMeasurements(settings: RecordingSettings()),
+        try KitStore.create(root: root, plan: .standardV1, device: KitManifestTests.device, measurements: KitMeasurements(settings: RecordingSettings()),
                             build: "1.0 (7)", date: date ?? t0, ops: ops)
     }
 
