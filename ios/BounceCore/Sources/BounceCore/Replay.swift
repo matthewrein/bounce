@@ -329,6 +329,13 @@ final class ReplaySlabDetector: SlabDetecting {
         return recordedRefined ?? []
     }
 
+    /// the moved-slab look (`TrackerSettings.findsMovedSlab`): the real detector's on a frame with an image; nothing from
+    /// the recording (its outlines are the re-check's, not this look's)
+    func look(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?) -> [DetectedOutline] {
+        if !useRecorded && hasImage { return inner.look(frame: frame, intrinsics: intrinsics, spec: spec, down: down) }
+        return []
+    }
+
     /// a slab tap's growth (`SlabDetecting.probe`) on the recorded image, as on the phone (it leaves the real detector's
     /// edge memory alone there too); without the image, or with the phone's detections (`Source.recorded`), nothing (the
     /// phone's probes are not recorded: such a replay is not exact after a slab tap)

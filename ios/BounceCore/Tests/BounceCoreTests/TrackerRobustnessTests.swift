@@ -204,9 +204,10 @@ final class HeldBall: BallLocating {
 final class TrackerRobustnessTests: XCTestCase {
     let blank = ColorFrame(gray: Plane(width: 4, height: 4))
 
-    /// the tracker settings the app uses (AppModel only changes the search interval)
-    func appSettings(_ spec: SlabSpec = .standard) -> TrackerSettings {
-        var s = TrackerSettings(); s.searchInterval = 0.12; s.spec = spec
+    /// the tracker's own settings with the app's search interval. Not all of the app's (`RecordingSettings.trackerSettings`
+    /// also sets the ball gate, tap hints and `findsMovedSlab`): `findsMovedSlab` turns the app's moved-slab rule on (n20r)
+    func appSettings(_ spec: SlabSpec = .standard, findsMovedSlab: Bool = false) -> TrackerSettings {
+        var s = TrackerSettings(); s.searchInterval = 0.12; s.spec = spec; s.findsMovedSlab = findsMovedSlab
         return s
     }
 
@@ -586,6 +587,64 @@ final class TrackerRobustnessTests: XCTestCase {
     }
 
     // MARK: movers only near an in-view lock (#9)
+
+    // MARK: the moved-slab rule (n20r, `findsMovedSlab`, on in the app) and lookalikes at the slab's height
+
+    /// Looking away at a lookalike whose top is at the slab's height (a box, a second slab) 1.5 m away: with the app's
+    /// moved-slab rule a whole-view look sees it while the lock is out of the picture, but it lies beyond
+    /// `movedSlabRadius` (1 m) of the lock: not the slab moved, the lock stays.
+    func testMovedSlabRuleIgnoresASlabHeightLookalikeAcrossTheRoom() {
+        XCTAssertTrue(RecordingSettings().trackerSettings.findsMovedSlab, "the app's settings have the rule on")
+        for top in [0.03, 0.066, 0.09] {
+            let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
+            let w = World(slab: slab, lens: .processing)
+            let det = SceneDetector(w, noise: 0.5, seed: 91)
+            let tr = SlabTracker(settings: appSettings(findsMovedSlab: true), detector: det)
+            let pos = Vec3(0, 0.9, 0)
+            var k = 0
+            for _ in 0..<(30 * 3) { step(tr, det, w.view(from: pos, at: slab.center), Double(k) / 30); k += 1 }
+            let before = tr.slab!
+            det.other = World.slabAt(Vec3(1.5, top, -0.8), tilt: 0, heading: 0, yaw: 30)
+            for _ in 0..<(30 * 6) { step(tr, det, w.view(from: pos, at: det.other!.center), Double(k) / 30); k += 1 }
+            XCTAssertLessThan(tr.slab?.center.distance(to: before.center) ?? 99, 0.01, "top \(top) m: the lock stays")
+            XCTAssertEqual(tr.counts["movedAway"] ?? 0, 0, "top \(top) m")
+            XCTAssertGreaterThan(tr.counts["movedSlabLooks"] ?? 0, 0, "top \(top) m: the whole view was looked over")
+        }
+    }
+
+    /// A lookalike at the slab's height 35 cm from it, in the picture beside the locked slab for 1 s; then the slab goes
+    /// unseen for 1.5 s (glare, a hand that does not excuse the miss) while the lookalike is still found: the whole-view
+    /// looks find only it, where a lookalike was seen beside the locked slab, so the lock stays. (A lookalike within 1 m
+    /// that was never seen beside the locked slab is taken for the slab moved there after two looks: the accepted risk,
+    /// printed here and stated in the README.)
+    func testMovedSlabRuleIgnoresALookalikeSeenBesideTheSlab() {
+        for seenBeside in [true, false] {
+            let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)
+            let w = World(slab: slab, lens: .processing)
+            let det = SceneDetector(w, noise: 0.5, seed: 93)
+            let tr = SlabTracker(settings: appSettings(findsMovedSlab: true), detector: det)
+            let pos = Vec3(0, 0.9, 0.1)
+            var k = 0
+            let v = w.view(from: pos, at: slab.center + Vec3(0.15, 0, 0))
+            for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+            let before = tr.slab!
+            det.other = World.slabAt(Vec3(0.35, 0.066, -1.0), tilt: 0, heading: 0, yaw: 10)
+            if seenBeside { for _ in 0..<30 { step(tr, det, v, Double(k) / 30); k += 1 } }
+            det.onlyOther = true
+            for _ in 0..<45 { step(tr, det, v, Double(k) / 30); k += 1 }
+            det.onlyOther = false
+            for _ in 0..<(30 * 3) { step(tr, det, v, Double(k) / 30); k += 1 }
+            let moved = tr.slab?.center.distance(to: before.center) ?? 99
+            if seenBeside {
+                XCTAssertLessThan(moved, 0.01, "the lock stays at the slab")
+                XCTAssertEqual(tr.counts["movedAway"] ?? 0, 0)
+                XCTAssertEqual(tr.counts["lost"] ?? 0, 0)
+            } else {
+                print(String(format: "ACCEPTED RISK (README, n20r): a slab-height lookalike 35 cm away never seen beside the slab, the slab unseen 1.5 s: lock moved %.3f m, moved-away %d",
+                             moved, tr.counts["movedAway"] ?? 0))
+            }
+        }
+    }
 
     func testLookingAwayAtALookalikeDoesNotMoveTheLock() {
         let slab = World.slabAt(Vec3(0, 0.066, -1.0), tilt: 6, heading: 30)

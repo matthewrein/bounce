@@ -14,45 +14,61 @@ slab" with the slab in the picture; a set ball gone when the slab moves.
 
 **What broke on n20.** A slab moved further than the re-checks' reach (10 cm was followed, 20 cm was not) was lost track
 of: the re-checks look only around the lock's outline, so the old lock stayed until the lost rule ran out (4 s of misses), and a set ball
-stayed over the old place all that time. If the old place was out of the picture the lock was never given up at all.
+stayed over the old place all that time. If the old place was out of the picture, or only partly in it, the lock was never given up at all.
 **The fix** (`TrackerSettings.findsMovedSlab`, on in the app; off by default so older recordings replay as recorded):
-once a re-check of a lock in view has missed, or while the lock is wholly out of the picture, the next re-check looks
-over the whole view; two finds there that agree with each other, away from the lock and on the same floor (top within
-3 cm of the lock's height), give the lock up and start the confirmation at the new place (the usual rules lock it). A
-lock seen at its place, a ball or hand over it, or a lock only partly out of the picture are treated as before.
+every re-check is exactly n20's (the same close-up look around the lock, feeding the lock, the tilt and the re-lock rule
+as before). Only when a re-check did not see the lock at its place (a miss with its place in view that nothing excuses:
+not a ball or a hand over it, not LiDAR; or its place partly or wholly out of the picture) a second look over the whole
+view runs in the same frame, for the moved-slab rule alone: two finds on consecutive re-checks that agree with each
+other, more than 10 cm from the lock (20 cm when its place is not wholly in the picture) but within 1 m, top within 3 cm
+of the lock's height, and not where a lookalike was seen beside the locked slab, give the lock up and start the
+confirmation at the new place (the usual rules lock it).
 
 | scene (rendered) | n20: lock at the slab after / old place shown for | n20r |
 |---|---|---|
-| covered 0.5, 1.5, 3 s | kept (3 s: a re-lock 3 s after the cover, its normal over 1.5 deg off) | kept, nothing wrong |
-| covered 6 s | lost by the 4 s rule, found 3.3 s after the cover | the same (known gap: that new lock never meets 2 cm / 1 deg) |
+| covered 0.5, 1.5 s | kept | the same, frame for frame |
+| covered 3 s | kept; at the camera's widest swing a re-lock 0.5-0.7 deg off, 5 frames over 1.5 deg off | the same, frame for frame (n20's re-lock rule, not a lost lock) |
+| covered 6 s | lost by the 4 s rule, found 3.3 s after the cover, right (2 cm, 1 deg) 4.3 s after | the same |
 | slid 5, 10 cm; re-tilted 6 to 2 deg; tilted the other way | 1.2 s / 1.2 s (the re-lock rule) | the same |
 | turned 30 deg | 0.2 s / 0.2 s | the same |
 | slid 20 cm | 3.9 s / 3.4 s | 0.7 s / 0.5 s |
 | slid 30 cm | 3.7 s / 3.3 s | 0.5 s / 0.4 s |
-| put 45 cm away, phone follows it | 5.8 s / 5.4 s | 2.0 s / 1.8 s |
-| slid 30 cm, phone follows it (old place stays at the picture's edge) | never / 6.4 s | the same (known gap) |
+| put 45 cm away, phone follows it | 5.8 s / 5.4 s | 0.4 s / 0.2 s |
+| slid 30 cm, phone follows it (old place stays at the picture's edge) | never / for good (6.4 s to the scene's end) | 0.4 s / 0.2 s |
 | moved 25 cm while covered 2 s | 2.6 s / 2.1 s | 0.6 s / 0.5 s |
 | set ball, then slid 20 cm | 3.8 s / 3.3 s, set ball left over the old place | 0.6 s / 0.4 s, set ball cleared |
-| phone turned away 1, 3, 10 s, slab not moved | lock kept; after 1 and 3 s a re-lock 0.5 deg off at the camera's widest swing | lock kept; that re-lock after 3 s only (known gap, the re-lock rule) |
-| phone turned away 3 s, slab slid 10 cm | never / 3.8 s | 1.3 s / 1.3 s |
-| phone turned away 3 s, slab put 40 cm away | 4.5 s / 4.0 s | 1.0 s / 0.8 s |
+| phone turned away 1, 3, 10 s, slab not moved | lock kept; after 1 and 3 s a re-lock at the camera's widest swing (after 3 s: 4 frames over 1.5 deg off, then 0.1 deg) | the same, frame for frame |
+| phone turned away 3 s, slab slid 10 cm | never / 3.8 s | 0.5 s / 0.3 s |
+| phone turned away 3 s, slab put 40 cm away | 4.5 s / 4.0 s | 0.6 s / 0.5 s |
 | ARKit relocalised 0.6 m; world snap 0.4 m | 1.0 s; 1.1 s (the lock proves itself at the new coordinates) | the same |
 
-"Point at the slab" never showed with the slab in the picture, in any scene, on either build.
+"Point at the slab" never showed with the slab in the picture, in any scene, on either build. Every scene where the
+slab does not move runs frame for frame as on n20.
+
+**Accepted risk.** A lookalike whose top is at the slab's height (a box, a second slab) within 1 m of the lock, never
+seen beside the locked slab, found on two re-checks in a row while the slab goes unseen at its place (a hand over it
+that does not excuse the miss, glare) or while its place is out of the picture, takes the lock (a test scene: a box
+35 cm away, the slab unseen 1.5 s, the lock moves onto the box). Further than 1 m, or seen beside the locked slab
+before, it does not (tested); a floor-level tile never does (the 3 cm height gate). Your kits had no such event.
 
 **Your kit clips, cut** (scratch only; nothing from the kits is in the repository): the slab painted over for 0.5-6 s,
 the no-slab clip spliced into an arc for 1-6 s, and two shots of different placements played back to back (your shots
 share one ARKit world, so that is a real move: 2-5 cm and 1.5-7 deg for the tilt steps, 22 cm and 13-15 deg from the
-third tilt to the drops). Covers up to 3 s and every sweep kept the lock on both builds; a 6 s cover was given up by the
-4 s rule on both. The tilt steps were followed by the re-lock rule on both. The 22 cm move: n20 kept the old lock for
-3.0 s; n20r gave it up after 0.3-0.6 s (the drop clip locked again 0.4 s after the move, the held-ball clip at 4.9 s,
-as on n20).
+third tilt to the drops). Every cover, sweep and tilt step ran exactly as on n20 (covers up to 3 s and every sweep kept
+the lock; a 6 s cover was given up by the 4 s rule on kit 1 on both builds). The 22 cm move: n20 kept the old lock for
+3.0 s; n20r gave it up after 0.6 s (the drop clip locked again 0.5 s after that; the held-ball clip only at 4.9 s, the
+same moment as on n20, not looked into).
+Turning the phone away (your no-slab clip, 35-49 deg off the old place) for 1.5 or 3 s while the slab moved 22 cm, then
+back: n20 kept the old lock through the turn and 3.6 s after it (the 4 s rule); n20r moved nothing while the phone was
+turned away and gave the old lock up 0.6 s after it came back, locking again 0.5 s later (the drop clip: centre within
+0.5 cm of a fresh tracker's lock on that clip, tilt 0.5-0.8 deg against its 3.0; that placement has no flat-phone
+reading and fresh locks on its shots read 0.2-4.2 deg; the held-ball clip: at the fresh tracker's lock 4.9 s in, n20
+never in the 5 s clip). None of your clips starts with the old place at the picture's edge, so that case is covered by
+the rendered scenes only.
 
-**Normal use** (both kits replayed in full, 12,120 frames): the same frames locked in every shot, no lock lost or given
-up, no shown tilt more than 2 deg off. The whole-view re-check after a miss changes which detections feed the tilt, so
-when the tilt is first shown moves a little shot by shot: more frames show it (kit 1: 1,964 to 2,067; kit 2: 2,460 to
-2,493), sooner in three shots (one by 5.7 s), later in three (two shots that showed it only near their end no longer
-do), and one extra re-lock (kit 2, first tilt arc).
+**Normal use** (both kits replayed in full, 12,120 frames): every frame identical to n20 (lock, tilt, shown tilt,
+events, detections); the only difference is the extra whole-view look on 55 (kit 1) and 56 (kit 2) re-checks that did
+not see the lock, none of which counted a find, so no lock was moved or given up.
 
 ## Build n20 (20 November 2026): the cue no longer says "Point at the slab" while the slab is in view
 

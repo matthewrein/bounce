@@ -108,6 +108,7 @@ extension TrackerSettings: Codable {
         .init("findsMovedSlab", \.findsMovedSlab),
         .init("movedSlabFinds", \.movedSlabFinds),
         .init("movedSlabHeight", \.movedSlabHeight),
+        .init("movedSlabRadius", \.movedSlabRadius),
         .init("unconfirmedTimeout", \.unconfirmedTimeout),
         .init("poseJumpDistance", \.poseJumpDistance),
         .init("limitedResumeSeconds", \.limitedResumeSeconds),

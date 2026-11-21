@@ -68,6 +68,12 @@ public final class SlabFinderDetector: SlabDetecting {
         finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down, seed: seed).map(SlabFinderDetector.outline)
     }
 
+    /// A look over the whole view (the tracker's moved-slab look while locked): the finder's sweep, leaving the edge memory
+    /// of the outline the detector follows (and a finer image set for the next call) as they were.
+    public func look(frame: ColorFrame, intrinsics: CameraIntrinsics, spec: SlabSpec, down: Vec3?) -> [DetectedOutline] {
+        finder.find(frame: frame, intrinsics: intrinsics, spec: spec, down: down).map(SlabFinderDetector.outline)
+    }
+
     /// The tracker's view of a find: with a side profile (the refiner's sides say which feature they rest on), each
     /// side's line noise (and its frame's own part), a one-edge side's middle between its two readings and the profile learned so far go with it
     /// (`DetectedOutline.sideSigmas`, `sideShifts`); without one, as before.
