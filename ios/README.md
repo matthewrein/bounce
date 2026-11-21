@@ -32,20 +32,24 @@ frames showing a number:
 | 2 | tilt 2 (7.8 deg), arc | 0.43 / 0.43 | 0.14 / 0.43 | 0.58 / 0.58 | 0.39 / 0.58 | better |
 | 2 | tilt 3 (12.1 deg), arc | 0.52 / 0.68 | 0.72 / 0.75 | 0.94 / 1.03 | 1.49 / 1.54 | worse |
 
+Each clip shows only a few separate estimates (the shown value is held), so these medians rest on those few estimates.
 The tilted still clips show no number in either build (one view); the stills that do are unchanged. Nothing else moved:
 on every frame of every video shot of both kits the state, the lock's corners and every detection are identical, no
 lock was lost, and as many frames show a number; only the shown tilt and the bounce's normal change (the first number
 within 2 degrees of the truth came 0.9 s later on kit 1's level arc, 11.4 to 12.3 s; the same on the other clips).
 
 **What it says about the left-right error.** n20's direction error is real but not larger than its amount error: across
-the tilt 0.3-1.4 degrees median on the six tilted arcs (0.04-0.75 at the arcs' last frames), the downhill heading 1.6-7.4
+the tilt 0.3-1.2 degrees median on the six tilted arcs (1.4 on kit 1's tilt 2 with KitScorer's link from the previous
+shot; about 0.15 degrees of uncertainty in the truth's heading) and 0.04-0.75 at the arcs' last frames, the downhill heading 1.6-7.4
 degrees off, against 0.6-1.7 degrees in the amount (1 degree moves the landing about 4.5 cm). The views fitted with the
 normal free do not fix it because the error is the same in every view, not noise that more views average away: on kit
 2's level arc the fit from four views was 2.5 degrees off while stating 0.75 (the lock's own average 2.0, the shown n20
 estimate 1.15), and with the size free too (tried, `fitNormal(freeSize:)`) it was no better. That points at the
 outline itself (which edge of a side it sits on, seen the same way from one side of the slab), which is where the next
-work on the direction belongs. The truth's heading is usable: the CoreMotion-to-ARKit link's heading varied by 0.01-0.07
-degrees over each shot.
+work on the direction belongs. The truth's heading is usable: the links worked out from the walk-round clips themselves
+agree with the still-shot links KitScorer uses (kit 1 yaw 23.5-25.2, kit 2 30.0-30.6 degrees), and n20's heading agrees
+with the truth to within 1.6-7.4 degrees on both kits, whose true headings differ by about 35 degrees. An independent
+reviewer recomputed every number in the table from the committed code and got the same values.
 
 **Checked:** BounceCore unit tests (`MultiViewNormalTests`: the views bring a normal tipped 2 degrees back to under 0.01;
 with a pixel of noise and an outline on the wrong edge the error stays under its stated deviation times three; the hold
